@@ -817,10 +817,11 @@ writes into the database Animatic currently has open (default location or `--dat
 clean result start with an empty database (a fresh `--database` file) and keep a copy of any
 existing database made while Animatic is closed (the database file plus its `-wal`/`-shm` files).
 
-1. **File → Import AOM databank…** (or the Overview first-run card). Choose the `kowai` folder
-   itself. It must directly contain `mylist.data`, `local_files.data` or `animes.data`, else
-   Animatic says `No AOM databank found in <folder>` (picking AOM's install folder is not enough
-   in the app).
+1. **File → Import AOM databank…** (or the Overview first-run card). Choose the `kowai` folder or
+   the AOM folder directly above it; the folder picker does not list the `.data` files inside.
+   The `kowai` folder must directly contain `mylist.data`, `local_files.data` or `animes.data`,
+   else Animatic says `No AOM databank found in <folder> (choose the AOM folder or its kowai
+   folder)`.
 2. Watch the progress bar (`Decrypting <name>.data`, `Importing <name>`, `Imported <name>`,
    `Computing derived data`, `Import complete`). Use **Cancel** to stop.
 3. The Log ends with `Imported N records from M collections`.
