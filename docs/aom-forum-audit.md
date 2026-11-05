@@ -8,14 +8,26 @@ Research date: 2026-11-05. Scope: the [AniDB O’Matic board (16)](https://anidb
 
 The indexed board reports 134 topics over five pages. Those pages and the release thread’s replies have **not** been exhaustively inspected. Search snapshots vary; reply/view counts are not stable evidence and are not used to prioritize work. The visible release-topic creation date does not establish a last release, abandonment date, or last support response. No credentials were used and no production AniDB API requests were made.
 
+### Follow-up: user-supplied Top 25
+
+A subsequent user-supplied crawl summary supplied 25 ranked issues and concrete topic
+links, including the [release discussion](https://anidb.net/forum/thread/55697),
+[watched-state resets](https://anidb.net/forum/thread/44113),
+[MyList connection failures](https://anidb.net/forum/thread/28672),
+[connection bans](https://anidb.net/forum/thread/807720), and
+[out-of-memory workarounds](https://anidb.net/forum/thread/816212).
+The source file remains outside this repository. Direct thread reads still returned 403;
+historical reports below are attributed to that supplied summary, not a claimed firsthand
+read of all posts. Its ranking is qualitative and includes resolved historical defects.
+
 ## Verified minimum and research leads
 
 | Indexed topic / evidence | Date visible | Source | What it establishes / what remains unknown |
 |---|---|---|---|
-| AOM 0.5.18.276, by PetriW | Created 2015-11-25 12:18 | [Board index](https://anidb.net/forum/16), [thread-list view](https://anidb.net/forum/16/thread) | A release/support topic exists. Release notes, subsequent failures, fixes and individual reply dates remain unread. |
+| AOM 0.5.18.276, by PetriW | Created 2015-11-25 12:18 | [Release thread](https://anidb.net/forum/thread/55697), supplied in the follow-up summary | Release/support discussion; the initial search-only audit did not expose the post bodies. |
 | Difference in stats | Created 2022-09-01 22:07; indexed last activity 2022-09-02 16:48 | [Board index](https://anidb.net/forum/16) | A post-2015 statistics-discrepancy topic exists. Which counts differ, expected behavior, cause and resolution are unknown. |
 | Help - Handling Local Cache Fai… | Not exposed | [Board index](https://anidb.net/forum/16) | A truncated cache-help title is indexed. Full title, date, failure mode and outcome are unverified. |
-| AOM still functional? | Not exposed | [Thread-list view](https://anidb.net/forum/16/thread) | A user asked about continued functionality. This does not establish that all or any AOM operations failed. |
+| AOM still functional? | Not exposed | [Thread 805321](https://anidb.net/forum/thread/805321), supplied in the follow-up summary | A user asked about continued functionality; detailed answers are attributed to the supplied summary, not independently fetched posts. |
 | anidb`o matic downloading files | Not exposed; older contextual discussion | [Thread 10078](https://anidb.net/forum/thread/10078) | An indexed excerpt describes downloading MyList/anime/group/file databases. Board placement and date were not recovered; not treated as a post-abandonment board-16 bug. |
 
 These links intentionally point to the board when the exact thread ID is unavailable. No thread IDs, quotes, failure causes, or request details have been reconstructed from guesses. Generic AniDB page hints about renaming and reports about **AniSub**, Shoko, or unrelated clients are excluded from AOM evidence.
@@ -56,7 +68,7 @@ Implementation anchors:
 - [`settings::import_legacy_settings`](../crates/animatic-core/src/settings.rs): recognize consumed fields/collections; reject unrelated XML while accepting recognized default values.
 - [`app.rs`](../crates/animatic/src/app.rs) and [`worker.rs`](../crates/animatic/src/worker.rs): native picker, typed background import, review gating, save-before-activate and folder controls.
 
-## Exercised verification
+## Initial implementation verification
 
 Windows verification on the research date used synthetic media/settings and temporary
 runtime databases outside the repository. No production AniDB API was contacted.
@@ -79,8 +91,46 @@ The release executable was launched and exercised, not only compiled. Linux was 
 locally; the existing Windows/Ubuntu CI matrix remains the cross-platform verification
 mechanism. Temporary probes and runtime fixtures were removed after verification.
 
+## First reliability tranche from the Top 25
+
+The selected work addresses trust failures before adding destructive automation or
+more feature breadth. Historical symptoms motivated the priorities; Animatic defects
+were separately identified in code and reproduced with synthetic inputs.
+
+| Summary item | Implemented response | Deliberate limit |
+|---|---|---|
+| 17: MyList empty/out of sync | Strict success-reply parsing, no malformed-as-absence deletion, transactional FILE/MyList application, guarded stale destructive replies | Full-account MyList bootstrap/reconciliation is still a separate gap |
+| 18: watched status resets | Atomic latest-intent edit merging, never-reused generations, pending-intent overlays, deletion/retry ordering | No claim that every historical AOM cause was identical |
+| 21: bans/connections | Permanent failures retained as blocked work, durable cooldowns, bounded counted failures, connectivity distinguished from payload errors | No universal ten-minute ban-expiry assumption; real AniDB was not contacted |
+| 7 and large-library concerns | Separate background projection/export thread, coalesced generations, cached search indices, virtualized tables and horizontal scrolling | Snapshots still materialize the library; this is not fully paged storage |
+
+### Exercised reliability verification
+
+- Before/after external SQLite/localhost-UDP probes: latest watched intent survived an
+  older acknowledgement, and a truncated successful MyList reply changed from accepted
+  absence to a protocol error.
+- The actual worker changed from repeatedly sending a permanent failure to one attempt,
+  then a retained blocked entry and normal completion.
+- Local UDP regression fixtures exercised banned, unavailable, rejected-credential and
+  permanent-error paths, including fresh-client cooldown enforcement.
+- Native release exercise with 20,000 anime, MyList entries, local files and queued
+  commands, plus 1,000 groups and genres. All table pages were opened. MyList instantiated
+  31 visible checkbox rows rather than all 20,000.
+- Native cached search, rapid watched/unwatched/watched edits, hidden-selection clearing,
+  blocked/cooldown display, retry without cooldown bypass, and restart persistence passed.
+  A narrow-window capture showed the horizontal-scroll layout.
+- An accepted explicit statistics export completed with the expected full content when
+  the worker was immediately dropped for graceful shutdown.
+- Windows: 114 workspace tests, formatting check, Clippy with warnings denied, and release
+  build passed. Linux runtime and production AniDB synchronization were not exercised.
+
+All runtime inputs and probes were synthetic and outside the repository. No private
+databank, personal library, credentials, raw forum export, or workstation path was added.
+
 ## Remaining research prerequisite
 
-To finish the requested historical inventory, supply readable board pages or an authorized HTML/text export **outside this repository**. It must include all five topic-index pages and complete topic pagination, especially the 2015 release discussion and later support threads. Redact credentials and personal media/library data. For each report, capture canonical thread/post URL, date, request or reproducible symptom, maintainer/user resolution, and Animatic implementation/test evidence. Deduplicate symptoms only after reading the replies; classify resolved legacy bugs separately from still-relevant requests.
-
-Until that evidence is available, the forum inventory remains blocked and these shipped changes must be described as **code-audit improvements**, not a completed forum-driven backlog.
+The supplied summary resolves the earlier lack of topic IDs for the selected reports and
+is sufficient to prioritize this tranche. An exhaustive historical inventory would still
+need complete post/page coverage, dates, and resolutions; the summary describes a sample.
+Keep any future authorized exports outside the repository and redact private data.
+Do not present this tranche as complete AOM parity or as a full read of the forum.
