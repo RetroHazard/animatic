@@ -381,6 +381,14 @@ fn startup_check_allowed(settings: &Settings, recovered: bool) -> bool {
     settings.updates.auto_check && !settings.anidb.offline && !recovered
 }
 
+/// Folder picker for the AOM databank. Windows folder pickers never list files, so the title
+/// says what to choose; `find_databank` accepts the AOM folder or its `kowai` folder.
+fn pick_aom_databank_folder() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Choose the AOM folder or its kowai folder (files are not listed)")
+        .pick_folder()
+}
+
 /// The license document shipped next to the executable for this exact version
 /// (`LICENSE-v2026.11.0`, left by an update) if there is one, else the canonical file of the
 /// manual package.
@@ -1139,11 +1147,14 @@ impl AnimaticApp {
         if self.import_pending {
             return;
         }
-        let source = PathBuf::from(self.import_source.trim());
-        if !animatic_core::legacy::import::is_databank(&source) {
-            self.error(format!("No AOM databank found in {}", source.display()));
+        let picked = PathBuf::from(self.import_source.trim());
+        let Some(source) = animatic_core::legacy::import::find_databank(&picked) else {
+            self.error(format!(
+                "No AOM databank found in {} (choose the AOM folder or its kowai folder)",
+                picked.display()
+            ));
             return;
-        }
+        };
         let temp = self
             .db_path
             .parent()
@@ -1530,10 +1541,7 @@ impl AnimaticApp {
                         .clicked()
                     {
                         ui.close();
-                        if let Some(dir) = rfd::FileDialog::new()
-                            .set_title("Choose AOM kowai folder")
-                            .pick_folder()
-                        {
+                        if let Some(dir) = pick_aom_databank_folder() {
                             self.import_source = dir.to_string_lossy().into_owned();
                             self.import_legacy();
                         }
@@ -1743,11 +1751,12 @@ impl AnimaticApp {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.heading("Bring your AniDB O'Matic library forward");
                 ui.label("Import the encrypted databank directly. Existing anime, mylist, hashes and local paths are preserved.");
+                ui.label("Choose the AOM folder or its kowai folder. The folder picker does not list the .data files inside.");
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.import_source);
                     ui.add_enabled_ui(!self.import_pending, |ui| {
                         if ui.button("Browse…").clicked()
-                            && let Some(d) = rfd::FileDialog::new().pick_folder()
+                            && let Some(d) = pick_aom_databank_folder()
                         {
                             self.import_source = d.to_string_lossy().into_owned();
                         }
