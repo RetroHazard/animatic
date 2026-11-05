@@ -17,7 +17,7 @@ Contents: [What a release is](#what-a-release-is) ·
 
 ## What a release is
 
-A release is a Git tag `vVERSION` on a commit reachable from `origin/main`, plus a **draft**
+A release is a Git tag `vVERSION` on a commit reachable from `origin/main`, plus a **published**
 GitHub Release holding exactly three assets:
 
 | Asset | Platform |
@@ -26,13 +26,15 @@ GitHub Release holding exactly three assets:
 | `animatic-vVERSION-linux-x86_64.tar.gz` | Linux, `x86_64-unknown-linux-gnu`, built on Ubuntu 22.04 |
 | `SHA256SUMS` | SHA-256 of the two archives |
 
-The release is a draft: a maintainer reviews the notes and assets and publishes it by hand.
-Nothing is published, tagged or version-bumped automatically, and no pull request, development
-branch or `main` CI run can create a release: only a maintainer's explicit `v*` tag push or a
-manual **Release** run from `main` can (see [Workflows](#workflows)).
-Publishing matters beyond the page itself: installed copies of Animatic offer **published**
-releases only (see [In-app updates](#in-app-updates)), so publishing a draft is what makes it
-an update candidate.
+A release is gated behind a reviewed merge **and** a tag at that merge. The only automatic path is
+merging the `release`-labelled pull request that **Prepare release** opens: **Auto release** then
+dispatches **Release** with the merge commit, which validates it, builds the archives, creates the
+tag at that exact commit and publishes. Nobody pushes release tags by hand, and a tag push starts
+nothing. No other pull request, development branch or `main` CI run can create a release; a manual
+**Release** run from `main` can rehearse (dry run) or retry a commit that has no release yet (see
+[Workflows](#workflows)). Publishing matters beyond the page itself: installed copies of Animatic
+offer **published** stable releases (see [In-app updates](#in-app-updates)), so merging a release
+pull request is what makes a stable version an update candidate.
 
 What is deliberately **not** shipped: installers, packages (MSI, deb, rpm, Flatpak, AppImage),
 unattended or automatic updates, code signing, notarization or build attestations. Archives are
@@ -139,11 +141,12 @@ been run against a real GitHub release or on Linux by the project.
   `Animatic/VERSION` to GitHub; there is no account, token or library data and no credential
   configuration. Nothing is installed without the user's confirmation. See
   [Settings reference → Updates](settings-reference.md#updates) for `updates.auto_check`.
-- **Publishing consequences.** Because installed copies see a release as soon as it is published, a
-  maintainer should inspect the draft assets (checksums, archive layout) *before* publishing and
-  should treat unpublishing or deleting a published release as a user-visible event (an update
-  that was offered can disappear before install). Release notes are not shown in the app; the
-  updater links to the release page.
+- **Publishing consequences.** Because installed copies see a release as soon as it is published,
+  and merging a release pull request publishes it, a maintainer should rehearse the release (a dry
+  **Release** run, see [Maintainer procedure](#maintainer-procedure)) and check the archive layout
+  and `SHA256SUMS` *before* merging, and should treat unpublishing or deleting a published release
+  as a user-visible event (an update that was offered can disappear before install). Release notes
+  are not shown in the app; the updater links to the release page.
 - **Supported targets only.** Windows and Linux `x86_64`. Other targets have no archives; the updater
   is disabled there.
 - **Feed visibility.** The updater reads the release feed anonymously, so it only sees releases that
@@ -245,11 +248,11 @@ the same rehearsal without touching your machine.
 
 ## Workflows
 
-Three workflows live in [`.github/workflows/`](../.github/workflows/): **CI** (`ci.yml`),
-**Prepare release** (`release-prepare.yml`) and **Release** (`release.yml`). All run on
-GitHub-hosted runners, every third-party action is pinned to a full commit SHA, and none uses a
-personal access token, signing key or other custom secret. The default token permission is
-`contents: read`; the exceptions are named below.
+Four workflows live in [`.github/workflows/`](../.github/workflows/): **CI** (`ci.yml`),
+**Prepare release** (`release-prepare.yml`), **Auto release** (`auto-release.yml`) and **Release**
+(`release.yml`). All run on GitHub-hosted runners, every third-party action is pinned to a full
+commit SHA, and none uses a personal access token, signing key or other custom secret. The default
+token permission is `contents: read`; the exceptions are named below.
 
 ### `ci.yml` (CI)
 
@@ -312,30 +315,48 @@ pull request; a maintainer reviews and merges it.
 Token permissions: `contents: write` only in the preparation job that pushes the branch,
 `pull-requests: write` only in the job that opens the PR.
 
+The pull request is opened with the label `release` (the label must exist in the repository). Its
+description says that merging publishes the version; removing the label before merging merges
+without releasing.
+
+### `auto-release.yml` (Auto release)
+
+Runs when a pull request into `main` is closed. Only a **merged** pull request whose head branch
+starts with `release/v` and which carries the `release` label dispatches **Release** on `main` with
+`sha` = the merge commit and `dry_run` = `false`. Its only permission is `actions: write`; it builds
+nothing. A workflow-token dispatch is exempt from GitHub's rule that workflow-token events start no
+other workflows, so no personal access token is involved. A merge queue still produces the
+`closed`/merged event this needs.
+
 ### `release.yml` (Release)
 
-Triggers: a maintainer's push of a tag matching `v*`, or `workflow_dispatch` with inputs `tag`
-(an **existing** tag, string) and `dry_run` (boolean, default `true`). A manual dispatch is
-refused unless it runs from `main` (`github.ref` must be `refs/heads/main`, as for Prepare
-release); a tag push runs from the tag.
+Trigger: `workflow_dispatch` only (from **Auto release**, or manually), with inputs `sha` (default
+the tip of `main`) and `dry_run` (boolean, default `true`; **Auto release** passes `false`).
+It is refused unless it runs from `main` (`github.ref` must be
+`refs/heads/main`). There is no tag-push trigger. Runs never overlap (one `release` concurrency
+group, never cancelled).
 
-1. **Validate the tag:** it must resolve to a commit that is reachable from `origin/main` (for a
-   tag push, the checked-out commit), and `release.py validate --tag` must pass: the tag equals the
-   workspace version (with all pins and the lock file in agreement) and the changelog has a
-   non-empty section for it.
-2. **Build:** call `ci.yml` with `package: true` on exactly that commit, which runs every check
-   (no planner skipping) on both platforms and uploads `release-windows-x86_64` and
-   `release-linux-x86_64`.
+1. **Validate the commit:** unless `dry_run`, it must be reachable from `origin/main` (a dry run
+   may rehearse the head of an unmerged `release/vVERSION` branch); the tag is `v` + the
+   workspace version in that commit's `Cargo.toml`, and `release.py validate --tag` must pass (all
+   pins and the lock file agree, and the changelog has a non-empty section for the version, which
+   only a merged **Prepare release** pull request adds). An existing tag of that name is accepted
+   only if it already points at this commit (a retry after a failed publication), and an existing
+   GitHub Release for it is refused.
+2. **Build:** call `ci.yml` with `package: true` on exactly that commit: clean, uncached release
+   executables with a `--help` smoke run on both platforms, the license notices, and the
+   `release-windows-x86_64` and `release-linux-x86_64` archives. Clippy, tests and rustdoc are not
+   rerun: they ran on the release pull request, and the commit must be on `main`.
 3. **Bundle:** download both archives, run `release.py checksums` and upload the artifact
    `release-bundle-vVERSION` (14 days): the two archives and `SHA256SUMS`. This happens **even for a
    dry run**, so you can inspect the exact assets.
-4. **Draft release:** only for a tag push or a non-dry-run dispatch. It runs in the GitHub
-   environment named `release` and extracts the notes with `release.py notes`. Immediately before
-   creating the release it re-fetches the remote tag and requires it to still point at the
-   validated commit, so a tag moved after validation is refused. It then runs `gh release
-   create --draft --verify-tag`, marking versions with a prerelease suffix as prereleases. Only
-   this job has `contents: write`. An existing release for the tag is not overwritten (the command
-   fails).
+4. **Publish:** only when `dry_run` is `false`. It runs in the GitHub environment named `release`
+   and extracts the notes with `release.py notes`. It re-checks that the tag, if it now exists,
+   still points at the validated commit, then runs `gh release create --target <commit>`, which
+   creates the tag at that commit and publishes the release, marking versions with a prerelease
+   suffix as prereleases. Only this job has `contents: write`. An existing release is never
+   overwritten (the command fails). The tag is created with the workflow token, so it starts no
+   other workflow.
 
 No signing, attestations or installers are produced, and a successful run does not show that
 the Linux binary starts on any particular machine beyond the CI `--help` smoke run on the Ubuntu
@@ -348,30 +369,30 @@ The workflows need these; nothing here asserts they are already configured.
 - **Actions → General → Workflow permissions:** enable *Allow GitHub Actions to create and approve
   pull requests*. It is required for the preparation workflow to open its PR (the workflow never
   approves it). No personal access token is needed.
-- **A `release` environment** with required reviewers (recommended). Only the job that creates
-  the draft release uses it, so reviewers approve that step after the build and bundle finish.
-  Also restrict its **deployment branches and tags** to `main` and the protected `v*` tags, so
-  no other ref can reach the publishing job. Reviewer approval, the deployment-ref restriction
-  and tag immutability are configured on GitHub by a maintainer; this repository does not
+- **A `release` environment** with required reviewers (optional). Only the publishing job uses it,
+  so reviewers approve the tag and publication after the build and bundle finish; without it,
+  merging the release pull request publishes with no further step. Also restrict its **deployment
+  branches** to `main`, so no other ref can reach the publishing job. Reviewer approval and the
+  deployment-ref restriction are configured on GitHub by a maintainer; this repository does not
   configure or prove them.
-- **Branch protection / rulesets for `main`:** not configured, and **currently not available**:
-  while the repository is private, GitHub's branch-protection and ruleset APIs return HTTP 403
-  (they need GitHub Pro or a public repository), so no server-side merge requirement can be
-  active and the `CI` workflow's result does not block anything. The maintainer plans to make the
-  repository public after the development branches are collapsed into `main`; nothing in this
-  repository changes visibility. Activation (require a pull request, require the single status
-  check **`Required checks`**, optionally up-to-date branches, no bypass) is spelled out in
+- **The `release` label** must exist (Issues → Labels); Prepare release applies it to its pull
+  request, and Auto release reacts only to it.
+- **Branch protection / rulesets for `main`:** activation (require a pull request, require the
+  single status check **`Required checks`**, require up-to-date branches or a merge queue, no
+  bypass) is spelled out in
   [Development → Pull request gate and branch protection](development.md#pull-request-gate-and-branch-protection).
   That page also covers signed commits: the preparation bot's commit is unsigned.
-  Publishing remains manual regardless: only a maintainer's `v*` tag push or a manual **Release**
-  run from `main` can produce a draft, and no pull request or development-branch CI can.
-- **Tag pushes** are made explicitly by a maintainer. There is no automatic tagging.
-- **Tag protection (recommended):** add a ruleset for `v*` tags that restricts creation to
-  maintainers and blocks updates and deletion, so a published version cannot be moved or
-  recreated. No such ruleset is configured by this repository.
-- **Bootstrap:** `ci.yml`, `release-prepare.yml` and `release.yml` must already exist on `main`
-  before `workflow_dispatch` can be used for any of them, so merge the workflow changes through a
-  pull request first, then dispatch.
+  Publishing still needs the merge of a `release`-labelled `release/vVERSION` pull request, or a
+  maintainer's manual non-dry **Release** run from `main`; no other pull request or
+  development-branch CI can publish.
+- **Tags** are created only by the Release workflow, at the validated merge commit. There is no
+  manual tagging step.
+- **Tag protection (recommended):** a ruleset for `v*` tags that blocks updates and deletion keeps
+  a published version from being moved or recreated. If it also restricts tag *creation*, it must
+  let the Release workflow (the `github-actions` app) create tags, or publishing fails. No such
+  ruleset is configured by this repository.
+- **Bootstrap:** `ci.yml`, `release-prepare.yml`, `auto-release.yml` and `release.yml` must already
+  exist on `main` before they can run, so merge the workflow changes through a pull request first.
 
 ## Maintainer procedure
 
@@ -382,37 +403,27 @@ All commands run from your local clone; Git uses the SSH remote.
    in the run summary and download the `release-preview-vVERSION` artifact (changelog,
    `Cargo.toml` files and `Cargo.lock`). A dry run does not run the full Windows and Linux matrix.
 2. **Prepare for real:** run it again with `dry_run` unchecked. After CI passes on the new SHA
-   the bot opens a pull request from `release/vVERSION`.
+   the bot opens a pull request from `release/vVERSION` with the `release` label.
 3. **Review the release notes** in that pull request before merging
-   ([privacy review is mandatory](#release-notes-and-privacy)). Edit the changelog on the branch
-   if needed; run `python scripts/release.py validate` and the CI commands again after editing.
-   Run `CI` manually on the branch (**Actions → CI → Run workflow**, branch `release/vVERSION`) so
-   the pull request gets a `Required checks` result: the bot's pull request starts no CI by itself.
-4. **Merge** the pull request into `main`.
-5. **Tag** the merged commit and push the tag explicitly:
+   ([privacy review is mandatory](#release-notes-and-privacy)): they are published verbatim. Edit
+   the changelog on the branch if needed; run `python scripts/release.py validate` and the CI
+   commands again after editing. Run `CI` manually on the branch (**Actions → CI → Run
+   workflow**, branch `release/vVERSION`) so the pull request gets a `Required checks` result: the
+   bot's pull request starts no CI by itself.
+4. **Rehearse the release** (recommended, because merging publishes): run **Release** manually
+   from `main` with `sha` = the head commit of `release/vVERSION` and `dry_run` checked. It
+   validates that commit, builds both archives and uploads `release-bundle-vVERSION` without
+   tagging or publishing. Download it, verify `SHA256SUMS` as in
+   [Install a release](#install-a-release), and launch offline with isolated data (see
+   [Development](development.md#running-with-isolated-data)) on the platforms you can.
+5. **Merge** the pull request into `main`. Auto release dispatches Release with the merge commit.
+6. **Approve** the publishing job in the `release` environment if reviewers are configured, wait
+   for the run to finish, and check the published release: notes, both archives and
+   `SHA256SUMS`. Record only what you exercised.
 
-   ```sh
-   git fetch origin
-   git switch main
-   git pull --ff-only origin main
-   python scripts/release.py validate --tag v2026.11.1
-   git tag -a v2026.11.1 -m "Animatic 2026.11.1"
-   git push origin v2026.11.1
-   ```
-
-   Alternatively, with the tag already pushed, run **Release** manually from `main` (other refs
-   are refused): enter the existing tag and
-   keep `dry_run` checked to rehearse. The build runs and the `release-bundle-vVERSION` artifact
-   (both archives and `SHA256SUMS`) is uploaded for inspection, but no release is created.
-6. **Approve** the run in the `release` environment if reviewers are configured, wait for it to
-   finish, and inspect the **draft** release: notes, both archives and `SHA256SUMS`.
-7. **Smoke-check the assets** on the platforms you can: verify the checksums as in
-   [Install a release](#install-a-release), then launch offline with isolated data (see
-   [Development](development.md#running-with-isolated-data)). Record only what you exercised.
-8. **Publish** the draft in the GitHub UI. Publishing is always a manual act, and it is what makes
-   the release visible to the in-app updater (stable, non-prerelease releases only): check the
-   asset names, `SHA256SUMS` and archive layout of the draft first, because installed copies will
-   offer the release to their users as soon as it is published.
+If the Release run fails after validation, fix the cause and run **Release** manually from `main`
+with `sha` = the merge commit and `dry_run` unchecked. A tag left by a failed publication is
+accepted only when it points at that same commit.
 
 The first release may use the version already in `Cargo.toml` if its year and month match the
 current UTC month and no tag or released changelog section exists. Run the preparation workflow
@@ -471,13 +482,14 @@ crates) by checksum, and covers only the two release targets. Known limits:
 ## Release notes and privacy
 
 The GitHub notes are generated from commit subjects plus the curated `Unreleased` entries, so
-their accuracy and safety depend on what was committed. **A maintainer must read the whole
-draft before publishing** and edit or remove anything that exposes private text: personal
-paths, names, hashes or filenames from a library, credentials, AOM binaries or databank content,
-or claims the release does not support (Linux runtime verification, signing, production AniDB
-validation). Fix the changelog on the release branch, not only in the GitHub draft, so the
-archived `CHANGELOG.md` is clean too. If private text already reached a published release, treat
-it as a disclosure: pull the release and rewrite or remove the text before republishing.
+their accuracy and safety depend on what was committed, and they are **published as soon as the
+release pull request is merged**. **A maintainer must read the whole changelog section in the
+release pull request before merging** and edit or remove anything that exposes private text:
+personal paths, names, hashes or filenames from a library, credentials, AOM binaries or databank
+content, or claims the release does not support (Linux runtime verification, signing, production
+AniDB validation). Fix the changelog on the release branch, so the published notes and the
+archived `CHANGELOG.md` are both clean. If private text already reached a published release,
+treat it as a disclosure: pull the release and rewrite or remove the text before republishing.
 
 ## Failures and recovery
 
@@ -486,8 +498,9 @@ it as a disclosure: pull the release and rewrite or remove the text before repub
 | `prepare` rejects the version | Not `YYYY.M.PATCH` CalVer (with an optional Cargo-style prerelease such as `-rc.N`), has zero padding or build metadata, is not the current UTC year and month, is not an increase over the latest released version, or the section or tag exists. It also refuses a shallow clone: run `git fetch --unshallow`. Nothing is written. |
 | Preparation CI fails on the new branch | No PR is opened. Fix `release/vVERSION`, run CI on the new commit, then open the PR manually; retrying the failed job still checks its original SHA. Alternatively, deliberately delete the failed branch and run preparation again. A new preparation run never moves an existing release branch. |
 | Bot PR shows no checks | Expected: events created with the workflow token do not start `ci.yml` on the pull request. Run `CI` manually on the branch (see [`release-prepare.yml`](#release-prepareyml-prepare-release) above); if `Required checks` is required, that manual run is what satisfies it. |
-| Release run rejects the tag | The tag does not equal the workspace version, the changelog section is missing or empty, the commit is not reachable from `origin/main`, a manual dispatch was not run from `main`, or the remote tag no longer points at the validated commit. Fix on `main`, then create a correct tag. |
-| A release for the tag already exists | The workflow refuses to overwrite. If it is an empty or failed **draft**, inspect it, delete it by hand and re-run. Never delete a published release without a deliberate decision. |
+| Release run rejects the commit | The commit is not reachable from `origin/main`, the workspace version does not match a non-empty changelog section (the commit was not prepared), the pins or lock file disagree, a manual dispatch was not run from `main`, or the tag already exists at a different commit. Merge a correct **Prepare release** pull request instead. |
+| A release for the tag already exists | The workflow refuses to overwrite. Releases are published directly, so deleting one is a user-visible event; never delete a published release without a deliberate decision. Release a new version instead. |
+| Merging the release pull request started no release | The pull request lacked the `release` label, its head branch did not start with `release/v`, or it was closed without merging. Run **Release** manually from `main` with `sha` = the merge commit and `dry_run` unchecked. |
 | Checksum mismatch after download | Do not run the archive. Download again; report it if it persists. |
 | Linux binary fails to start | Install the GTK 3, xkbcommon, Wayland and OpenSSL runtime libraries for your distribution. Not verified by the workflow. |
 | Users report an update that was offered but fails to download or verify | Check that the published release has exactly the expected archive name for the platform and a `SHA256SUMS` line for it in the standard `sha256sum` format, and that the archive stays within the [updater limits](#in-app-updates). Fix by publishing a corrected newer version; do not silently replace assets of a published release |

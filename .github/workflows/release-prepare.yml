@@ -107,6 +107,6 @@ jobs:
             '' \
             'This bot-created PR does not trigger a pull_request run. To attach the stable "Required checks" status to the PR head, manually dispatch CI on this release branch (the checks above already passed for the same commit).' \
             '' \
-            'After merging, create and push the matching tag from the reviewed main commit. The release workflow creates an unsigned draft release; it does not publish automatically.' \
+            "Merging this pull request publishes Animatic v$VERSION: the \`release\` label makes Auto release dispatch Release, which validates the merge commit, builds the archives, creates tag v$VERSION at that commit and publishes the GitHub Release. Installed copies offer a stable release as an update as soon as it is published. Remove the label before merging to merge without releasing." \
             > "$RUNNER_TEMP/release-pr.md"
-          gh pr create --base main --head "release/v$VERSION" --title "chore(release): v$VERSION" --body-file "$RUNNER_TEMP/release-pr.md"
+          gh pr create --base main --head "release/v$VERSION" --title "chore(release): v$VERSION" --label release --body-file "$RUNNER_TEMP/release-pr.md"

@@ -391,8 +391,9 @@ then builds, lints and tests the workspace with `--locked` on
 keeps the workspace version, the internal dependency pins, `Cargo.lock`'s local crate entries
 and `CHANGELOG.md` consistent, extracts release notes, builds the Windows ZIP and Linux tar.gz
 archives from an explicit binary plus the licence, a generated `THIRD-PARTY-NOTICES.html` (`cargo-about`), README, changelog and `docs/*.md`, and writes
-`SHA256SUMS`. `release-prepare.yml` and `release.yml` orchestrate it: preparation opens a
-reviewed pull request, and a maintainer-pushed `vVERSION` tag produces a draft GitHub Release.
+`SHA256SUMS`. `release-prepare.yml`, `auto-release.yml` and `release.yml` orchestrate it:
+preparation opens a reviewed, `release`-labelled pull request, and merging it makes Release tag
+the merge commit `vVERSION` and publish the GitHub Release.
 Archives carry no database, settings, media or credentials. Contracts, permissions and
 procedure: [Releases](releases.md). The in-app updater consumes the published form of this output
 (archive names, folder layout and `SHA256SUMS` format are an API: change them together with
