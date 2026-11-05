@@ -102,6 +102,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Legacy parser tests construct synthetic records, and codec tests encrypt generated SQLite
+pages. No test fixture may contain bytes copied from a user's databank.
+
 The legacy import smoke scenario can be run against an AOM folder with:
 
 ```sh

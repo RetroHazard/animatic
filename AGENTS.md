@@ -24,6 +24,7 @@ Never add any of the following to this repository:
 - Generated SQLite databases or exported XML/INI/statistics files.
 
 Use synthetic fixtures with names such as `animatic-test-user` and paths under a clearly fictitious test root. `.gitignore` is a defense, not permission to create private artifacts inside the repository.
+Construct binary records and encrypted test pages from synthetic values in code. Never embed record dumps, ciphertext, or header excerpts copied from a real databank, even when encoded as hex.
 
 The migration implementation necessarily contains clean-room format knowledge and constants required to read a user-supplied databank. That code is part of Animatic; original AOM files are not.
 

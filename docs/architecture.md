@@ -210,3 +210,8 @@ See `feature-parity.md` for the workflow-level mapping.
 Settings contain AniDB credentials and API keys. They are runtime data and must never be logged, embedded in diagnostics, copied into tests, or committed. Statistics and library databases also reveal personal viewing and filesystem information. Preserve `.gitignore` protections and use temporary paths for all local verification.
 
 The migration crypto constants are format interoperability material, not user credentials. Do not replace them with data copied from a user installation.
+
+Legacy tests build record fields and SQLite pages from explicit synthetic values, then
+encrypt those pages for codec detection/decryption checks. Encoded record dumps and
+encrypted header samples from a real databank are private artifacts, not format constants,
+and must not be used as fixtures.
