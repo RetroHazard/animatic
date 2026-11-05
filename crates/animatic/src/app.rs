@@ -1,16 +1,28 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use animatic_core::db::Db;
 use animatic_core::format;
-use animatic_core::library::{
-    Anime, AnimeMylistState, Group, LocalFile, MylistItem, mylist_state_name,
-};
-use animatic_core::settings::{MYLIST_STATES, Settings, Theme};
+use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
+use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
+use egui_extras::{Column, TableBuilder};
 
 use crate::worker::{Event, Job, Worker};
+
+/// Minimum spacing between projection requests, so a long sync does not reload continuously.
+const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
+/// Longest the UI thread waits on a database lock held by the worker before reporting it.
+const UI_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(1500);
+/// How often queue pushes that hit a busy database are retried.
+const DEFERRED_RETRY: Duration = Duration::from_millis(500);
+/// Most commands held in memory while the database is busy; beyond this they are refused.
+const DEFERRED_LIMIT: usize = 1000;
+/// Final attempt to save unsaved commands when the window closes.
+const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const LOADING_STATUS: &str = "Loading library…";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -39,15 +51,60 @@ impl Page {
     ];
 }
 
+/// Request/response bookkeeping for background library projections: at most one request is
+/// outstanding, further changes only mark the projection dirty.
+struct ProjectionLoader {
+    /// Generation the next request will carry; generations start at 1.
+    next_generation: u64,
+    outstanding: Option<u64>,
+    dirty: bool,
+    last_request: Option<Instant>,
+    /// Bumped whenever a projection is swapped in; filtered indices are keyed on it.
+    version: u64,
+}
+
+/// Filtered row indices into the projection, rebuilt only when their key changes.
 #[derive(Default)]
-struct Cache {
-    anime: Vec<Anime>,
-    mylist: Vec<MylistItem>,
-    states: HashMap<i64, AnimeMylistState>,
-    local: Vec<LocalFile>,
-    groups: Vec<Group>,
-    genres: Vec<(i64, String, i64)>,
-    queue: Vec<(i64, animatic_core::sync::Command, i64, Option<String>)>,
+struct IndexCache<K> {
+    key: Option<K>,
+    rows: Vec<usize>,
+}
+
+impl<K: PartialEq + Clone> IndexCache<K> {
+    /// Rebuild with `build` unless `key` is unchanged; true when rebuilt.
+    fn refresh(&mut self, key: &K, build: impl FnOnce() -> Vec<usize>) -> bool {
+        if self.key.as_ref() == Some(key) {
+            return false;
+        }
+        self.rows = build();
+        self.key = Some(key.clone());
+        true
+    }
+}
+
+#[derive(Default)]
+struct TableViews {
+    anime: IndexCache<(u64, String)>,
+    search: IndexCache<(u64, String, String, i64, bool, bool)>,
+    mylist: IndexCache<(u64, String)>,
+    local: IndexCache<(u64, String)>,
+    groups: IndexCache<(u64, String)>,
+    genres: IndexCache<(u64, String)>,
+}
+
+/// Anime detail shown in the detail window, fetched once per (anime, projection version).
+struct DetailCache {
+    aid: i64,
+    version: u64,
+    detail: Option<AnimeDetail>,
+}
+
+/// A mylist edit saved to the outbox that no loaded projection reflects yet.
+struct MylistOverlay {
+    state: i64,
+    viewed: bool,
+    /// Projections with `generation >= this` were requested after the edit was saved.
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -64,7 +121,24 @@ pub struct AnimaticApp {
     db_path: PathBuf,
     settings_path: PathBuf,
     settings: Settings,
-    cache: Cache,
+    projection: LibraryProjection,
+    loader: ProjectionLoader,
+    views: TableViews,
+    detail: Option<DetailCache>,
+    mylist_overlay: HashMap<i64, MylistOverlay>,
+    /// Queue pushes that hit a busy database, retried until saved.
+    deferred: Vec<animatic_core::sync::Command>,
+    last_deferred_retry: Instant,
+    /// Sync cooldown as (epoch seconds until, reason).
+    cooldown: Option<(i64, String)>,
+    /// Projections requested before this generation predate the latest `Cooldown` event and
+    /// must not overwrite the cooldown it set.
+    cooldown_floor: u64,
+    /// Likewise for `Blocked` events: until a projection with generation >= this arrives the
+    /// queue's blocked state is known to be newer than the one on screen.
+    blocked_floor: u64,
+    /// Generation of the projection on screen (0 before the first load).
+    projection_generation: u64,
     worker: Worker,
     page: Page,
     query: String,
@@ -93,6 +167,9 @@ impl AnimaticApp {
         full_update: bool,
     ) -> anyhow::Result<Self> {
         let db = Db::open(&db_path)?;
+        // The worker may hold the write lock for long stretches; small UI writes must fail
+        // visibly instead of freezing the window for the default 30 seconds.
+        db.conn().busy_timeout(UI_DB_BUSY_TIMEOUT)?;
         let settings = Settings::load(&settings_path)?;
         let worker = Worker::spawn(db_path.clone());
         let mut app = Self {
@@ -100,7 +177,23 @@ impl AnimaticApp {
             db_path,
             settings_path,
             settings,
-            cache: Cache::default(),
+            projection: LibraryProjection::default(),
+            loader: ProjectionLoader {
+                next_generation: 1,
+                outstanding: None,
+                dirty: false,
+                last_request: None,
+                version: 0,
+            },
+            views: TableViews::default(),
+            detail: None,
+            mylist_overlay: HashMap::new(),
+            deferred: Vec::new(),
+            last_deferred_retry: Instant::now(),
+            cooldown: None,
+            cooldown_floor: 0,
+            blocked_floor: 0,
+            projection_generation: 0,
             worker,
             page: Page::Dashboard,
             query: String::new(),
@@ -117,70 +210,160 @@ impl AnimaticApp {
             search_mylist_only: false,
             search_watched_only: false,
             activity: Activity::default(),
-            status: "Ready".into(),
+            status: LOADING_STATUS.into(),
             logs: Vec::new(),
         };
-        app.reload();
+        app.request_library_refresh();
         if full_update {
-            app.db
-                .queue_push(&animatic_core::sync::Command::TitlesDump)?;
-            let mut fids = std::collections::BTreeSet::new();
-            let mut aids = std::collections::BTreeSet::new();
-            for file in &app.cache.local {
-                if let Some(fid) = file.fid {
-                    fids.insert(fid);
-                }
-                if let Some(aid) = file.aid {
-                    aids.insert(aid);
-                }
-            }
-            for fid in fids {
-                app.db
-                    .queue_push(&animatic_core::sync::Command::FetchFile { fid })?;
-            }
-            for aid in aids {
-                app.db
-                    .queue_push(&animatic_core::sync::Command::FetchAnime { aid })?;
-            }
-            app.reload();
+            app.worker.submit(Job::QueueFullUpdate);
         }
         if !initial_files.is_empty() {
             app.worker.submit(Job::Hash(initial_files));
         }
         Ok(app)
     }
-    fn reload(&mut self) {
-        let result = (|| -> animatic_core::Result<Cache> {
-            let anime = self.db.all_anime()?;
-            let mylist = self.db.mylist_items()?;
-            let states = self.db.mylist_state_by_anime(&mylist);
-            Ok(Cache {
-                anime,
-                mylist,
-                states,
-                local: self.db.local_files()?,
-                groups: self.db.all_groups()?,
-                genres: self.db.genres()?,
-                queue: self.db.queue_list()?,
-            })
-        })();
-        match result {
-            Ok(cache) => {
-                self.cache = cache;
-                if self.settings.stat_whore.enabled && !self.settings.stat_whore.file.is_empty() {
-                    let path = Path::new(&self.settings.stat_whore.file);
-                    if let Err(e) = self.db.library_stats().and_then(|s| {
-                        s.write(
-                            path,
-                            &self.settings.anidb.username,
-                            self.settings.stat_whore.format,
-                        )
-                    }) {
-                        self.error(format!("Automatic statistics export failed: {e}"));
-                    }
-                }
+
+    /// Ask for a fresh projection. Cheap: requests are coalesced and sent by `pump_library`.
+    fn request_library_refresh(&mut self) {
+        self.loader.dirty = true;
+    }
+
+    fn stats_export(&self) -> Option<(PathBuf, String, StatFormat)> {
+        let stats = &self.settings.stat_whore;
+        (stats.enabled && !stats.file.is_empty()).then(|| {
+            (
+                PathBuf::from(&stats.file),
+                self.settings.anidb.username.clone(),
+                stats.format,
+            )
+        })
+    }
+
+    /// Send the next projection request when none is outstanding and the interval elapsed.
+    fn pump_library(&mut self, ctx: &egui::Context) {
+        if !self.loader.dirty || self.loader.outstanding.is_some() {
+            return;
+        }
+        if let Some(last) = self.loader.last_request {
+            let elapsed = last.elapsed();
+            if elapsed < RELOAD_INTERVAL {
+                ctx.request_repaint_after(RELOAD_INTERVAL - elapsed);
+                return;
             }
-            Err(e) => self.error(format!("Unable to refresh library: {e}")),
+        }
+        let generation = self.loader.next_generation;
+        self.loader.next_generation += 1;
+        self.loader.dirty = false;
+        self.loader.outstanding = Some(generation);
+        self.loader.last_request = Some(Instant::now());
+        let export = self.stats_export();
+        self.worker.submit(Job::LoadLibrary { generation, export });
+    }
+
+    fn apply_projection(&mut self, generation: u64, projection: LibraryProjection) {
+        self.loader.outstanding = None;
+        self.loader.version += 1;
+        if generation >= self.cooldown_floor {
+            self.cooldown = projection.cooldown.clone();
+        }
+        self.projection_generation = generation;
+        self.projection = projection;
+        self.mylist_overlay.retain(|_, o| o.generation > generation);
+        if self.status == LOADING_STATUS {
+            self.status = "Ready".into();
+        }
+    }
+
+    /// A `Blocked` event is newer than the projection on screen.
+    fn blocked_unconfirmed(&self) -> bool {
+        self.projection_generation < self.blocked_floor
+    }
+
+    /// The sync cooldown still in force, as (epoch seconds until, reason).
+    fn active_cooldown(&self) -> Option<(i64, &str)> {
+        let (until, reason) = self.cooldown.as_ref()?;
+        (*until > chrono::Utc::now().timestamp()).then_some((*until, reason.as_str()))
+    }
+
+    fn cooldown_text(until: i64, reason: &str) -> String {
+        let when = chrono::DateTime::from_timestamp(until, 0)
+            .map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| until.to_string());
+        format!("AniDB sync paused until {when}: {reason}")
+    }
+
+    /// Persist a command. If the worker holds the database lock the command is only held in
+    /// memory: it is shown as unsaved (bottom bar) and retried until the database accepts it.
+    fn queue_command(&mut self, cmd: animatic_core::sync::Command) {
+        if self.deferred.contains(&cmd) {
+            return;
+        }
+        match self.db.queue_push(&cmd) {
+            Ok(_) => self.request_library_refresh(),
+            Err(e) if is_busy(&e) => {
+                if self.deferred.len() >= DEFERRED_LIMIT {
+                    self.error(format!(
+                        "NOT queued: {} (database busy and {DEFERRED_LIMIT} commands are already unsaved)",
+                        cmd.describe()
+                    ));
+                    return;
+                }
+                if self.deferred.is_empty() {
+                    self.last_deferred_retry = Instant::now();
+                    self.log("Database busy: queued command is NOT saved yet, retrying");
+                }
+                self.deferred.push(cmd);
+            }
+            Err(e) => self.error(format!("Could not queue {}: {e}", cmd.describe())),
+        }
+    }
+
+    fn retry_deferred(&mut self) {
+        if self.deferred.is_empty() || self.last_deferred_retry.elapsed() < DEFERRED_RETRY {
+            return;
+        }
+        self.last_deferred_retry = Instant::now();
+        let saved = self.flush_deferred();
+        if saved > 0 {
+            self.log(format!("Saved {saved} previously unsaved commands"));
+        }
+    }
+
+    /// Try to save every deferred command, in order; stops at the first busy database.
+    /// Returns how many were saved.
+    fn flush_deferred(&mut self) -> usize {
+        let pending = std::mem::take(&mut self.deferred);
+        let mut pending = pending.into_iter();
+        let mut saved = 0;
+        while let Some(cmd) = pending.next() {
+            match self.db.queue_push(&cmd) {
+                Ok(_) => {
+                    saved += 1;
+                    self.request_library_refresh();
+                }
+                Err(e) if is_busy(&e) => {
+                    // Still locked: keep the rest in order rather than stalling on each.
+                    self.deferred.push(cmd);
+                    self.deferred.extend(pending);
+                    return saved;
+                }
+                Err(e) => self.error(format!("Could not queue {}: {e}", cmd.describe())),
+            }
+        }
+        saved
+    }
+
+    fn db_write_error(&mut self, what: &str, e: &animatic_core::Error) {
+        if is_busy(e) {
+            self.error(format!(
+                "{what}: the database is busy with a background write; nothing was changed, try again"
+            ));
+        } else {
+            self.error(format!("{what}: {e}"));
         }
     }
 
@@ -245,15 +428,18 @@ impl AnimaticApp {
                         let add = manager
                             .mylist_auto_add
                             .then(|| animatic_core::sync::manager_mylist_edit(manager));
-                        if let Err(e) = self
-                            .db
-                            .queue_push(&animatic_core::sync::Command::Identify { size, ed2k, add })
-                        {
-                            self.error(format!("Could not queue AniDB identification: {e}"));
-                        }
+                        self.queue_command(animatic_core::sync::Command::Identify {
+                            size,
+                            ed2k,
+                            add,
+                        });
                     }
+                    self.request_library_refresh();
                 }
-                Event::Imported { summary } => self.log(summary),
+                Event::Imported { summary } => {
+                    self.log(summary);
+                    self.request_library_refresh();
+                }
                 Event::LegacySettingsImported(settings) => {
                     self.imported_settings = Some(settings);
                 }
@@ -267,14 +453,44 @@ impl AnimaticApp {
                 } => {
                     self.log(description);
                     if changed {
-                        self.reload();
+                        self.request_library_refresh();
                     }
                 }
+                Event::Blocked { description } => {
+                    self.error(format!("Command blocked: {description}"));
+                    self.blocked_floor = self.loader.next_generation;
+                    self.request_library_refresh();
+                }
+                Event::Cooldown { until, reason } => {
+                    self.error(Self::cooldown_text(until, &reason));
+                    self.cooldown = Some((until, reason));
+                    self.cooldown_floor = self.loader.next_generation;
+                    self.request_library_refresh();
+                }
+                // Not a dirty signal: statistics export failures arrive as errors and would
+                // otherwise re-request the projection (and the export) forever.
                 Event::Error(e) => self.error(e),
                 Event::Finished => {
                     self.activity.busy = false;
                     self.status = "Ready".into();
-                    self.reload();
+                    self.request_library_refresh();
+                }
+                Event::LibraryLoaded {
+                    generation,
+                    projection,
+                } => {
+                    if self.loader.outstanding == Some(generation) {
+                        self.apply_projection(generation, *projection);
+                    }
+                }
+                Event::LibraryLoadFailed {
+                    generation,
+                    message,
+                } => {
+                    if self.loader.outstanding == Some(generation) {
+                        self.loader.outstanding = None;
+                        self.error(format!("Unable to refresh library: {message}"));
+                    }
                 }
             }
             ctx.request_repaint();
@@ -408,7 +624,7 @@ impl AnimaticApp {
             self.error("Select a hashed file first");
             return;
         };
-        let Some(local) = self.cache.local.iter().find(|f| f.id == id).cloned() else {
+        let Some(local) = self.projection.local.iter().find(|f| f.id == id).cloned() else {
             return;
         };
         let Some(fid) = local.fid else {
@@ -464,7 +680,7 @@ impl AnimaticApp {
             match animatic_core::file_manager::move_file(&self.db, id, &old, &new) {
                 Ok(()) => {
                     self.log(format!("Renamed {} to {}", old.display(), new.display()));
-                    self.reload();
+                    self.request_library_refresh();
                 }
                 Err(e) => self.error(format!("Rename failed: {e}")),
             }
@@ -476,7 +692,7 @@ impl AnimaticApp {
 
     fn play_selected(&mut self, action: animatic_core::external::PlayerAction) {
         let Some(file) = self
-            .cache
+            .projection
             .local
             .iter()
             .find(|f| Some(f.id) == self.selected_local)
@@ -502,7 +718,7 @@ impl AnimaticApp {
 
     fn avdump_selected(&mut self) {
         let Some(file) = self
-            .cache
+            .projection
             .local
             .iter()
             .find(|f| Some(f.id) == self.selected_local)
@@ -530,16 +746,12 @@ impl AnimaticApp {
         else {
             return;
         };
-        match self.db.library_stats().and_then(|s| {
-            s.write(
-                &path,
-                &self.settings.anidb.username,
-                self.settings.stat_whore.format,
-            )
-        }) {
-            Ok(()) => self.log(format!("Exported statistics to {}", path.display())),
-            Err(e) => self.error(format!("Statistics export failed: {e}")),
-        }
+        // The worker runs the library-wide queries and reports success or the typed error.
+        self.worker.submit(Job::ExportStatistics {
+            path,
+            username: self.settings.anidb.username.clone(),
+            format: self.settings.stat_whore.format,
+        });
     }
 
     fn export_hashes(&mut self) {
@@ -550,7 +762,7 @@ impl AnimaticApp {
             return;
         };
         let mut text = String::new();
-        for f in &self.cache.local {
+        for f in &self.projection.local {
             let hashes = animatic_core::hash::Hashes {
                 size: f.size as u64,
                 ed2k: f.ed2k.clone(),
@@ -568,7 +780,7 @@ impl AnimaticApp {
         match std::fs::write(&path, text) {
             Ok(()) => self.log(format!(
                 "Exported {} hashes to {}",
-                self.cache.local.len(),
+                self.projection.local.len(),
                 path.display()
             )),
             Err(e) => self.error(format!("Hash export failed: {e}")),
@@ -584,6 +796,9 @@ impl AnimaticApp {
 
     fn top_bar(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
+        let cooling = self
+            .active_cooldown()
+            .map(|(until, reason)| Self::cooldown_text(until, reason));
         egui::Panel::top("menu").show(root, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -630,7 +845,7 @@ impl AnimaticApp {
                     }
                     if ui.button("Refresh").clicked() {
                         ui.close();
-                        self.reload();
+                        self.request_library_refresh();
                     }
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -651,23 +866,11 @@ impl AnimaticApp {
                         }
                     });
                     if ui.button("Download anime titles").clicked() {
-                        if let Err(e) = self
-                            .db
-                            .queue_push(&animatic_core::sync::Command::TitlesDump)
-                        {
-                            self.error(e.to_string());
-                        }
-                        self.reload();
+                        self.queue_command(animatic_core::sync::Command::TitlesDump);
                         ui.close();
                     }
                     if ui.button("Fetch mylist statistics").clicked() {
-                        if let Err(e) = self
-                            .db
-                            .queue_push(&animatic_core::sync::Command::MylistStats)
-                        {
-                            self.error(e.to_string());
-                        }
-                        self.reload();
+                        self.queue_command(animatic_core::sync::Command::MylistStats);
                         ui.close();
                     }
                     ui.menu_button("Edit AniDB data", |ui| {
@@ -685,13 +888,17 @@ impl AnimaticApp {
                             }
                         }
                     });
-                    ui.add_enabled_ui(!self.import_pending, |ui| {
-                        if ui.button("Run command queue").clicked() {
-                            self.worker
-                                .submit(Job::ProcessQueue(self.settings.anidb.clone()));
-                            ui.close();
-                        }
-                    });
+                    let run = ui
+                        .add_enabled(
+                            !self.import_pending && cooling.is_none(),
+                            egui::Button::new("Run command queue"),
+                        )
+                        .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
+                    if run.clicked() {
+                        self.worker
+                            .submit(Job::ProcessQueue(self.settings.anidb.clone()));
+                        ui.close();
+                    }
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("AniDB website").clicked() {
@@ -722,8 +929,8 @@ impl AnimaticApp {
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    ui.label(format!("{} anime", self.cache.anime.len()));
-                    ui.label(format!("{} mylist files", self.cache.mylist.len()));
+                    ui.label(format!("{} anime", self.projection.anime.len()));
+                    ui.label(format!("{} mylist files", self.projection.mylist.len()));
                 });
             });
     }
@@ -745,33 +952,40 @@ impl AnimaticApp {
 
     fn dashboard(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Library overview", false);
-        let known = self.cache.local.iter().filter(|f| f.known()).count();
-        let watched = self.cache.mylist.iter().filter(|m| m.entry.viewed).count();
-        let bytes: i64 = self.cache.local.iter().map(|f| f.size).sum();
+        let summary = self.projection.summary;
+        let known = summary.local_known;
+        let local_total = self.projection.local.len();
         ui.columns(4, |cols| {
-            metric(&mut cols[0], "Anime", self.cache.anime.len().to_string());
+            metric(
+                &mut cols[0],
+                "Anime",
+                self.projection.anime.len().to_string(),
+            );
             metric(
                 &mut cols[1],
                 "Mylist files",
-                self.cache.mylist.len().to_string(),
+                self.projection.mylist.len().to_string(),
             );
-            metric(&mut cols[2], "Watched", watched.to_string());
-            metric(&mut cols[3], "Local size", format::size_short(bytes));
+            metric(&mut cols[2], "Watched", summary.mylist_watched.to_string());
+            metric(
+                &mut cols[3],
+                "Local size",
+                format::size_short(summary.local_bytes),
+            );
         });
         ui.add_space(20.0);
         ui.heading("Local library health");
         ui.label(format!(
-            "{known} of {} hashed files identified by AniDB",
-            self.cache.local.len()
+            "{known} of {local_total} hashed files identified by AniDB"
         ));
-        let bad = self.cache.local.iter().filter(|f| f.crc_mismatch()).count();
+        let bad = summary.local_crc_mismatch;
         if bad > 0 {
             ui.colored_label(
                 Color32::from_rgb(235, 100, 100),
                 format!("{bad} files have a CRC mismatch"),
             );
         }
-        let unknown = self.cache.local.len().saturating_sub(known);
+        let unknown = local_total.saturating_sub(known);
         if unknown > 0 {
             ui.label(format!("{unknown} files are not identified yet"));
         }
@@ -787,7 +1001,7 @@ impl AnimaticApp {
                 self.page = Page::Hashed;
             }
             if ui.button("Refresh data").clicked() {
-                self.reload();
+                self.request_library_refresh();
             }
         });
         if self.settings.first_launch {
@@ -815,54 +1029,66 @@ impl AnimaticApp {
 
     fn anime_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Anime database", true);
-        let q = self.query.to_ascii_lowercase();
-        let rows: Vec<_> = self
-            .cache
-            .anime
-            .iter()
-            .filter(|a| {
-                q.is_empty() || a.name.to_ascii_lowercase().contains(&q) || a.aid.to_string() == q
-            })
-            .cloned()
-            .collect();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("anime_table")
-                .striped(true)
-                .min_col_width(80.0)
-                .show(ui, |ui| {
-                    header(
-                        ui,
-                        &["Title", "Type", "Year", "Episodes", "Rating", "Mylist"],
-                    );
-                    for a in rows {
-                        let selected = self.selected_aid == Some(a.aid);
+        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        {
+            let Self {
+                projection,
+                views,
+                selected_aid,
+                ..
+            } = self;
+            views
+                .anime
+                .refresh(&key, || filter_anime(projection, &key.1));
+            let rows = &views.anime.rows;
+            let row_height = row_height(ui);
+            data_table(
+                ui,
+                "anime_table",
+                &[
+                    ("Title", 360.0),
+                    ("Type", 100.0),
+                    ("Year", 80.0),
+                    ("Episodes", 90.0),
+                    ("Rating", 80.0),
+                    ("Mylist", 160.0),
+                ],
+            )
+            .body(|body| {
+                body.rows(row_height, rows.len(), |mut row| {
+                    let a = &projection.anime[rows[row.index()]];
+                    let state = projection.states.get(&a.aid);
+                    row.col(|ui| {
+                        let title = anime_title(a);
                         if ui
-                            .selectable_label(
-                                selected,
-                                if a.name.is_empty() {
-                                    format!("aid {}", a.aid)
-                                } else {
-                                    a.name.clone()
-                                },
-                            )
+                            .selectable_label(*selected_aid == Some(a.aid), title.as_ref())
                             .clicked()
                         {
-                            self.selected_aid = Some(a.aid);
+                            *selected_aid = Some(a.aid);
                         }
+                    });
+                    row.col(|ui| {
                         ui.label(a.type_name());
+                    });
+                    row.col(|ui| {
                         ui.label(&a.year);
+                    });
+                    row.col(|ui| {
                         ui.label(a.episodes.to_string());
+                    });
+                    row.col(|ui| {
                         ui.label(format::rating(a.rating));
-                        let state = self.cache.states.get(&a.aid);
+                    });
+                    row.col(|ui| {
                         ui.label(
                             state
                                 .map(|s| format!("{} eps / {} files", s.eps, s.files))
                                 .unwrap_or_default(),
                         );
-                        ui.end_row();
-                    }
+                    });
                 });
-        });
+            });
+        }
         self.anime_detail_window(ui.ctx());
     }
 
@@ -907,156 +1133,232 @@ impl AnimaticApp {
             ui.checkbox(&mut self.search_watched_only, "Fully watched");
         });
         ui.separator();
-        let q = self.query.to_ascii_lowercase();
-        let year = self.search_year.trim();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("advanced-results")
-                .striped(true)
-                .show(ui, |ui| {
-                    header(
-                        ui,
-                        &["Title", "Type", "Year", "Episodes", "Rating", "Mylist"],
-                    );
-                    for a in &self.cache.anime {
-                        let state = self.cache.states.get(&a.aid);
-                        if !q.is_empty()
-                            && !a.name.to_ascii_lowercase().contains(&q)
-                            && a.aid.to_string() != q
-                        {
-                            continue;
+        let key = (
+            self.loader.version,
+            self.query.to_ascii_lowercase(),
+            self.search_year.trim().to_string(),
+            self.search_type,
+            self.search_mylist_only,
+            self.search_watched_only,
+        );
+        {
+            let Self {
+                projection,
+                views,
+                selected_aid,
+                ..
+            } = self;
+            views.search.refresh(&key, || {
+                filter_search(
+                    projection,
+                    &SearchFilter {
+                        query: &key.1,
+                        year: &key.2,
+                        type_id: key.3,
+                        mylist_only: key.4,
+                        watched_only: key.5,
+                    },
+                )
+            });
+            let rows = &views.search.rows;
+            let row_height = row_height(ui);
+            data_table(
+                ui,
+                "advanced-results",
+                &[
+                    ("Title", 360.0),
+                    ("Type", 100.0),
+                    ("Year", 80.0),
+                    ("Episodes", 90.0),
+                    ("Rating", 80.0),
+                    ("Mylist", 160.0),
+                ],
+            )
+            .body(|body| {
+                body.rows(row_height, rows.len(), |mut row| {
+                    let a = &projection.anime[rows[row.index()]];
+                    let state = projection.states.get(&a.aid);
+                    row.col(|ui| {
+                        let title = anime_title(a);
+                        if ui.link(title.as_ref()).clicked() {
+                            *selected_aid = Some(a.aid);
                         }
-                        if !year.is_empty() && !a.year.contains(year) {
-                            continue;
-                        }
-                        if self.search_type != 0 && a.type_id != self.search_type {
-                            continue;
-                        }
-                        if self.search_mylist_only && state.is_none() {
-                            continue;
-                        }
-                        if self.search_watched_only && !state.is_some_and(|s| s.all_watched(a)) {
-                            continue;
-                        }
-                        if ui
-                            .link(if a.name.is_empty() {
-                                format!("aid {}", a.aid)
-                            } else {
-                                a.name.clone()
-                            })
-                            .clicked()
-                        {
-                            self.selected_aid = Some(a.aid);
-                        }
+                    });
+                    row.col(|ui| {
                         ui.label(a.type_name());
+                    });
+                    row.col(|ui| {
                         ui.label(&a.year);
+                    });
+                    row.col(|ui| {
                         ui.label(a.episodes.to_string());
+                    });
+                    row.col(|ui| {
                         ui.label(format::rating(a.rating));
+                    });
+                    row.col(|ui| {
                         ui.label(
                             state
                                 .map(|s| format!("{} eps / {} watched", s.eps, s.watched_eps))
                                 .unwrap_or_default(),
                         );
-                        ui.end_row();
-                    }
+                    });
                 });
-        });
+            });
+        }
         self.anime_detail_window(ui.ctx());
     }
 
     fn mylist_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "My list", true);
-        let q = self.query.to_ascii_lowercase();
-        let names: HashMap<_, _> = self
-            .cache
-            .anime
-            .iter()
-            .map(|a| (a.aid, a.name.as_str()))
-            .collect();
-        let mut edits = Vec::new();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("mylist_table")
-                .striped(true)
-                .show(ui, |ui| {
-                    header(
-                        ui,
-                        &["Anime", "Episode", "Group", "State", "Watched", "Size"],
-                    );
-                    for item in &self.cache.mylist {
-                        let title = names
-                            .get(&item.entry.aid)
-                            .copied()
-                            .unwrap_or("Unknown anime");
-                        if !q.is_empty() && !title.to_ascii_lowercase().contains(&q) {
-                            continue;
+        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        // (lid, edit, resulting state, resulting watched flag)
+        let mut edits: Vec<(i64, animatic_anidb::commands::MylistEdit, i64, bool)> = Vec::new();
+        {
+            let Self {
+                projection,
+                views,
+                selected_aid,
+                mylist_overlay,
+                ..
+            } = self;
+            views
+                .mylist
+                .refresh(&key, || filter_mylist(projection, &key.1));
+            let rows = &views.mylist.rows;
+            let row_height = row_height(ui);
+            data_table(
+                ui,
+                "mylist_table",
+                &[
+                    ("Anime", 320.0),
+                    ("Episode", 90.0),
+                    ("Group", 200.0),
+                    ("State", 120.0),
+                    ("Watched", 80.0),
+                    ("Size", 100.0),
+                ],
+            )
+            .body(|body| {
+                body.rows(row_height, rows.len(), |mut row| {
+                    let i = rows[row.index()];
+                    let item = &projection.mylist[i];
+                    let lid = item.entry.lid;
+                    // Show a toggle the user just saved even before a projection includes it.
+                    let (shown_state, shown_viewed) = mylist_overlay
+                        .get(&lid)
+                        .map_or((item.entry.state, item.entry.viewed), |o| {
+                            (o.state, o.viewed)
+                        });
+                    let mut state = shown_state;
+                    let mut watched = shown_viewed;
+                    row.col(|ui| {
+                        if ui.link(projection.mylist_title(i)).clicked() {
+                            *selected_aid = Some(item.entry.aid);
                         }
-                        if ui.link(title).clicked() {
-                            self.selected_aid = Some(item.entry.aid);
-                        }
+                    });
+                    row.col(|ui| {
                         ui.label(
                             item.episode
                                 .as_ref()
                                 .map(|e| e.epno_str())
                                 .unwrap_or_default(),
                         );
+                    });
+                    row.col(|ui| {
                         ui.label(
                             item.file
                                 .as_ref()
                                 .map(|f| f.group_label())
                                 .unwrap_or_default(),
                         );
-                        let mut state = item.entry.state;
-                        egui::ComboBox::from_id_salt(("state", item.entry.lid))
+                    });
+                    row.col(|ui| {
+                        egui::ComboBox::from_id_salt(("state", lid))
                             .selected_text(mylist_state_name(state))
                             .show_ui(ui, |ui| {
                                 for (id, name) in MYLIST_STATES.iter().enumerate() {
                                     ui.selectable_value(&mut state, id as i64, *name);
                                 }
                             });
-                        let mut watched = item.entry.viewed;
+                    });
+                    row.col(|ui| {
                         ui.checkbox(&mut watched, "");
-                        if state != item.entry.state || watched != item.entry.viewed {
-                            edits.push((
-                                item.entry.lid,
-                                animatic_anidb::commands::MylistEdit {
-                                    state: (state != item.entry.state).then_some(state),
-                                    viewed: (watched != item.entry.viewed).then_some(watched),
-                                    viewdate: None,
-                                    storage: None,
-                                    source: None,
-                                    other: None,
-                                },
-                            ));
-                        }
+                    });
+                    row.col(|ui| {
                         ui.label(
                             item.file
                                 .as_ref()
                                 .map(|f| format::size_short(f.size))
                                 .unwrap_or_default(),
                         );
-                        ui.end_row();
+                    });
+                    if state != shown_state || watched != shown_viewed {
+                        edits.push((
+                            lid,
+                            animatic_anidb::commands::MylistEdit {
+                                state: (state != shown_state).then_some(state),
+                                viewed: (watched != shown_viewed).then_some(watched),
+                                viewdate: None,
+                                storage: None,
+                                source: None,
+                                other: None,
+                            },
+                            state,
+                            watched,
+                        ));
                     }
                 });
-        });
-        let had_edits = !edits.is_empty();
-        for (lid, edit) in edits {
-            if let Err(e) =
-                animatic_core::sync::apply_edit_locally(&self.db, lid, &edit).and_then(|_| {
-                    self.db
-                        .queue_push(&animatic_core::sync::Command::MylistEdit { lid, edit })
-                        .map(|_| ())
-                })
-            {
-                self.error(format!("Could not edit mylist entry {lid}: {e}"));
-            }
+            });
         }
-        if had_edits {
-            self.reload();
+        for (lid, edit, state, viewed) in edits {
+            // One atomic outbox + optimistic-row transaction; the overlay only bridges the
+            // time until a projection requested after this write arrives.
+            match self.db.queue_edit_mylist(lid, &edit) {
+                Ok(0) => self.log(format!(
+                    "Mylist entry {lid} is pending removal; edit ignored"
+                )),
+                Ok(_) => {
+                    self.mylist_overlay.insert(
+                        lid,
+                        MylistOverlay {
+                            state,
+                            viewed,
+                            generation: self.loader.next_generation,
+                        },
+                    );
+                    self.request_library_refresh();
+                }
+                Err(e) => self.db_write_error(&format!("Could not edit mylist entry {lid}"), &e),
+            }
         }
         self.anime_detail_window(ui.ctx());
     }
 
     fn hashed_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Hashed files", true);
+        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        {
+            let Self {
+                projection,
+                views,
+                selected_local,
+                ..
+            } = self;
+            if views
+                .local
+                .refresh(&key, || filter_local(projection, &key.1))
+                && let Some(id) = *selected_local
+                && !views
+                    .local
+                    .rows
+                    .iter()
+                    .any(|&i| projection.local[i].id == id)
+            {
+                // Never leave an invisible selection that Rename/Open/Play would act on.
+                *selected_local = None;
+            }
+        }
         ui.horizontal(|ui| {
             if ui.button("Add files…").clicked() {
                 self.submit_files();
@@ -1071,7 +1373,7 @@ impl AnimaticApp {
                 .add_enabled(self.selected_local.is_some(), egui::Button::new("Open"))
                 .clicked()
                 && let Some(f) = self
-                    .cache
+                    .projection
                     .local
                     .iter()
                     .find(|f| Some(f.id) == self.selected_local)
@@ -1093,67 +1395,121 @@ impl AnimaticApp {
             {
                 self.avdump_selected();
             }
-            ui.label(format!("{} files", self.cache.local.len()));
-        });
-        let q = self.query.to_ascii_lowercase();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("local_table").striped(true).show(ui, |ui| {
-                header(ui, &["File", "Size", "AniDB", "Mylist", "CRC", "Path"]);
-                for f in &self.cache.local {
-                    if !q.is_empty() && !f.path.to_ascii_lowercase().contains(&q) {
-                        continue;
-                    }
-                    if ui
-                        .selectable_label(self.selected_local == Some(f.id), f.file_name())
-                        .clicked()
-                    {
-                        self.selected_local = Some(f.id);
-                    }
-                    ui.label(format::size_short(f.size));
-                    ui.label(
-                        f.fid
-                            .map(|id| format!("fid {id}"))
-                            .unwrap_or_else(|| "Unknown".into()),
-                    );
-                    ui.label(
-                        f.lid
-                            .map(|id| format!("lid {id}"))
-                            .unwrap_or_else(|| "—".into()),
-                    );
-                    ui.label(if f.crc_mismatch() {
-                        "Mismatch"
-                    } else {
-                        f.crc32.as_deref().unwrap_or("—")
-                    });
-                    if ui
-                        .add(egui::Label::new(&f.path).sense(Sense::click()))
-                        .double_clicked()
-                    {
-                        let _ = open::that(&f.path);
-                    }
-                    ui.end_row();
-                }
+            let shown = self.views.local.rows.len();
+            let total = self.projection.local.len();
+            ui.label(if shown == total {
+                format!("{total} files")
+            } else {
+                format!("{shown} of {total} files")
             });
         });
+        {
+            let Self {
+                projection,
+                views,
+                selected_local,
+                ..
+            } = self;
+            let rows = &views.local.rows;
+            let row_height = row_height(ui);
+            data_table(
+                ui,
+                "local_table",
+                &[
+                    ("File", 300.0),
+                    ("Size", 90.0),
+                    ("AniDB", 90.0),
+                    ("Mylist", 90.0),
+                    ("CRC", 90.0),
+                    ("Path", 400.0),
+                ],
+            )
+            .body(|body| {
+                body.rows(row_height, rows.len(), |mut row| {
+                    let f = &projection.local[rows[row.index()]];
+                    row.col(|ui| {
+                        if ui
+                            .selectable_label(*selected_local == Some(f.id), f.file_name())
+                            .clicked()
+                        {
+                            *selected_local = Some(f.id);
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.label(format::size_short(f.size));
+                    });
+                    row.col(|ui| {
+                        ui.label(
+                            f.fid
+                                .map(|id| format!("fid {id}"))
+                                .unwrap_or_else(|| "Unknown".into()),
+                        );
+                    });
+                    row.col(|ui| {
+                        ui.label(
+                            f.lid
+                                .map(|id| format!("lid {id}"))
+                                .unwrap_or_else(|| "—".into()),
+                        );
+                    });
+                    row.col(|ui| {
+                        ui.label(if f.crc_mismatch() {
+                            "Mismatch"
+                        } else {
+                            f.crc32.as_deref().unwrap_or("—")
+                        });
+                    });
+                    row.col(|ui| {
+                        if ui
+                            .add(egui::Label::new(&f.path).sense(Sense::click()))
+                            .double_clicked()
+                        {
+                            let _ = open::that(&f.path);
+                        }
+                    });
+                });
+            });
+        }
     }
 
     fn groups_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Groups", true);
-        let q = self.query.to_ascii_lowercase();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("groups").striped(true).show(ui, |ui| {
-                header(ui, &["Name", "Short name", "Rating", "Votes", "Website"]);
-                for g in &self.cache.groups {
-                    if !q.is_empty()
-                        && !g.name.to_ascii_lowercase().contains(&q)
-                        && !g.short.to_ascii_lowercase().contains(&q)
-                    {
-                        continue;
-                    }
+        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let Self {
+            projection, views, ..
+        } = self;
+        views
+            .groups
+            .refresh(&key, || filter_groups(projection, &key.1));
+        let rows = &views.groups.rows;
+        let row_height = row_height(ui);
+        data_table(
+            ui,
+            "groups",
+            &[
+                ("Name", 300.0),
+                ("Short name", 140.0),
+                ("Rating", 80.0),
+                ("Votes", 80.0),
+                ("Website", 100.0),
+            ],
+        )
+        .body(|body| {
+            body.rows(row_height, rows.len(), |mut row| {
+                let g = &projection.groups[rows[row.index()]];
+                row.col(|ui| {
                     ui.label(&g.name);
+                });
+                row.col(|ui| {
                     ui.label(&g.short);
+                });
+                row.col(|ui| {
                     ui.label(format::rating(g.rating));
+                });
+                row.col(|ui| {
                     ui.label(g.votes.to_string());
+                });
+                row.col(|ui| {
                     if let Some(url) = &g.url {
                         if ui.link("Open").clicked() {
                             let _ = open::that(url);
@@ -1161,60 +1517,135 @@ impl AnimaticApp {
                     } else {
                         ui.label("—");
                     }
-                    ui.end_row();
-                }
-            })
+                });
+            });
         });
     }
 
     fn genres_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Genres", true);
-        let q = self.query.to_ascii_lowercase();
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("genres").striped(true).show(ui, |ui| {
-                header(ui, &["Genre", "Anime"]);
-                for (_, name, count) in &self.cache.genres {
-                    if q.is_empty() || name.to_ascii_lowercase().contains(&q) {
-                        ui.label(name);
-                        ui.label(count.to_string());
-                        ui.end_row();
-                    }
-                }
-            })
+        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let Self {
+            projection, views, ..
+        } = self;
+        views
+            .genres
+            .refresh(&key, || filter_genres(projection, &key.1));
+        let rows = &views.genres.rows;
+        let row_height = row_height(ui);
+        data_table(ui, "genres", &[("Genre", 300.0), ("Anime", 100.0)]).body(|body| {
+            body.rows(row_height, rows.len(), |mut row| {
+                let (_, name, count) = &projection.genres[rows[row.index()]];
+                row.col(|ui| {
+                    ui.label(name);
+                });
+                row.col(|ui| {
+                    ui.label(count.to_string());
+                });
+            });
         });
     }
 
     fn queue_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "AniDB command queue", false);
+        let total = self.projection.queue.len();
+        let blocked = self.projection.summary.queue_blocked;
+        let blocked_pending = self.blocked_unconfirmed();
+        let cooling = self
+            .active_cooldown()
+            .map(|(until, reason)| Self::cooldown_text(until, reason));
+        let mut clear = false;
+        let mut retry = false;
+        let mut sync = false;
         ui.horizontal(|ui| {
-            ui.label(format!("{} pending commands", self.cache.queue.len()));
-            if ui.button("Clear queue").clicked() {
-                if let Err(e) = self.db.queue_clear() {
-                    self.error(e.to_string());
-                }
-                self.reload();
+            ui.label(format!("{total} pending commands"));
+            if blocked_pending {
+                ui.colored_label(Color32::LIGHT_RED, "blocked commands (refreshing)");
+            } else if blocked > 0 {
+                ui.colored_label(Color32::LIGHT_RED, format!("{blocked} blocked"));
             }
-            ui.add_enabled_ui(!self.import_pending, |ui| {
-                if ui.button("Synchronize now").clicked() {
-                    self.worker
-                        .submit(Job::ProcessQueue(self.settings.anidb.clone()));
-                }
-            });
+            if ui.button("Clear queue").clicked() {
+                clear = true;
+            }
+            if ui
+                .add_enabled(
+                    blocked > 0 || blocked_pending,
+                    egui::Button::new("Retry failed"),
+                )
+                .on_hover_text("Unblock failed commands and try them again")
+                .clicked()
+            {
+                retry = true;
+            }
+            let run = ui
+                .add_enabled(
+                    !self.import_pending && cooling.is_none(),
+                    egui::Button::new("Synchronize now"),
+                )
+                .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
+            if run.clicked() {
+                sync = true;
+            }
         });
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for (id, cmd, tries, err) in &self.cache.queue {
-                ui.horizontal(|ui| {
-                    ui.monospace(format!("#{id}"));
-                    ui.label(cmd.describe());
-                    if *tries > 0 {
-                        ui.colored_label(Color32::YELLOW, format!("{tries} retries"));
+        if let Some(text) = &cooling {
+            ui.colored_label(Color32::YELLOW, text);
+        }
+        if clear {
+            match self.db.queue_clear() {
+                Ok(()) => self.request_library_refresh(),
+                Err(e) => self.db_write_error("Could not clear the queue", &e),
+            }
+        }
+        if retry {
+            match self.db.queue_retry_failed() {
+                Ok(n) => {
+                    self.log(format!("Retrying {n} failed commands"));
+                    self.request_library_refresh();
+                }
+                Err(e) => self.db_write_error("Could not retry failed commands", &e),
+            }
+        }
+        if sync {
+            self.worker
+                .submit(Job::ProcessQueue(self.settings.anidb.clone()));
+        }
+        let queue = &self.projection.queue;
+        let row_height = row_height(ui);
+        data_table(
+            ui,
+            "queue_table",
+            &[
+                ("ID", 70.0),
+                ("Command", 420.0),
+                ("Status", 110.0),
+                ("Last error", 300.0),
+            ],
+        )
+        .body(|body| {
+            body.rows(row_height, queue.len(), |mut row| {
+                let entry = &queue[row.index()];
+                row.col(|ui| {
+                    ui.monospace(format!("#{}", entry.id));
+                });
+                row.col(|ui| {
+                    ui.label(&entry.description);
+                });
+                row.col(|ui| {
+                    if entry.blocked {
+                        ui.colored_label(Color32::LIGHT_RED, "Blocked");
+                    } else if entry.tries > 0 {
+                        ui.colored_label(Color32::YELLOW, format!("{} retries", entry.tries));
+                    } else {
+                        ui.weak("Pending");
                     }
                 });
-                if let Some(e) = err {
-                    ui.small(RichText::new(e).color(Color32::LIGHT_RED));
-                }
-                ui.separator();
-            }
+                row.col(|ui| {
+                    if let Some(err) = &entry.last_error {
+                        ui.label(RichText::new(err).color(Color32::LIGHT_RED))
+                            .on_hover_text(err);
+                    }
+                });
+            });
         });
     }
 
@@ -1225,10 +1656,12 @@ impl AnimaticApp {
                 self.logs.clear();
             }
         });
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
-            .show(ui, |ui| {
-                for line in &self.logs {
+            .auto_shrink([false, false])
+            .show_rows(ui, row_height, self.logs.len(), |ui, range| {
+                for line in &self.logs[range] {
                     ui.monospace(line);
                 }
             });
@@ -1236,15 +1669,22 @@ impl AnimaticApp {
 
     fn anime_detail_window(&mut self, ctx: &egui::Context) {
         let Some(aid) = self.selected_aid else {
+            self.detail = None;
             return;
         };
-        let detail = self.db.anime_detail(aid).ok().flatten();
+        // One detail read per (anime, projection version), not one per frame.
+        let version = self.loader.version;
+        let detail = match self.detail.take() {
+            Some(cached) if cached.aid == aid && cached.version == version => cached.detail,
+            _ => self.db.anime_detail(aid).ok().flatten(),
+        };
+        let mut refresh_requested = false;
         let mut open = true;
         egui::Window::new(format!("Anime #{aid}"))
             .open(&mut open)
             .default_width(520.0)
             .show(ctx, |ui| {
-                if let Some(d) = detail {
+                if let Some(d) = &detail {
                     ui.heading(if d.anime.name.is_empty() {
                         format!("Anime {aid}")
                     } else {
@@ -1320,18 +1760,24 @@ impl AnimaticApp {
                             let _ = open::that(format!("https://anidb.net/anime/{aid}"));
                         }
                         if ui.button("Refresh from AniDB").clicked() {
-                            let _ = self
-                                .db
-                                .queue_push(&animatic_core::sync::Command::FetchAnime { aid });
-                            self.reload();
+                            refresh_requested = true;
                         }
                     });
                 } else {
                     ui.label("No detail record is available.");
                 }
             });
-        if !open {
+        if open {
+            self.detail = Some(DetailCache {
+                aid,
+                version,
+                detail,
+            });
+        } else {
             self.selected_aid = None;
+        }
+        if refresh_requested {
+            self.queue_command(animatic_core::sync::Command::FetchAnime { aid });
         }
     }
 
@@ -1568,6 +2014,9 @@ impl AnimaticApp {
     }
 
     fn bottom_bar(&mut self, root: &mut egui::Ui) {
+        let cooling = self
+            .active_cooldown()
+            .map(|(until, reason)| Self::cooldown_text(until, reason));
         egui::Panel::bottom("status").show(root, |ui| {
             ui.horizontal(|ui| {
                 if self.activity.busy {
@@ -1603,6 +2052,25 @@ impl AnimaticApp {
                     } else {
                         "Ready for AniDB"
                     });
+                    if let Some(text) = &cooling {
+                        ui.colored_label(Color32::YELLOW, text);
+                    }
+                    if self.projection.summary.queue_blocked > 0 || self.blocked_unconfirmed() {
+                        ui.colored_label(
+                            Color32::LIGHT_RED,
+                            if self.blocked_unconfirmed() {
+                                "blocked commands (refreshing)".to_string()
+                            } else {
+                                format!("{} blocked", self.projection.summary.queue_blocked)
+                            },
+                        );
+                    }
+                    if !self.deferred.is_empty() {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            format!("{} commands NOT saved yet", self.deferred.len()),
+                        );
+                    }
                 });
             });
         });
@@ -1613,6 +2081,8 @@ impl eframe::App for AnimaticApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.process_events(&ctx);
+        self.retry_deferred();
+        self.pump_library(&ctx);
         self.top_bar(root);
         self.navigation(root);
         self.bottom_bar(root);
@@ -1644,10 +2114,36 @@ impl eframe::App for AnimaticApp {
                 self.about_open = false;
             }
         }
+        // Worker events are only seen while frames run, so poll while anything is in flight.
+        if self.activity.busy
+            || self.loader.outstanding.is_some()
+            || self.loader.dirty
+            || !self.deferred.is_empty()
+        {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        } else if self.active_cooldown().is_some() {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
     }
 
     fn on_exit(&mut self) {
         let _ = self.settings.save(&self.settings_path);
+        if !self.deferred.is_empty() {
+            let _ = self.db.conn().busy_timeout(EXIT_FLUSH_TIMEOUT);
+            self.flush_deferred();
+            if !self.deferred.is_empty() {
+                // Nothing can show this after exit, so make the loss explicit in the log.
+                log::error!(
+                    "{} queued commands could not be saved because the database stayed busy: {}",
+                    self.deferred.len(),
+                    self.deferred
+                        .iter()
+                        .map(|c| c.describe())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+        }
     }
 }
 
@@ -1658,11 +2154,148 @@ fn metric(ui: &mut egui::Ui, label: &str, value: String) {
     });
 }
 
-fn header(ui: &mut egui::Ui, names: &[&str]) {
-    for name in names {
-        ui.label(RichText::new(*name).strong());
+/// Height of every table row: tall enough for the combo boxes and checkboxes in the My list.
+fn row_height(ui: &egui::Ui) -> f32 {
+    ui.spacing().interact_size.y
+}
+
+/// Virtualized table: a fixed header and a body that only lays out the visible rows. Cells
+/// truncate instead of wrapping so every row keeps the height the body was told. The columns
+/// have a combined minimum width; when the page is narrower the whole table (header and rows
+/// together) scrolls horizontally so every column stays reachable.
+struct DataTable<'a, 'c> {
+    ui: &'a mut egui::Ui,
+    id: &'c str,
+    columns: &'c [(&'c str, f32)],
+}
+
+fn data_table<'a, 'c>(
+    ui: &'a mut egui::Ui,
+    id: &'c str,
+    columns: &'c [(&'c str, f32)],
+) -> DataTable<'a, 'c> {
+    DataTable { ui, id, columns }
+}
+
+impl DataTable<'_, '_> {
+    fn body(self, add_body: impl FnOnce(egui_extras::TableBody<'_>)) {
+        let Self { ui, id, columns } = self;
+        let header_height = row_height(ui);
+        let spacing = ui.spacing().item_spacing.x;
+        let minimum: f32 = columns.iter().map(|(_, width)| width + spacing).sum();
+        let width = ui.available_width().max(minimum);
+        let last = columns.len().saturating_sub(1);
+        egui::ScrollArea::horizontal()
+            .id_salt((id, "horizontal"))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_width(width);
+                let mut table = TableBuilder::new(ui)
+                    .id_salt(id)
+                    .striped(true)
+                    .resizable(true)
+                    .cell_layout(Layout::left_to_right(Align::Center))
+                    .auto_shrink([false, false])
+                    .min_scrolled_height(0.0);
+                for (i, (_, column_width)) in columns.iter().enumerate() {
+                    let column = if i == last {
+                        Column::remainder().at_least(*column_width)
+                    } else {
+                        Column::initial(*column_width).at_least(40.0)
+                    };
+                    table = table.column(column.clip(true));
+                }
+                table
+                    .header(header_height, |mut header| {
+                        for (name, _) in columns {
+                            header.col(|ui| {
+                                ui.strong(*name);
+                            });
+                        }
+                    })
+                    .body(add_body);
+            });
     }
-    ui.end_row();
+}
+
+fn is_busy(e: &animatic_core::Error) -> bool {
+    let text = e.to_string().to_ascii_lowercase();
+    text.contains("locked") || text.contains("busy")
+}
+
+fn anime_title(a: &Anime) -> std::borrow::Cow<'_, str> {
+    if a.name.is_empty() {
+        std::borrow::Cow::Owned(format!("aid {}", a.aid))
+    } else {
+        std::borrow::Cow::Borrowed(&a.name)
+    }
+}
+
+/// `Some(aid)` when the query is exactly a canonical AniDB id.
+fn aid_query(q: &str) -> Option<i64> {
+    q.parse::<i64>().ok().filter(|n| n.to_string() == q)
+}
+
+fn matches_anime(key: &str, aid: i64, q: &str, q_aid: Option<i64>) -> bool {
+    q.is_empty() || key.contains(q) || q_aid == Some(aid)
+}
+
+/// Row indices of anime whose name contains the lower-cased query or whose id equals it.
+fn filter_anime(p: &LibraryProjection, q: &str) -> Vec<usize> {
+    let q_aid = aid_query(q);
+    (0..p.anime.len())
+        .filter(|&i| matches_anime(&p.keys.anime[i], p.anime[i].aid, q, q_aid))
+        .collect()
+}
+
+struct SearchFilter<'a> {
+    query: &'a str,
+    year: &'a str,
+    type_id: i64,
+    mylist_only: bool,
+    watched_only: bool,
+}
+
+fn filter_search(p: &LibraryProjection, f: &SearchFilter) -> Vec<usize> {
+    let q_aid = aid_query(f.query);
+    (0..p.anime.len())
+        .filter(|&i| {
+            let a = &p.anime[i];
+            let state = p.states.get(&a.aid);
+            matches_anime(&p.keys.anime[i], a.aid, f.query, q_aid)
+                && (f.year.is_empty() || a.year.contains(f.year))
+                && (f.type_id == 0 || a.type_id == f.type_id)
+                && (!f.mylist_only || state.is_some())
+                && (!f.watched_only || state.is_some_and(|s| s.all_watched(a)))
+        })
+        .collect()
+}
+
+fn filter_mylist(p: &LibraryProjection, q: &str) -> Vec<usize> {
+    (0..p.mylist.len())
+        .filter(|&i| q.is_empty() || p.keys.mylist[i].contains(q))
+        .collect()
+}
+
+fn filter_local(p: &LibraryProjection, q: &str) -> Vec<usize> {
+    (0..p.local.len())
+        .filter(|&i| q.is_empty() || p.keys.local[i].contains(q))
+        .collect()
+}
+
+fn filter_groups(p: &LibraryProjection, q: &str) -> Vec<usize> {
+    (0..p.groups.len())
+        .filter(|&i| {
+            let (name, short) = &p.keys.groups[i];
+            q.is_empty() || name.contains(q) || short.contains(q)
+        })
+        .collect()
+}
+
+fn filter_genres(p: &LibraryProjection, q: &str) -> Vec<usize> {
+    (0..p.genres.len())
+        .filter(|&i| q.is_empty() || p.keys.genres[i].contains(q))
+        .collect()
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
@@ -1670,4 +2303,106 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
         ui.label(label);
         ui.text_edit_singleline(value);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> LibraryProjection {
+        let db = Db::memory().unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO category VALUES ('qual', 2, 'very high', 0, 2, NULL), ('type', 16, 'Blu-ray', 0, 13, NULL);
+                 INSERT INTO anime(aid, type_id, year, episodes) VALUES (1, 2, '1999', 1), (2, 4, '2012', 1), (3, 2, '2012', 12);
+                 INSERT INTO anime_title(aid, name, type, lang) VALUES (1, 'Fixture Alpha', 1, 'x-jat'),
+                    (2, 'Fixture Movie', 1, 'x-jat'), (3, 'Third Series', 1, 'x-jat');
+                 INSERT INTO episode(eid, aid, epno, type, length) VALUES (10, 1, 1, 1, 25);
+                 INSERT INTO grp(gid, name, short) VALUES (7, 'Fixture Group', 'FG');
+                 INSERT INTO file(fid, aid, eid, gid, size, ed2k, crc32, quality_id, source_id, state, user_count)
+                    VALUES (100, 1, 10, 7, 1000, 'aa', 'deadbeef', 2, 16, 0, 5);
+                 INSERT INTO mylist(lid, fid, eid, aid, gid, state, viewed, viewdate) VALUES (1000, 100, 10, 1, 7, 1, 1, 5);
+                 INSERT INTO local_hash(id, ed2k, size, crc32) VALUES (1, 'aa', 1000, 'DEADBEEF');
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1, 1, '/Fixture/Root/One.mkv');",
+            )
+            .unwrap();
+        LibraryProjection::load(&db).unwrap()
+    }
+
+    #[test]
+    fn anime_filter_matches_name_or_exact_id() {
+        let p = fixture();
+        assert_eq!(filter_anime(&p, "").len(), 3);
+        assert_eq!(filter_anime(&p, "fixture").len(), 2);
+        let by_id = filter_anime(&p, "3");
+        assert_eq!(by_id.len(), 1);
+        assert_eq!(p.anime[by_id[0]].aid, 3);
+        assert!(
+            filter_anime(&p, "03").is_empty(),
+            "ids match exactly, not by padding"
+        );
+    }
+
+    #[test]
+    fn search_filter_combines_year_type_and_mylist() {
+        let p = fixture();
+        let all_2012 = SearchFilter {
+            query: "",
+            year: "2012",
+            type_id: 0,
+            mylist_only: false,
+            watched_only: false,
+        };
+        assert_eq!(filter_search(&p, &all_2012).len(), 2);
+        let series_2012 = SearchFilter {
+            type_id: 2,
+            ..all_2012
+        };
+        let rows = filter_search(&p, &series_2012);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(p.anime[rows[0]].aid, 3);
+        let mylist = SearchFilter {
+            query: "",
+            year: "",
+            type_id: 0,
+            mylist_only: true,
+            watched_only: false,
+        };
+        let rows = filter_search(&p, &mylist);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(p.anime[rows[0]].aid, 1);
+    }
+
+    #[test]
+    fn table_filters_use_projection_keys() {
+        let p = fixture();
+        assert_eq!(filter_mylist(&p, "alpha").len(), 1);
+        assert!(filter_mylist(&p, "third").is_empty());
+        assert_eq!(filter_local(&p, "/fixture/root").len(), 1);
+        assert_eq!(filter_groups(&p, "fg").len(), 1);
+        assert_eq!(filter_groups(&p, "fixture g").len(), 1);
+        assert!(filter_groups(&p, "zzz").is_empty());
+    }
+
+    #[test]
+    fn index_cache_rebuilds_only_when_key_changes() {
+        let mut cache: IndexCache<(u64, String)> = IndexCache::default();
+        let mut builds = 0;
+        let key = (1, "a".to_string());
+        assert!(cache.refresh(&key, || {
+            builds += 1;
+            vec![0, 2]
+        }));
+        assert!(!cache.refresh(&key, || {
+            builds += 1;
+            vec![]
+        }));
+        assert_eq!(cache.rows, vec![0, 2]);
+        let next = (2, "a".to_string());
+        assert!(cache.refresh(&next, || {
+            builds += 1;
+            vec![1]
+        }));
+        assert_eq!((builds, cache.rows), (2, vec![1]));
+    }
 }

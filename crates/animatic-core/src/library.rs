@@ -1108,6 +1108,148 @@ pub fn item_length(it: &MylistItem) -> i64 {
     it.episode.as_ref().map_or(0, |e| e.length * 60)
 }
 
+/// Aggregates the overview page shows, computed once per projection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LibrarySummary {
+    /// Hashed files AniDB has identified.
+    pub local_known: usize,
+    /// Hashed files whose local CRC differs from AniDB's.
+    pub local_crc_mismatch: usize,
+    /// Total size of hashed files in bytes.
+    pub local_bytes: i64,
+    /// Mylist entries marked watched.
+    pub mylist_watched: usize,
+    /// Queue entries blocked pending correction or an explicit retry.
+    pub queue_blocked: usize,
+}
+
+/// Lower-cased search keys parallel to the projection tables, built once off the UI thread so
+/// filtering never allocates per row.
+#[derive(Debug, Clone, Default)]
+pub struct SearchKeys {
+    /// Lower-cased display name of `LibraryProjection::anime[i]`.
+    pub anime: Vec<String>,
+    /// Index into `anime` of the anime of `mylist[i]`, if known.
+    pub mylist_anime: Vec<Option<usize>>,
+    /// Lower-cased title shown for `mylist[i]`.
+    pub mylist: Vec<String>,
+    /// Lower-cased path of `local[i]`.
+    pub local: Vec<String>,
+    /// Lower-cased (name, short name) of `groups[i]`.
+    pub groups: Vec<(String, String)>,
+    /// Lower-cased name of `genres[i]`.
+    pub genres: Vec<String>,
+}
+
+/// Owned, immutable snapshot of everything the UI tables display. Loaded from one consistent
+/// database read transaction on a background thread and swapped into the UI whole.
+#[derive(Debug, Clone, Default)]
+pub struct LibraryProjection {
+    pub anime: Vec<Anime>,
+    pub mylist: Vec<MylistItem>,
+    pub states: HashMap<i64, AnimeMylistState>,
+    pub local: Vec<LocalFile>,
+    pub groups: Vec<Group>,
+    /// (genre id, name, anime count)
+    pub genres: Vec<(i64, String, i64)>,
+    pub queue: Vec<crate::sync::QueueEntry>,
+    /// Active sync cooldown as (epoch seconds until, reason).
+    pub cooldown: Option<(i64, String)>,
+    pub summary: LibrarySummary,
+    pub keys: SearchKeys,
+}
+
+impl LibraryProjection {
+    /// Read every table of the projection inside one read transaction.
+    pub fn load(db: &Db) -> Result<LibraryProjection> {
+        let tx = db.conn().unchecked_transaction()?;
+        let anime = db.all_anime()?;
+        let mylist = db.mylist_items()?;
+        let states = db.mylist_state_by_anime(&mylist);
+        let local = db.local_files()?;
+        let groups = db.all_groups()?;
+        let genres = db.genres()?;
+        let queue = db.queue_list()?;
+        let cooldown = db.sync_cooldown()?;
+        drop(tx);
+        Ok(Self::assemble(
+            anime, mylist, states, local, groups, genres, queue, cooldown,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        anime: Vec<Anime>,
+        mylist: Vec<MylistItem>,
+        states: HashMap<i64, AnimeMylistState>,
+        local: Vec<LocalFile>,
+        groups: Vec<Group>,
+        genres: Vec<(i64, String, i64)>,
+        queue: Vec<crate::sync::QueueEntry>,
+        cooldown: Option<(i64, String)>,
+    ) -> LibraryProjection {
+        let by_aid: HashMap<i64, usize> =
+            anime.iter().enumerate().map(|(i, a)| (a.aid, i)).collect();
+        let mylist_anime: Vec<Option<usize>> = mylist
+            .iter()
+            .map(|m| by_aid.get(&m.entry.aid).copied())
+            .collect();
+        let mut keys = SearchKeys {
+            anime: anime.iter().map(|a| a.name.to_ascii_lowercase()).collect(),
+            mylist: Vec::with_capacity(mylist.len()),
+            local: local.iter().map(|f| f.path.to_ascii_lowercase()).collect(),
+            groups: groups
+                .iter()
+                .map(|g| (g.name.to_ascii_lowercase(), g.short.to_ascii_lowercase()))
+                .collect(),
+            genres: genres
+                .iter()
+                .map(|(_, name, _)| name.to_ascii_lowercase())
+                .collect(),
+            mylist_anime,
+        };
+        for (item, idx) in mylist.iter().zip(&keys.mylist_anime) {
+            let title = mylist_title(item, idx.map(|i| &anime[i]));
+            keys.mylist.push(title.to_ascii_lowercase());
+        }
+        let summary = LibrarySummary {
+            local_known: local.iter().filter(|f| f.known()).count(),
+            local_crc_mismatch: local.iter().filter(|f| f.crc_mismatch()).count(),
+            local_bytes: local.iter().map(|f| f.size).sum(),
+            mylist_watched: mylist.iter().filter(|m| m.entry.viewed).count(),
+            queue_blocked: queue.iter().filter(|e| e.blocked).count(),
+        };
+        LibraryProjection {
+            anime,
+            mylist,
+            states,
+            local,
+            groups,
+            genres,
+            queue,
+            cooldown,
+            summary,
+            keys,
+        }
+    }
+
+    /// Title displayed for `mylist[i]`.
+    pub fn mylist_title(&self, i: usize) -> String {
+        mylist_title(
+            &self.mylist[i],
+            self.keys.mylist_anime[i].map(|a| &self.anime[a]),
+        )
+    }
+}
+
+fn mylist_title(item: &MylistItem, anime: Option<&Anime>) -> String {
+    match anime {
+        None => "Unknown anime".into(),
+        Some(a) if a.name.is_empty() => format!("aid {}", item.entry.aid),
+        Some(a) => a.name.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,5 +1337,28 @@ mod tests {
         let unknown = lf.iter().find(|l| l.path == "/a/unknown.mkv").unwrap();
         assert!(!unknown.known());
         assert_eq!(unknown.file_name(), "unknown.mkv");
+    }
+
+    #[test]
+    fn projection_loads_all_views_with_search_keys_and_summary() {
+        let db = sample_db();
+        let p = LibraryProjection::load(&db).unwrap();
+        assert_eq!(p.anime.len(), 1);
+        assert_eq!(p.mylist.len(), 3);
+        assert_eq!(p.local.len(), 2);
+        assert_eq!(p.groups.len(), 1);
+        assert_eq!(p.states[&1].files, 3);
+        assert!(p.queue.is_empty());
+        assert_eq!(p.cooldown, None);
+        assert_eq!(p.keys.anime, vec!["seikai no monshou".to_string()]);
+        assert_eq!(p.keys.local.len(), p.local.len());
+        assert_eq!(p.mylist_title(0), "Seikai no Monshou");
+        assert!(p.keys.mylist.iter().all(|k| k == "seikai no monshou"));
+        assert_eq!(
+            (p.summary.local_known, p.summary.local_crc_mismatch),
+            (1, 0)
+        );
+        assert_eq!(p.summary.local_bytes, 1005);
+        assert_eq!(p.summary.mylist_watched, 2);
     }
 }

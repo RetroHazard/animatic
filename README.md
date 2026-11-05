@@ -8,9 +8,9 @@ Animatic is a modern, cross-platform successor to **AniDB O'Matic (AOM)**. It ma
 - Simultaneous ED2K (AniDB-compatible red variant), CRC32, MD5, and SHA-1 hashing from one disk read, with pause and cancellation.
 - AniDB UDP API client with authentication, encryption, compression, flood protection, automatic re-authentication, and typed commands.
 - AniDB HTTP API anime records, title dump, and image downloads.
-- Durable offline command queue for identification, mylist add/edit/delete/refresh, and record updates.
-- Library, mylist, hashed-file, anime, group, genre, queue, and activity views.
-- Mylist watched/state editing, anime detail pages, full-text filtering, and AniDB links.
+- Durable offline command queue with latest-intent MyList edits, retained failed commands, and persistent AniDB cooldowns.
+- Background library snapshots and virtualized library, MyList, hashed-file, anime, group, genre, queue, and activity views.
+- MyList watched/state editing, anime detail pages, cached search filters, and AniDB links.
 - AOM-compatible file-renaming language and database-backed `A`, `E`, `F`, `G`, `H`, and `M` objects.
 - Per-folder file-manager rules, discovery planning, automatic hash/rehash/removal decisions, and safe file moves.
 - JSON settings plus reviewable, offline-first import of AOM's UTF-16 `local_settings.xml`.
@@ -80,6 +80,27 @@ The selected XML is never modified. Parse/save failures leave current settings i
 ## AniDB client registration
 
 AniDB requires API clients to use a registered client identifier. Configure the identifier and version under **Tools → Options…**. Keep offline mode enabled until this is set. The UDP client enforces AniDB's packet spacing and handles session expiry.
+
+## Synchronization safety
+
+MyList edits are saved atomically with their local display state. Repeated edits to the
+same entry merge into a fresh queue generation; an older reply or acknowledgement cannot
+erase newer intent. Malformed successful replies are errors, not evidence that an entry
+was deleted. Existing databases receive an idempotent queue upgrade.
+
+The **Queue** page retains permanent failures as **Blocked**. Correct the underlying
+problem, then use **Retry failed**. This does not bypass a server cooldown. Bans without
+an explicit duration pause synchronization for a conservative 30 minutes; temporary
+connectivity failures pause for 60 seconds. **Clear queue** deliberately discards pending
+work, including unsynchronized edits.
+
+Library refreshes and statistics exports run in the background. During database contention,
+the UI explicitly labels deferred identification/refresh requests as **NOT saved yet**;
+they are not durable until written. A MyList edit that cannot be saved reports failure
+instead of pretending it succeeded.
+
+This release does not add full-account MyList bootstrap/reconciliation, scheduled folder
+scanning, or automatic renaming.
 
 ## Managed-folder safety
 

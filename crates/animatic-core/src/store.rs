@@ -85,8 +85,13 @@ impl Db {
         Ok(())
     }
 
-    /// Store everything a FILE reply carries.
+    /// Store everything a FILE reply carries, atomically (write lock up front; joins a caller's
+    /// transaction through a savepoint).
     pub fn store_file_info(&self, i: &FileInfo) -> Result<()> {
+        self.write_tx(|| self.store_file_info_rows(i))
+    }
+
+    fn store_file_info_rows(&self, i: &FileInfo) -> Result<()> {
         let now = format::now();
         let c = self.conn();
         let quality = self.category_or_insert("qual", i.quality.as_deref().unwrap_or(""))?;
@@ -97,8 +102,11 @@ impl Db {
                 dub_langs, sub_langs, description, released, updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
                 ?24, ?25, ?26)
-             ON CONFLICT(fid) DO UPDATE SET aid = excluded.aid, eid = excluded.eid, gid = excluded.gid, size = excluded.size,
-                ed2k = COALESCE(excluded.ed2k, ed2k), md5 = COALESCE(excluded.md5, md5), sha1 = COALESCE(excluded.sha1, sha1),
+             ON CONFLICT(fid) DO UPDATE SET aid = CASE WHEN excluded.aid > 0 THEN excluded.aid ELSE aid END,
+               eid = CASE WHEN excluded.eid > 0 THEN excluded.eid ELSE eid END,
+               gid = CASE WHEN excluded.gid > 0 THEN excluded.gid ELSE gid END,
+               size = CASE WHEN excluded.size > 0 THEN excluded.size ELSE size END,
+               ed2k = COALESCE(excluded.ed2k, ed2k), md5 = COALESCE(excluded.md5, md5), sha1 = COALESCE(excluded.sha1, sha1),
                 crc32 = COALESCE(excluded.crc32, crc32), filetype = COALESCE(excluded.filetype, filetype),
                 quality_id = excluded.quality_id, source_id = excluded.source_id, state = excluded.state,
                 length = excluded.length, deprecated = excluded.deprecated, anidb_filename = excluded.anidb_filename,
@@ -209,15 +217,32 @@ impl Db {
         }
         match &i.mylist {
             Some(m) => self.store_api_mylist(m)?,
-            None => {
-                // AniDB says the file is not in mylist: drop stale local entries.
-                c.execute("DELETE FROM mylist WHERE fid = ?1", [i.fid])?;
+            None if i.mylist_absent => {
+                // AniDB explicitly reported "not in mylist" (lid 0): drop stale local entries, but
+                // never one with queued local intent. An omitted lid column is not this case.
+                let lids: Vec<i64> = {
+                    let mut st = c.prepare("SELECT lid FROM mylist WHERE fid = ?1")?;
+                    st.query_map([i.fid], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for lid in lids {
+                    if !self.mylist_has_pending_intent(lid)? {
+                        c.execute("DELETE FROM mylist WHERE lid = ?1", [lid])?;
+                    }
+                }
             }
+            None => {}
         }
         Ok(())
     }
 
+    /// Persist an authoritative API mylist entry. The latest queued local intent for the lid is
+    /// re-applied on top, so a stale in-flight reply cannot revert a newer pending edit.
     pub fn store_api_mylist(&self, m: &ApiMylistEntry) -> Result<()> {
+        self.write_tx(|| self.store_api_mylist_rows(m))
+    }
+
+    fn store_api_mylist_rows(&self, m: &ApiMylistEntry) -> Result<()> {
         let fid_gid: Option<(i64, i64, i64)> = self
             .conn()
             .query_row(
@@ -234,7 +259,7 @@ impl Db {
             ),
             None => (m.eid, m.aid, m.gid),
         };
-        self.upsert_mylist(&MylistEntry {
+        let mut entry = MylistEntry {
             lid: m.lid,
             fid: m.fid,
             eid,
@@ -248,7 +273,9 @@ impl Db {
             source: m.source.clone(),
             other: m.other.clone(),
             filestate: m.filestate,
-        })
+        };
+        self.overlay_pending_mylist(&mut entry)?;
+        self.upsert_mylist(&entry)
     }
 
     pub fn upsert_mylist(&self, e: &MylistEntry) -> Result<()> {
@@ -634,13 +661,115 @@ mod tests {
         assert_eq!((m.aid, m.eid, m.gid, m.viewed), (2, 20, 3, true));
         assert_eq!(db.episode(20).unwrap().unwrap().name, "Third");
 
-        // A later reply without mylist data removes the stale entry.
+        // An explicit "lid 0" reply (AniDB says not in mylist) removes the stale entry.
         db.store_file_info(&FileInfo {
             mylist: None,
+            mylist_absent: true,
             ..info
         })
         .unwrap();
         assert!(db.mylist_entry(77).unwrap().is_none());
+    }
+
+    fn synthetic_file(fid: i64) -> FileInfo {
+        FileInfo {
+            fid,
+            aid: 2,
+            eid: 20,
+            gid: 3,
+            size: 1234,
+            ed2k: Some("abc".into()),
+            anime_romaji: Some("Romaji".into()),
+            epno: EpNo { kind: 1, number: 3 },
+            ep_name: Some("Third".into()),
+            mylist: Some(ApiMylistEntry {
+                lid: 77,
+                fid,
+                state: 1,
+                ..Default::default()
+            }),
+            ..FileInfo::default()
+        }
+    }
+
+    fn count(db: &Db, sql: &str) -> i64 {
+        db.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn reply_without_mylist_information_preserves_existing_rows() {
+        let db = Db::memory().unwrap();
+        db.store_file_info(&synthetic_file(5)).unwrap();
+        assert!(db.mylist_entry(77).unwrap().is_some());
+        // Partial reply: no lid information and most identifiers omitted.
+        db.store_file_info(&FileInfo {
+            fid: 5,
+            ..FileInfo::default()
+        })
+        .unwrap();
+        assert!(db.mylist_entry(77).unwrap().is_some(), "mylist survives");
+        let f = db.file_by_hash("ABC", 1234).unwrap().unwrap();
+        assert_eq!((f.fid, f.aid, f.eid, f.gid), (5, 2, 20, 3));
+        assert_eq!(count(&db, "SELECT count(*) FROM episode WHERE eid = 20"), 1);
+    }
+
+    #[test]
+    fn file_info_write_is_atomic() {
+        let db = Db::memory().unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER synthetic_fail BEFORE INSERT ON episode
+                 BEGIN SELECT RAISE(ABORT, 'synthetic child failure'); END;",
+            )
+            .unwrap();
+        assert!(db.store_file_info(&synthetic_file(5)).is_err());
+        assert_eq!(count(&db, "SELECT count(*) FROM file"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM anime"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM mylist"), 0);
+
+        // Inside a caller's transaction only this write rolls back; the caller's work survives.
+        db.conn().execute_batch("BEGIN").unwrap();
+        db.set_meta("synthetic", "kept").unwrap();
+        assert!(db.store_file_info(&synthetic_file(5)).is_err());
+        db.conn()
+            .execute_batch("DROP TRIGGER synthetic_fail")
+            .unwrap();
+        db.store_file_info(&synthetic_file(6)).unwrap();
+        db.conn().execute_batch("COMMIT").unwrap();
+        assert_eq!(db.meta("synthetic").unwrap().as_deref(), Some("kept"));
+        assert_eq!(count(&db, "SELECT count(*) FROM file WHERE fid = 5"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM file WHERE fid = 6"), 1);
+    }
+
+    #[test]
+    fn api_writes_keep_the_latest_pending_local_intent() {
+        let db = Db::memory().unwrap();
+        db.store_file_info(&synthetic_file(5)).unwrap();
+        db.queue_edit_mylist(
+            77,
+            &animatic_anidb::commands::MylistEdit {
+                state: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A stale authoritative reply (state 1) must not undo the queued intent.
+        db.store_api_mylist(&ApiMylistEntry {
+            lid: 77,
+            fid: 5,
+            state: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.mylist_entry(77).unwrap().unwrap().state, 2);
+        // Nor may an explicit "not in mylist" FILE reply delete an entry with outstanding intent.
+        db.store_file_info(&FileInfo {
+            mylist: None,
+            mylist_absent: true,
+            ..synthetic_file(5)
+        })
+        .unwrap();
+        assert!(db.mylist_entry(77).unwrap().is_some());
     }
 
     #[test]

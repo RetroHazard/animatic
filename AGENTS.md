@@ -52,6 +52,10 @@ The migration implementation necessarily contains clean-room format knowledge an
 10. Avoid platform-specific behavior unless isolated behind a cross-platform abstraction and verified on Windows and Linux.
 11. Automatic local-record removal requires affirmative file absence beneath a reachable, explicitly configured manager root. Unavailable drives and filesystem errors must preserve library records.
 12. AOM settings import runs on the worker, requires non-secret review, and applies offline only after successful persistence. Cancel/failure must preserve active settings; block other worker submissions until review ends.
+13. MyList outbox IDs must never be reused. Save edits and optimistic state atomically, merge latest intent by entry, and guard stale response/ack effects by queue generation.
+14. Malformed successful API replies are protocol errors, never authoritative absence. Preserve pending local intent when applying remote records.
+15. Permanent failures remain blocked and visible; cooldowns survive queue runs and restarts. Explicit retry must not bypass an active cooldown.
+16. Load library projections and export statistics off the UI thread. Coalesce refreshes and virtualize tables; stale snapshots must not override newer edits or queue status.
 
 ## Commands
 

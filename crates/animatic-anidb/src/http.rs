@@ -99,6 +99,55 @@ fn xerr(e: impl std::fmt::Display) -> AnidbError {
     AnidbError::Xml(e.to_string())
 }
 
+/// Classify an HTTP API `<error>` reply. Bans and rejected clients stop the queue; any other
+/// API error will not change on retry, so it is a permanent protocol failure for that command.
+fn api_error(code: Option<&str>, text: &str) -> AnidbError {
+    let detail = match (code, text.is_empty()) {
+        (Some(c), false) => format!("{c}: {text}"),
+        (Some(c), true) => c.to_string(),
+        (None, false) => text.to_string(),
+        (None, true) => "no details".to_string(),
+    };
+    let lower = text.to_ascii_lowercase();
+    if code == Some("500") || lower.contains("banned") {
+        AnidbError::Banned(format!("HTTP API: {detail}"))
+    } else if code == Some("302") || lower.contains("client") {
+        AnidbError::Auth(format!(
+            "HTTP API rejected the client registration ({detail})"
+        ))
+    } else {
+        AnidbError::Xml(format!("AniDB HTTP API error {detail}"))
+    }
+}
+
+/// Map a transport failure. Connectivity problems (DNS, connect, TLS, timeouts, body I/O) are
+/// `Network`/`Timeout`, exactly like the UDP client: they pause syncing but never count as an
+/// attempt of the command. Only a response the server actually sent counts as `Http`.
+fn transport_error(e: ureq::Error) -> AnidbError {
+    match e {
+        ureq::Error::StatusCode(403) => AnidbError::Banned("HTTP 403 Forbidden".into()),
+        ureq::Error::StatusCode(429) => AnidbError::ServerUnavailable(crate::error::BAN_COOLDOWN),
+        ureq::Error::StatusCode(c) if c >= 500 => AnidbError::Http(format!("HTTP status {c}")),
+        ureq::Error::StatusCode(c) => AnidbError::Protocol(format!("unexpected HTTP status {c}")),
+        ureq::Error::BodyExceedsLimit(limit) => {
+            AnidbError::Protocol(format!("reply larger than the {limit} byte limit"))
+        }
+        ureq::Error::Timeout(_) => AnidbError::Timeout,
+        ureq::Error::Io(_)
+        | ureq::Error::HostNotFound
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::Tls(_) => AnidbError::Network(e.to_string()),
+        // Our own request cannot be built, or the server loops us around: retrying changes nothing.
+        ureq::Error::BadUri(_)
+        | ureq::Error::Http(_)
+        | ureq::Error::InvalidProxyUrl
+        | ureq::Error::RedirectFailed
+        | ureq::Error::TooManyRedirects => AnidbError::Protocol(e.to_string()),
+        // The server answered with malformed HTTP, or an error ureq may add later.
+        other => AnidbError::Http(other.to_string()),
+    }
+}
+
 /// Parse the HTTP API `request=anime` XML document.
 pub fn parse_anime_xml(xml: &str) -> Result<AnimeXml> {
     let mut r = Reader::from_str(xml);
@@ -111,6 +160,7 @@ pub fn parse_anime_xml(xml: &str) -> Result<AnimeXml> {
     let mut cur_creator: Option<String> = None;
     let mut cur_rating_count: i64 = 0;
     let mut text = String::new();
+    let mut error_code: Option<String> = None;
     loop {
         match r.read_event().map_err(xerr)? {
             Event::Start(e) => {
@@ -118,7 +168,7 @@ pub fn parse_anime_xml(xml: &str) -> Result<AnimeXml> {
                 text.clear();
                 let parent = path.last().map(String::as_str).unwrap_or("");
                 match (parent, name.as_str()) {
-                    ("", "error") => {}
+                    ("", "error") => error_code = attr(&e, "code"),
                     ("", "anime") => {
                         a.aid = attr(&e, "id").and_then(|v| v.parse().ok()).unwrap_or(0);
                         a.restricted = attr(&e, "restricted").is_some_and(|v| v == "true");
@@ -181,7 +231,7 @@ pub fn parse_anime_xml(xml: &str) -> Result<AnimeXml> {
                 let value = std::mem::take(&mut text).trim().to_string();
                 match (parent, name.as_str()) {
                     ("", "error") => {
-                        return Err(AnidbError::Http(format!("AniDB HTTP API error: {value}")));
+                        return Err(api_error(error_code.as_deref(), &value));
                     }
                     ("anime", "type") => a.type_name = Some(value),
                     ("anime", "episodecount") => a.episode_count = value.parse().unwrap_or(0),
@@ -268,10 +318,15 @@ pub fn parse_anime_xml(xml: &str) -> Result<AnimeXml> {
             Event::Empty(e) => {
                 let name = e.local_name().as_ref().to_string();
                 if name == "error" {
-                    return Err(AnidbError::Http("AniDB HTTP API error".into()));
+                    return Err(api_error(attr(&e, "code").as_deref(), ""));
                 }
             }
-            Event::Eof => break,
+            Event::Eof => {
+                if !path.is_empty() {
+                    return Err(AnidbError::Xml("truncated XML document".into()));
+                }
+                break;
+            }
             _ => {}
         }
     }
@@ -299,22 +354,31 @@ pub fn parse_titles_dump<R: BufRead>(input: R, mut out: impl FnMut(DumpTitle)) -
     let mut cur: Option<(String, String)> = None;
     let mut text = String::new();
     let mut n = 0;
+    let mut depth = 0usize;
     loop {
         match r.read_event_into(&mut buf).map_err(xerr)? {
-            Event::Start(e) => match e.local_name().as_ref() {
-                "anime" => aid = attr(&e, "aid").and_then(|v| v.parse().ok()).unwrap_or(0),
-                "title" => {
-                    text.clear();
-                    cur = Some((
-                        attr(&e, "type").unwrap_or_else(|| "synonym".into()),
-                        attr(&e, "xml:lang").unwrap_or_else(|| "x-unk".into()),
-                    ));
+            Event::Start(e) => {
+                depth += 1;
+                match e.local_name().as_ref() {
+                    "anime" => aid = attr(&e, "aid").and_then(|v| v.parse().ok()).unwrap_or(0),
+                    "title" => {
+                        text.clear();
+                        cur = Some((
+                            attr(&e, "type").unwrap_or_else(|| "synonym".into()),
+                            attr(&e, "xml:lang").unwrap_or_else(|| "x-unk".into()),
+                        ));
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Event::Text(t) => text.push_str(&t),
             Event::GeneralRef(g) => text.push_str(&general_ref(&g)),
-            Event::End(e) if e.local_name().as_ref() == "title" => {
+            Event::End(e) => {
+                depth = depth.saturating_sub(1);
+                if e.local_name().as_ref() != "title" {
+                    buf.clear();
+                    continue;
+                }
                 if let Some((kind, lang)) = cur.take() {
                     out(DumpTitle {
                         aid,
@@ -325,7 +389,15 @@ pub fn parse_titles_dump<R: BufRead>(input: R, mut out: impl FnMut(DumpTitle)) -
                     n += 1;
                 }
             }
-            Event::Eof => break,
+            Event::Eof => {
+                if depth != 0 {
+                    return Err(AnidbError::Xml("truncated titles dump".into()));
+                }
+                if n == 0 {
+                    return Err(AnidbError::Xml("titles dump contains no titles".into()));
+                }
+                break;
+            }
             _ => {}
         }
         buf.clear();
@@ -367,16 +439,12 @@ impl HttpClient {
     }
 
     pub fn get_bytes(&mut self, url: &str, limit: u64) -> Result<Vec<u8>> {
-        let mut resp = self
-            .agent
-            .get(url)
-            .call()
-            .map_err(|e| AnidbError::Http(e.to_string()))?;
+        let mut resp = self.agent.get(url).call().map_err(transport_error)?;
         resp.body_mut()
             .with_config()
             .limit(limit)
             .read_to_vec()
-            .map_err(|e| AnidbError::Http(e.to_string()))
+            .map_err(transport_error)
     }
 
     /// Fetch the full anime record. AniDB asks clients not to request the same anime more than once a day.
@@ -417,7 +485,7 @@ pub fn decode_maybe_gzip(bytes: &[u8]) -> Result<String> {
         let mut s = String::new();
         flate2::read::MultiGzDecoder::new(bytes)
             .read_to_string(&mut s)
-            .map_err(|e| AnidbError::Http(e.to_string()))?;
+            .map_err(|e| AnidbError::Xml(format!("invalid compressed body: {e}")))?;
         Ok(s)
     } else {
         Ok(String::from_utf8_lossy(bytes).into_owned())
@@ -427,6 +495,43 @@ pub fn decode_maybe_gzip(bytes: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_failures_are_classified_by_cause() {
+        let io = || std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        assert!(matches!(
+            transport_error(ureq::Error::Io(io())),
+            AnidbError::Network(_)
+        ));
+        assert!(matches!(
+            transport_error(ureq::Error::HostNotFound),
+            AnidbError::Network(_)
+        ));
+        assert!(matches!(
+            transport_error(ureq::Error::ConnectionFailed),
+            AnidbError::Network(_)
+        ));
+        assert!(matches!(
+            transport_error(ureq::Error::Timeout(ureq::Timeout::Global)),
+            AnidbError::Timeout
+        ));
+        assert!(matches!(
+            transport_error(ureq::Error::StatusCode(503)),
+            AnidbError::Http(_)
+        ));
+        assert!(matches!(
+            transport_error(ureq::Error::StatusCode(404)),
+            AnidbError::Protocol(_)
+        ));
+        assert!(matches!(
+            transport_error(ureq::Error::BodyExceedsLimit(1)),
+            AnidbError::Protocol(_)
+        ));
+        assert!(matches!(
+            decode_maybe_gzip(&[0x1f, 0x8b, 0, 1, 2]),
+            Err(AnidbError::Xml(_))
+        ));
+    }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <anime id="1" restricted="false">
@@ -481,8 +586,34 @@ mod tests {
     fn reports_api_errors() {
         assert!(matches!(
             parse_anime_xml("<error code=\"302\">client version missing or invalid</error>"),
-            Err(AnidbError::Http(_))
+            Err(AnidbError::Auth(_))
         ));
+        assert!(matches!(
+            parse_anime_xml("<error code=\"500\">banned</error>"),
+            Err(AnidbError::Banned(_))
+        ));
+        assert!(matches!(
+            parse_anime_xml("<error>Anime not found</error>"),
+            Err(AnidbError::Xml(_))
+        ));
+        assert!(matches!(
+            parse_anime_xml("<error code=\"500\"/>"),
+            Err(AnidbError::Banned(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_truncated_and_empty_documents() {
+        for bad in [
+            "",
+            "<anime id=\"1\"><titles><title type=\"main\">A</title>",
+            "<anime id=\"1\"",
+        ] {
+            assert!(
+                matches!(parse_anime_xml(bad), Err(AnidbError::Xml(_))),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

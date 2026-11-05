@@ -25,10 +25,10 @@ flowchart LR
 
 | Module | Responsibility |
 |---|---|
-| `db` | Connection setup and version-1 schema creation |
-| `store` | Mutating persistence operations and imported/API record application |
-| `library` | Read models and library projections consumed by the UI |
-| `sync` | Serializable durable command types, queue ordering, and local MyList edits |
+| `db` | Connection setup, schema creation, idempotent outbox upgrades, and persisted cooldown state |
+| `store` | Transactional API record application with pending-intent overlays |
+| `library` | Consistent background snapshots, derived summaries, and reusable search keys |
+| `sync` | Serializable commands, latest-intent outbox generations, blocked work, and atomic local edits |
 | `hash` | Single-pass ED2K-red, CRC32, MD5, and SHA-1 hashing; legacy export expansion |
 | `legacy` | Databank discovery, page decryption, record decoding, and transactional import |
 | `rename` | AOM-compatible parser, evaluator, values, database-backed objects, and path planning |
@@ -53,7 +53,7 @@ Both AniDB APIs require a registered client identifier. Automated tests use loca
 
 - `main.rs`: platform data/config paths, environment overrides, CLI compatibility, and native window creation.
 - `app.rs`: egui state, navigation, cached read models, menus/dialogs, detail views, settings, and user actions.
-- `worker.rs`: long-running jobs and progress/result events.
+- `worker.rs`: long-running jobs, bounded queue execution, a separate projection/export thread, and typed result events.
 
 The application currently exposes overview, MyList, anime, advanced search, hashed files, groups, genres, queue, and activity views.
 
@@ -116,14 +116,34 @@ sequenceDiagram
     User->>UI: Edit MyList / identify file
     UI->>DB: Persist command
     UI->>Worker: Process queue
-    Worker->>DB: Claim next priority command
+    Worker->>DB: Read next eligible command
     Worker->>UDP: Typed API request
     UDP-->>Worker: Typed reply/error
     Worker->>DB: Apply reply and complete/retry command
     Worker-->>UI: Log/result event
 ```
 
-Offline work remains in `command_queue`. Queue processing must be restart-safe and duplicate-aware. The UDP client owns authentication and flood control; callers must not bypass it with raw sockets.
+Offline work remains in `command_queue`. MyList edits merge their changed fields in one
+immediate transaction, update local state, and receive a fresh never-reused AUTOINCREMENT
+ID. Superseded in-flight acknowledgements cannot remove a newer generation. API writes
+hold a write transaction while overlaying pending intent; stale missing/delete replies
+are checked against their queue generation before mutating local state.
+
+The outbox migration preserves existing rows, attempts and errors, and adds `blocked`
+and target-`lid` fields. Unreadable commands remain blocked and visible. Permanent
+failures block the affected command; authentication/client-version failures block the
+queue pending correction. Counted transient command failures are bounded at five attempts.
+Connectivity failures and server deferrals do not consume that budget.
+
+The `sync_cooldown` metadata stores an expiry and reason before a run stops. The worker
+checks it before constructing transports, including after restart and explicit retry.
+Explicit server durations take precedence; otherwise bans pause for 30 minutes and
+connectivity failures for 60 seconds. Transport packet spacing, authentication and
+session recovery remain centralized in `animatic-anidb`.
+
+MYLIST 221/310 and FILE replies validate required identifiers and distinguish malformed
+payloads from explicit absence. Multi-table FILE application and MyList reply overlays
+are atomic, including when nested inside an existing transaction.
 
 Per-folder MyList storage/source/other checkboxes distinguish an omitted field (`None`,
 leave unchanged) from an explicit empty string (`Some("")`, clear). Both states survive
@@ -165,6 +185,16 @@ The rename engine preprocesses patterns, parses the legacy expression language, 
 - Worker commands and events cross `crossbeam-channel` boundaries.
 - Pause and cancellation are cooperative for long-running hash/import work.
 - UI caches are disposable; persisted SQLite state remains authoritative.
+- A dedicated projection thread loads `LibraryProjection` in a consistent SQLite read
+  snapshot and performs automatic/manual statistics exports. Accepted explicit exports
+  are drained on graceful shutdown.
+- The UI permits one projection request in flight, coalesces dirty signals, and rejects
+  stale generations for optimistic edits. Newer blocked/cooldown events cannot be
+  overwritten by an older snapshot.
+- Library tables render visible rows only, with cached filtered indices and horizontal
+  scrolling when columns exceed the available width.
+- Small UI outbox writes use a bounded busy wait. Deferred lookup requests are explicitly
+  marked unsaved; MyList edits either commit atomically or report that nothing changed.
 - Settings are explicit serializable data, not hidden globals.
 - External processes receive parsed argument vectors rather than shell command strings.
 

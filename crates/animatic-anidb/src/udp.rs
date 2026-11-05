@@ -332,7 +332,8 @@ impl UdpClient {
     /// Handle replies that are errors regardless of the command.
     fn check_global(&mut self, resp: Response) -> Result<Response> {
         match resp.code {
-            555 | 504 => {
+            // 510 is treated like an explicit ban: the client stops and never retries on its own.
+            510 | 555 | 504 => {
                 let reason = if resp.message.is_empty() {
                     "banned".to_string()
                 } else {
@@ -534,6 +535,65 @@ mod tests {
             assert_eq!(enc.len() % 16, 0);
             c.decrypt(&mut enc);
             assert_eq!(enc, msg);
+        }
+    }
+
+    fn reply(code: u16) -> Response {
+        Response {
+            code,
+            message: String::new(),
+            lines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn ban_replies_stop_the_client_and_never_retry() {
+        for code in [504, 510, 555] {
+            let mut c = UdpClient::new(Config::default());
+            assert!(matches!(
+                c.check_global(reply(code)),
+                Err(AnidbError::Banned(_))
+            ));
+            assert!(c.banned_reason().is_some());
+            // Nothing is sent: the socket is never even opened once banned.
+            assert!(matches!(
+                c.exchange("PING nat=1"),
+                Err(AnidbError::Banned(_))
+            ));
+            assert!(c.socket.is_none());
+        }
+    }
+
+    #[test]
+    fn global_replies_are_classified() {
+        let mut c = UdpClient::new(Config::default());
+        assert!(matches!(
+            c.check_global(reply(503)),
+            Err(AnidbError::ClientOutdated)
+        ));
+        assert!(matches!(
+            c.check_global(reply(598)),
+            Err(AnidbError::UnknownCommand)
+        ));
+        assert!(c.check_global(reply(200)).is_ok());
+        assert!(matches!(
+            c.check_global(reply(604)),
+            Err(AnidbError::ServerError(604, _))
+        ));
+        let Err(AnidbError::ServerUnavailable(left)) = c.exchange("PING nat=1") else {
+            panic!("server backoff must stop further packets");
+        };
+        assert!(left <= Duration::from_secs(60));
+        assert!(c.socket.is_none());
+    }
+
+    #[test]
+    fn malformed_replies_are_protocol_errors() {
+        for bad in ["", "x", "99 short", "t1", "t1 abc"] {
+            assert!(
+                matches!(Response::parse(bad), Err(AnidbError::Protocol(_))),
+                "{bad:?}"
+            );
         }
     }
 }
