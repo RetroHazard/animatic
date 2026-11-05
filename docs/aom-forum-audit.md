@@ -51,7 +51,7 @@ Settings import reads the selected AOM XML without modifying it, parses in the b
 
 Implementation anchors:
 
-- [`file_manager::plan_scan`](../crates/animatic-core/src/file_manager.rs): affirmative absence and trailing root-availability check; seven removal-boundary regressions.
+- [`file_manager::plan_scan`](../crates/animatic-core/src/file_manager.rs): explicit path/recursion membership without default fallback, affirmative absence and trailing root-availability check; eight removal-boundary regressions.
 - [`sync::manager_mylist_edit`](../crates/animatic-core/src/sync.rs): explicit empty fields; regression applies a serialized queued edit to an existing MyList record.
 - [`settings::import_legacy_settings`](../crates/animatic-core/src/settings.rs): recognize consumed fields/collections; reject unrelated XML while accepting recognized default values.
 - [`app.rs`](../crates/animatic/src/app.rs) and [`worker.rs`](../crates/animatic/src/worker.rs): native picker, typed background import, review gating, save-before-activate and folder controls.
@@ -64,11 +64,12 @@ runtime databases outside the repository. No production AniDB API was contacted.
 | Check | Observed result |
 |---|---|
 | Before/after runtime scan probe | Unavailable-root removal actions changed from **1 to 0**; genuinely missing file under available root remained **1** |
+| Before/after default-membership probe | A reachable nonempty default root no longer authorized removal of an unrelated missing path; a matched missing path remained removable |
 | Before/after checked-empty probe | Storage/source/other changed from omitted to explicit empty values |
 | Before/after unrelated-XML probe | Unsupported XML changed from accepted to rejected |
 | Targeted regression tests | File-manager, synchronization and settings suites passed |
 | `cargo fmt --all -- --check` | Passed |
-| `cargo test --workspace` | **58 passed** |
+| `cargo test --workspace` | **59 passed** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Passed |
 | `cargo build --release -p animatic` | Passed |
 | Native desktop exercise | Picker/review cancellation; non-secret review; save failure retains review; offline apply; unrelated/malformed UTF-16 XML rejection; queue action disabled during review and restored after cancel |

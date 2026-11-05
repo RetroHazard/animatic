@@ -208,6 +208,12 @@ impl FileManagerSettings {
     /// The manager whose path is the longest prefix of `path`; the default manager otherwise.
     /// A manager without `include_subdirs` only matches files directly inside its folder.
     pub fn manager_for(&self, path: &Path) -> &FileManager {
+        self.matching_manager_for(path)
+            .unwrap_or_else(|| self.default_manager())
+    }
+
+    /// Explicit path match, without the fallback used for non-destructive folder policy.
+    pub(crate) fn matching_manager_for(&self, path: &Path) -> Option<&FileManager> {
         let p = normalize_path(&path.to_string_lossy());
         let parent = path
             .parent()
@@ -230,7 +236,6 @@ impl FileManagerSettings {
                 }
             })
             .max_by_key(|m| normalize_path(&m.path).len())
-            .unwrap_or_else(|| self.default_manager())
     }
 }
 

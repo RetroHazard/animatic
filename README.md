@@ -88,6 +88,8 @@ directory root, and a file lookup that reports absence. Unavailable drives, netw
 and other filesystem errors preserve local records. A genuinely missing file or nested
 folder under an available root can still be removed from the local inventory. This does
 not delete media or remove entries from AniDB MyList.
+An unmatched default rule cannot authorize removal outside its folder, and non-recursive
+rules do not authorize removal from subfolders.
 
 Under **Tools → Options… → Managed folders**, each rule can set MyList storage,
 source and other fields. Unchecked means leave unchanged; checked with an empty value

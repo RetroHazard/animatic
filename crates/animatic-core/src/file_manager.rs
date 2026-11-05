@@ -126,8 +126,10 @@ pub fn plan_scan(
     }
     for f in existing {
         let path = Path::new(&f.path);
-        let manager = settings.manager_for(path);
-        if !manager.auto_remove || manager.path.is_empty() {
+        let Some(manager) = settings.matching_manager_for(path) else {
+            continue;
+        };
+        if !manager.auto_remove {
             continue;
         }
         if !matches!(
@@ -346,6 +348,47 @@ mod tests {
 
         assert!(actions.is_empty());
         fs::remove_file(root).unwrap();
+    }
+
+    #[test]
+    fn scan_default_rule_only_removes_explicitly_matching_paths() {
+        let root = test_root("default-membership");
+        let managed = root.join("managed");
+        fs::create_dir_all(&managed).unwrap();
+        let db = Db::memory().unwrap();
+        for path in [
+            root.join("unmanaged/missing.mkv"),
+            root.join("managed-sibling/missing.mkv"),
+            managed.join("nested/missing.mkv"),
+        ] {
+            db.add_local_file(&path.to_string_lossy(), &Hashes::default(), 0)
+                .unwrap();
+        }
+        let matching_path = managed.join("missing.mkv");
+        let local_id = db
+            .add_local_file(&matching_path.to_string_lossy(), &Hashes::default(), 0)
+            .unwrap();
+        let settings = FileManagerSettings {
+            managers: vec![FileManager {
+                path: managed.to_string_lossy().into_owned(),
+                include_subdirs: false,
+                auto_remove: true,
+                default: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let actions = plan_scan(&db, &settings, "mkv").unwrap();
+
+        assert_eq!(
+            actions,
+            vec![ScanAction::RemoveMissing {
+                local_id,
+                path: matching_path,
+            }]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -98,9 +98,10 @@ File-manager policy decides extension acceptance, recursive traversal, automatic
 
 Missing-file removal requires an explicit matching manager with `auto_remove` enabled,
 affirmative file absence (`NotFound`), and a successful directory-metadata check of the
-manager root after that lookup. Empty/default roots, unavailable roots and other
-filesystem errors preserve local records. This is a conservative planning check, not
-an atomic guarantee against storage disconnecting between planning and execution.
+manager root after that lookup. Selection reuses the normal path/recursion matcher but
+does not fall back to the default rule for an unmatched path. Empty roots, unavailable
+roots and other filesystem errors preserve local records. This is a conservative planning
+check, not an atomic guarantee against storage disconnecting between planning and execution.
 
 ### AniDB synchronization
 
