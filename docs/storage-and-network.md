@@ -1,8 +1,9 @@
 # Storage and network contracts
 
 Reference for the SQLite schema, the persistent AniDB command queue, the UDP and HTTP
-protocol handling, the title dump import, and the public Rust API of `animatic-core` and
-`animatic-anidb`. For the big picture and thread model read [Architecture](architecture.md)
+protocol handling, the title dump import, the GitHub update transport, and the public Rust API of
+`animatic-core` and `animatic-anidb`. For the big picture and thread model read
+[Architecture](architecture.md)
 first. Source of truth: [`schema.sql`](../crates/animatic-core/src/db/schema.sql),
 [`db/mod.rs`](../crates/animatic-core/src/db/mod.rs),
 [`sync.rs`](../crates/animatic-core/src/sync.rs),
@@ -427,6 +428,120 @@ dump, cancellation inside the dump (cancel acts between commands), and any full-
 bootstrap. MyList rows come only from legacy import, FILE replies for identified local files,
 `MYLISTADD` results, and the (non-desktop) `MylistRefresh`.
 
+## GitHub update transport
+
+Implementation: [`update.rs`](../crates/animatic-core/src/update.rs) in `animatic-core`. This is a
+separate transport from AniDB: it has its own `UpdateClient`, its own `UpdateError`/`Result`, no
+AniDB flood spacing, no AniDB session and no cooldown. A failed update request never touches the
+command queue, `meta` cooldown keys or the AniDB clients, and an AniDB ban never blocks an update
+check. Product flow: [User guide](user-guide.md#updating-animatic); settings:
+[`updates.auto_check`](settings-reference.md#updates).
+
+**Endpoints and identity.** Only the repository `RetroHazard/animatic`, only HTTPS, only to
+`api.github.com` (the release listing) and `github.com` (assets and release pages). Redirects are
+followed manually (at most 5) and only to the exact hosts `github.com`, `api.github.com`,
+`release-assets.githubusercontent.com` and `objects.githubusercontent.com`, over HTTPS on the default port;
+anything else is refused. Requests are anonymous: no token, cookie, credential or library data
+is sent, and there is no credential configuration. GitHub therefore receives the client's IP address and the `User-Agent` `Animatic/VERSION` (the
+running version). Unauthenticated GitHub API use is rate limited per IP address; HTTP 403 or 429 is
+reported as a rate-limit error (`UpdateError::RateLimited`) and is not retried automatically.
+
+**Unavailable feed.** HTTP 404 on any request is `UpdateError::NotFound`: the release data was not
+found. For an anonymous client this is also how GitHub answers for a repository or releases that are
+not publicly readable, so it is reported as an error and **never** as "up to date". An accessible list
+that holds nothing newer or compatible is `Ok(None)`, which the desktop shows as "Animatic is up to
+date." Visibility of the repository is a maintainer-side setting that this documentation does not
+assert.
+
+**Release selection (`UpdateClient::check`).** It reads the release listing
+(`/repos/RetroHazard/animatic/releases?per_page=30&page=N`, up to 100 pages, then an explicit error) and
+trusts neither API order nor the "latest" shortcut:
+
+1. Skip drafts, releases flagged prerelease, tags containing `-` and tags that are not `v` + a valid CalVer version.
+2. Choose the **highest CalVer** among the rest, wherever it appears in the pages.
+3. Offer it only if it is strictly greater than the running version (`current_version`). An equal or
+   lower version, or no stable release, yields `Ok(None)`: no downgrade, no repeat. A 404 or other
+   access failure is an error, never `Ok(None)` (see above).
+4. Validate that release: the platform archive `animatic-vVERSION-windows-x86_64.zip` or
+   `animatic-vVERSION-linux-x86_64.tar.gz` and `SHA256SUMS` must be present, fully uploaded, non-empty,
+   within their size limit, with `browser_download_url` exactly
+   `https://github.com/RetroHazard/animatic/releases/download/TAG/NAME`, and the release page must be
+   `https://github.com/RetroHazard/animatic/releases/tag/TAG`. If the highest stable release fails this,
+   the check reports `UpdateError::IncompleteRelease`; it **never falls back** to an older release.
+
+The public `ReleaseInfo` fields are `version`, `tag`, `page_url` and `archive_size`; the validated asset
+details stay private. CalVer is `YYYY.M.PATCH` with year 2000-9999, month 1-12 and no leading zeros, with
+an optional Cargo-compatible prerelease suffix, ordered like SemVer. `Platform::current()` is `Some` only
+for `x86_64` Windows or Linux; any other target is unsupported.
+
+**Bounded download (`UpdateClient::download`).** Responses are streamed in 64 KiB chunks with a hard byte
+limit and the caller's cancel flag is checked between chunks. A short or oversized body is an error.
+Timeouts: resolve and connect 15 s each, send 30 s, response header 30 s, each read 30 s, and total
+deadlines of 60 s for one metadata page, 60 s for `SHA256SUMS` and 30 minutes for the archive.
+
+| Object | Limit |
+|---|---|
+| Release metadata (JSON), per page | 1 MiB |
+| `SHA256SUMS` | 64 KiB |
+| Archive | 256 MiB |
+| Extracted executable | 512 MiB |
+| Each license/notices (and other bundled document) entry | 8 MiB |
+| All declared entry sizes of one archive | 640 MiB |
+| Entries in one archive | 128 |
+
+`SHA256SUMS` must hold the standard `sha256sum` form `<64 lowercase hex>  <filename>` (two spaces) with
+exactly one line for the expected archive. The archive's SHA-256 is computed while streaming and must
+equal it; when GitHub's asset `digest` (`sha256:...`) is listed it must agree as well. Only then is the
+archive opened. It must have the single expected root folder (the archive stem); the executable
+(`animatic[.exe]`; on Linux it must carry an executable mode), `LICENSE` and `THIRD-PARTY-NOTICES.html` are
+extracted into a private temporary directory owned by the returned `VerifiedUpdate`; `README.md`,
+`CHANGELOG.md` and `docs/*.md` entries are only admitted by name, type and declared size: their content
+is never read, extracted or CRC-checked (the archive-level SHA-256 is the only integrity check); any other entry,
+link, duplicate or path escaping the folder rejects the archive. `progress` receives bytes done and total.
+Dropping a `VerifiedUpdate` deletes the staged files. The checksum is an integrity check against
+corruption and mismatched files, **not** an authenticity check: `SHA256SUMS` comes from the same
+unsigned release.
+
+**Install (`VerifiedUpdate::install(self, &InstallationTarget)`).** `InstallationTarget::capture()` records
+the running executable's path and OS file identity once, early in `main`, before anything can replace
+it. An install then runs in this order, and stops at the first failure:
+
+1. Re-validate that the file at the captured path is still the same file (so a second instance started
+   from an executable that another instance already replaced refuses, and a different file is never
+   replaced). A missing, moved or foreign file is `UpdateError::Refused`.
+2. Take an advisory OS lock (`File::try_lock`) on an empty `.animatic-update.lock` file in the install
+   folder (`UpdateError::Busy` if another installer holds it; no PID file, retry loop or elevation; the
+   kernel drops the lock when a process dies, and the empty file is always left behind and is harmless).
+   Re-validate the identity under the lock. An unwritable folder is `UpdateError::NotWritable`; there is
+   no privilege escalation.
+3. Re-verify the staged files' hashes.
+4. Write `LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` beside the executable, additively:
+   never over a different existing file or a symlink; an identical existing file is accepted.
+5. **Windows only:** create a recovery copy of the current executable next to it,
+   `.animatic-recovery-RANDOM.exe` (dot-prefixed, created exclusively).
+6. Replace the executable through the maintained [`self-replace`](https://crates.io/crates/self-replace)
+   crate (Unix: a single atomic rename; Windows: the old executable is moved aside and removed after
+   exit).
+
+On success the recovery copy is removed. If step 6 fails, `UpdateError::Replace` is returned (its
+`install_attempted()` is true). `self-replace` is **not transactional** on Windows, so the failure path
+is best effort: if nothing exists at the original path, the previous executable is restored from the
+recovery copy without overwriting anything (a file another writer put there is never overwritten), and
+the recovery copy is **kept** in every failure case; if restoring fails, the error tells the user to
+copy it back manually. Atomicity against power loss or a crash is not promised, and leftover dot-prefixed
+files (`.animatic-recovery-*`, `.animatic-restore-*`, or `self-replace`'s own temporary files) are
+never deleted automatically. After an `install_attempted()` error the caller must neither retry nor
+restart by itself. Failures in steps 1-4 happen before the executable is touched; the versioned license
+files placed in step 4 may remain after a later failure and are harmless. The staged files live in the
+temporary directory until the `VerifiedUpdate` is dropped.
+
+The desktop About window prefers the versioned license files for the running version. The updater thread
+owns the install, so a quit waits for it (see [Architecture](architecture.md#updater-thread)).
+
+**Tests.** Automated tests use synthetic archives and loopback servers only; they never contact GitHub or
+AniDB, and the real `self-replace` is exercised only through a throwaway helper child process, never by
+replacing the test harness executable.
+
 ## Transport security
 
 - **UDP is not TLS.** With no `anidb.api_key`, the `AUTH` datagram, including username and
@@ -439,6 +554,9 @@ bootstrap. MyList rows come only from legacy import, FILE replies for identified
   UDP channel as confidential only against passive observers.
 - **The HTTP anime API is plain HTTP.** It carries the client name/version and returns public
   metadata, no credentials.
+- **GitHub update traffic uses HTTPS only**, with the same rustls defaults and no pinning, and is
+  anonymous (no credentials of any kind); it integrity-checks the archive with `SHA256SUMS` but is not
+  signed (see [GitHub update transport](#github-update-transport)).
 - **Title dump and images use HTTPS** with `ureq`'s default rustls configuration; there is no
   pinning.
 - **At rest**, the username, password and API key are plain text in `settings.json` and its
@@ -464,9 +582,10 @@ durable contracts.
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>`, `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path)`, `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
 | `rename` | `Pattern::compile(&str)`, `evaluate(&Pattern, &Bindings, &dyn DataSource) -> Result<Evaluation, EvalError>`, `target_path(&Path, &str, &str)`, `plan::{plan, classify, check_pattern, Plan, PatternKind}`, `objects::{bindings_for_file(&Db, i64, &str, &str), DbSource, ...}`, `eval::{Evaluator, Object, DataSource}`, `value::Value`, `parser` |
-| `settings` | `Settings::{load_with_recovery(&Path) -> Result<SettingsLoad>, save(&self, &Path), backup_path(&Path)}`, `import_legacy_settings(&Path) -> Result<Settings>`, `AnidbSettings`, `FileManager(Settings)`, `HashingSettings`, `Player`, `AvdumpSettings`, `StatWhoreSettings`, `UiSettings`, `DEFAULT_RENAME_PATTERN` |
+| `settings` | `Settings::{load_with_recovery(&Path) -> Result<SettingsLoad>, save(&self, &Path), backup_path(&Path), keep_preferences_unknown_to_legacy(&mut self, &Settings)}`, `import_legacy_settings(&Path) -> Result<Settings>`, `AnidbSettings`, `FileManager(Settings)`, `HashingSettings`, `Player`, `AvdumpSettings`, `StatWhoreSettings`, `UiSettings`, `UpdateSettings { auto_check }`, `DEFAULT_RENAME_PATTERN` |
 | `stats` | `Db::library_stats() -> Result<LibraryStats>`, `LibraryStats::{render(&self, &str, StatFormat) -> String, write(&self, &Path, &str, StatFormat)}` |
 | `external` | `launch_player(&Player, PlayerAction, &Path) -> Result<Child>`, `launch_avdump(&AvdumpSettings, &Path, &str, u16) -> Result<Child>`, `PlayerAction::{Open, Play, Enqueue}` |
+| `update` | `Platform::{Windows, Linux, current() -> Option<Platform>}`, `UpdateClient::{new() -> Result<Self>, check(&self, &str, Platform, &AtomicBool) -> Result<Option<ReleaseInfo>>, download(&self, &ReleaseInfo, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<VerifiedUpdate>}`, `ReleaseInfo { version, tag, page_url, archive_size }`, `InstallationTarget::capture() -> Result<Self>`, `VerifiedUpdate::{version(), sha256(), install(self, &InstallationTarget) -> Result<String>}`, `UpdateError` (with `install_attempted()`), `Result<T, E = UpdateError>` (its own error type, independent of `Error`) |
 | `format`, `error` | Formatting helpers (`now()`, `size_short`, `date`, ...); `Error`, `Result<T, E = Error>` (re-exported at the crate root) |
 
 ### `animatic-anidb`

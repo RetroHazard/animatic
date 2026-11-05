@@ -7,7 +7,8 @@ exists. Those are maintainer-side configuration, listed in
 [Repository settings the maintainer must provide](#repository-settings-the-maintainer-must-provide).
 
 Contents: [What a release is](#what-a-release-is) ·
-[Install a release](#install-a-release) · [Versions and the changelog](#versions-and-the-changelog) ·
+[Install a release](#install-a-release) · [In-app updates](#in-app-updates) ·
+[Versions and the changelog](#versions-and-the-changelog) ·
 [Release tool](#release-tool) · [Workflows](#workflows) ·
 [Repository settings](#repository-settings-the-maintainer-must-provide) ·
 [Maintainer procedure](#maintainer-procedure) · [Archive contents](#archive-contents) ·
@@ -27,12 +28,16 @@ GitHub Release holding exactly three assets:
 
 The release is a draft: a maintainer reviews the notes and assets and publishes it by hand.
 Nothing is published, tagged or version-bumped automatically from an ordinary branch push.
+Publishing matters beyond the page itself: installed copies of Animatic offer **published**
+releases only (see [In-app updates](#in-app-updates)), so publishing a draft is what makes it
+an update candidate.
 
 What is deliberately **not** shipped: installers, packages (MSI, deb, rpm, Flatpak, AppImage),
-auto-update, code signing, notarization or build attestations. Archives are unsigned; the only
-integrity aid is the `SHA256SUMS` file, which proves the download matches what the workflow
-produced, not who produced it. Other architectures, distributions and Rust targets are not
-built.
+unattended or automatic updates, code signing, notarization or build attestations. Archives are
+unsigned; the only integrity aid is the `SHA256SUMS` file, which proves the download matches what
+the workflow produced, not who produced it. The in-app updater is an explicit, user-confirmed
+download of these same assets and adds no signing. Other architectures, distributions and Rust
+targets are not built.
 
 Each archive does include license notices: Animatic's own `LICENSE` and a generated
 `THIRD-PARTY-NOTICES.html` listing the licenses of the Rust dependencies (including the fonts
@@ -44,7 +49,10 @@ are **not a legal audit**; see [Third-party notices](#third-party-notices) for t
 
 Use a published release from the repository's GitHub Releases page. Download the archive for your
 platform **and** `SHA256SUMS` into the same folder, verify, then unpack. The examples use
-`2026.11.0` purely as an illustration; replace it with the version you downloaded.
+`2026.11.0` purely as an illustration; replace it with the version you downloaded. An
+already-installed copy can instead update itself from a published release (see
+[In-app updates](#in-app-updates)); a manual archive install is also how you refresh the
+bundled guides and notices, which an in-app update leaves at their old version.
 
 ### Windows (PowerShell)
 
@@ -85,6 +93,65 @@ Inside the extracted folder, links between the guides in `docs/` and to `README.
 `scripts/`, `.github/` or `AGENTS.md` are **not** shipped and only resolve in a source checkout;
 links to GitHub pages need a network, and the Rust API documentation (`cargo doc` output) is
 not included.
+
+## In-app updates
+
+An installed Animatic can check for, download, verify and install a newer release of itself.
+The user-facing flow is in the [User guide](user-guide.md#updating-animatic); the transport,
+limits and install contract are in
+[Storage and network](storage-and-network.md#github-update-transport); the threading model is in
+[Architecture](architecture.md#updater-thread). This section records what the **release process
+must keep true** for it to work. Everything here describes the implemented code; none of it has
+been run against a real GitHub release or on Linux by the project.
+
+- **Only stable, published releases are offered.** The updater lists GitHub releases
+  (anonymously; `RetroHazard/animatic` only) and ignores drafts, prereleases (including any tag
+  with a `-` suffix such as `-rc.1`) and tags that are not `vYYYY.M.PATCH`. It takes the **highest
+  CalVer** across all pages, not the first or "latest" entry, and offers it only if it is strictly
+  newer than the running version: equal or lower versions are never offered and there is no
+  downgrade. A release candidate is therefore *not* an update; testers install it manually.
+- **Asset contract.** The published release must contain the platform archive
+  `animatic-vVERSION-windows-x86_64.zip` or `animatic-vVERSION-linux-x86_64.tar.gz` and
+  `SHA256SUMS` with the standard `sha256sum` format (64 lowercase hex digits, two spaces, the file
+  name). The archive must have exactly one root folder (the archive stem) containing the
+  executable (`animatic.exe` or `animatic`), `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`,
+  `CHANGELOG.md` and `docs/*.md`, as built by `release.py package` (see
+  [Archive contents](#archive-contents)). Renaming assets, changing the folder layout or the
+  checksum format breaks updates for every already-installed copy, so change
+  `scripts/release.py` and `animatic-core/src/update.rs` together and keep the previous layout readable
+  for as long as older versions are in use.
+- **What gets installed.** Only the executable is swapped, using the maintained `self-replace`
+  crate. The new `LICENSE` and `THIRD-PARTY-NOTICES.html` are written beside it as
+  `LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` before the swap and are never
+  overwritten if a different file exists. The old `LICENSE`, `THIRD-PARTY-NOTICES.html`,
+  `README.md`, `CHANGELOG.md` and `docs/` stay as they were until the user replaces them from a new
+  archive by hand (so the bundled guides can lag the executable), and the About window shows the
+  versioned license files for the running version. Profiles, databases, settings and media are never touched.
+- **Limits.** Metadata 1 MiB, `SHA256SUMS` 64 KiB, archive 256 MiB, extracted executable 512 MiB,
+  each license file 8 MiB. A release whose archive would exceed them cannot be installed by the
+  updater; raise the limits in `update.rs` and document them when the binary grows.
+- **Trust.** Verification compares the archive's SHA-256 to `SHA256SUMS` from the same release.
+  That catches corruption and mismatched files only; it is not a signature, and anyone able to edit
+  a published release can replace both files. Do not describe it as authenticity.
+- **Privacy and consent.** Checks are anonymous: they send the user's IP address and
+  `Animatic/VERSION` to GitHub; there is no account, token or library data and no credential
+  configuration. Nothing is installed without the user's confirmation. See
+  [Settings reference → Updates](settings-reference.md#updates) for `updates.auto_check`.
+- **Publishing consequences.** Because installed copies see a release as soon as it is published, a
+  maintainer should inspect the draft assets (checksums, archive layout) *before* publishing and
+  should treat unpublishing or deleting a published release as a user-visible event (an update
+  that was offered can disappear before install). Release notes are not shown in the app; the
+  updater links to the release page.
+- **Supported targets only.** Windows and Linux `x86_64`. Other targets have no archives; the updater
+  is disabled there.
+- **Feed visibility.** The updater reads the release feed anonymously, so it only sees releases that
+  GitHub serves to anyone. An HTTP 404 (also what an anonymous client sees for a repository or
+  releases that are not publicly readable) is an explicit "release feed unavailable / not found" error,
+  never "up to date". The feature works once the releases are publicly readable; this repository does
+  not configure or prove its own visibility, and these docs make no claim about it. Until the feed is
+  readable, update by manual archive download ([Install a release](#install-a-release)).
+- **Linux.** The updater's Linux install path (an atomic rename of the executable, the executable bit
+  kept from the archive) has not been exercised by the project on a real Linux desktop.
 
 ## Versions and the changelog
 
@@ -326,7 +393,10 @@ All commands run from your local clone; Git uses the SSH remote.
 7. **Smoke-check the assets** on the platforms you can: verify the checksums as in
    [Install a release](#install-a-release), then launch offline with isolated data (see
    [Development](development.md#running-with-isolated-data)). Record only what you exercised.
-8. **Publish** the draft in the GitHub UI. Publishing is always a manual act.
+8. **Publish** the draft in the GitHub UI. Publishing is always a manual act, and it is what makes
+   the release visible to the in-app updater (stable, non-prerelease releases only): check the
+   asset names, `SHA256SUMS` and archive layout of the draft first, because installed copies will
+   offer the release to their users as soon as it is published.
 
 The first release may use the version already in `Cargo.toml` if its year and month match the
 current UTC month and no tag or released changelog section exists. Run the preparation workflow
@@ -335,7 +405,8 @@ the release section without changing the version numbers.
 
 ## Archive contents
 
-Every archive has exactly one root directory, `animatic-vVERSION-PLATFORM-x86_64`:
+Every archive has exactly one root directory, `animatic-vVERSION-PLATFORM-x86_64` (the in-app
+updater requires this layout; see [In-app updates](#in-app-updates)):
 
 ```text
 animatic-v2026.11.0-windows-x86_64/
@@ -403,10 +474,12 @@ it as a disclosure: pull the release and rewrite or remove the text before repub
 | A release for the tag already exists | The workflow refuses to overwrite. If it is an empty or failed **draft**, inspect it, delete it by hand and re-run. Never delete a published release without a deliberate decision. |
 | Checksum mismatch after download | Do not run the archive. Download again; report it if it persists. |
 | Linux binary fails to start | Install the GTK 3, xkbcommon, Wayland and OpenSSL runtime libraries for your distribution. Not verified by the workflow. |
+| Users report an update that was offered but fails to download or verify | Check that the published release has exactly the expected archive name for the platform and a `SHA256SUMS` line for it in the standard `sha256sum` format, and that the archive stays within the [updater limits](#in-app-updates). Fix by publishing a corrected newer version; do not silently replace assets of a published release |
 
 ## Limits
 
-- Windows `x86_64` MSVC and Linux `x86_64` GNU (Ubuntu 22.04 build) only; unsigned; no installer.
+- Windows `x86_64` MSVC and Linux `x86_64` GNU (Ubuntu 22.04 build) only; unsigned; no installer. In-app updates are
+  explicit, stable-published-only and unverified against production GitHub or Linux.
 - A passing release run shows the build, tests, packaging and checksums succeeded. It is not
   production AniDB validation and not evidence of Linux desktop behavior.
 - Rust API stability across versions is not promised (see

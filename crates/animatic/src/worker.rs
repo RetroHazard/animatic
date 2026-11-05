@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::HttpClient;
@@ -14,6 +14,9 @@ use animatic_core::hash::Ed2kVariant;
 use animatic_core::library::LibraryProjection;
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
 use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
+use animatic_core::update::{
+    InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
+};
 use crossbeam_channel::{Receiver, Sender};
 
 #[derive(Debug)]
@@ -100,8 +103,11 @@ pub struct Worker {
     pub cancel: Arc<AtomicBool>,
     pub pause: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    /// Jobs submitted to the main worker thread that have not finished yet (queued or running).
+    pending: Arc<AtomicUsize>,
     loads: Sender<Background>,
     projection: Option<std::thread::JoinHandle<()>>,
+    main: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Worker {
@@ -112,9 +118,13 @@ impl Worker {
         let cancel = Arc::new(AtomicBool::new(false));
         let pause = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
-        let c = cancel.clone();
-        let p = pause.clone();
-        let s = shutdown.clone();
+        let pending = Arc::new(AtomicUsize::new(0));
+        let flags = RunFlags {
+            cancel: cancel.clone(),
+            pause: pause.clone(),
+            shutdown: shutdown.clone(),
+            pending: pending.clone(),
+        };
         let projection_db = db_path.clone();
         let projection_events = event_tx.clone();
         let projection_shutdown = shutdown.clone();
@@ -130,9 +140,9 @@ impl Worker {
                 )
             })
             .expect("start projection worker");
-        std::thread::Builder::new()
+        let main = std::thread::Builder::new()
             .name("animatic-worker".into())
-            .spawn(move || run(db_path, job_rx, event_tx, main_loads, c, p, s))
+            .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags))
             .expect("start worker");
         Worker {
             jobs: job_tx,
@@ -140,8 +150,10 @@ impl Worker {
             cancel,
             pause,
             shutdown,
+            pending,
             loads: load_tx,
             projection: Some(projection),
+            main: Some(main),
         }
     }
 
@@ -166,8 +178,59 @@ impl Worker {
                 });
             }
             job => {
-                let _ = self.jobs.send(job);
+                self.pending.fetch_add(1, Ordering::SeqCst);
+                if self.jobs.send(job).is_err() {
+                    self.pending.fetch_sub(1, Ordering::SeqCst);
+                }
             }
+        }
+    }
+
+    /// True when no job of the main worker thread is queued or running. Unlike the
+    /// `Started`/`Finished` events, which the UI sees a frame later, this is the actual state.
+    pub fn is_idle(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) == 0
+    }
+
+    /// Stops the worker and waits for the main worker thread too, so that its database
+    /// connection is closed when this returns. Only meant for an idle worker (restart): a job in
+    /// a network exchange would delay the return by up to its timeout.
+    pub fn stop_and_join(&mut self) {
+        self.close(true);
+    }
+
+    fn close(&mut self, join_main: bool) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.cancel.store(true, Ordering::Relaxed);
+        let _ = self.jobs.send(Job::Stop);
+        let _ = self.loads.send(Background::Stop);
+        if let Some(projection) = self.projection.take() {
+            let _ = projection.join();
+        }
+        if join_main && let Some(main) = self.main.take() {
+            let _ = main.join();
+        }
+    }
+}
+
+/// One counted job of the main worker thread; the count drops when the job is finished.
+struct PendingJob(Option<Arc<AtomicUsize>>);
+
+impl PendingJob {
+    /// Only jobs that `Worker::submit` counted are uncounted again here: `Stop` and projection
+    /// requests are never counted.
+    fn of(job: &Job, pending: &Arc<AtomicUsize>) -> PendingJob {
+        match job {
+            Job::Stop | Job::LoadLibrary { .. } | Job::ExportStatistics { .. } => PendingJob(None),
+            _ => PendingJob(Some(pending.clone())),
+        }
+    }
+}
+
+impl Drop for PendingJob {
+    fn drop(&mut self) {
+        if let Some(pending) = &self.0 {
+            pending.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -177,14 +240,16 @@ impl Drop for Worker {
     /// statistics exports and a load in progress (local database reads/writes, no network). The
     /// main worker thread is not joined: it may be inside a network exchange of up to 20 s.
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        self.cancel.store(true, Ordering::Relaxed);
-        let _ = self.jobs.send(Job::Stop);
-        let _ = self.loads.send(Background::Stop);
-        if let Some(projection) = self.projection.take() {
-            let _ = projection.join();
-        }
+        self.close(false);
     }
+}
+
+/// The shared control flags of the main worker thread.
+struct RunFlags {
+    cancel: Arc<AtomicBool>,
+    pause: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    pending: Arc<AtomicUsize>,
 }
 
 fn run(
@@ -192,11 +257,16 @@ fn run(
     jobs: Receiver<Job>,
     events: Sender<Event>,
     loads: Sender<Background>,
-    cancel: Arc<AtomicBool>,
-    pause: Arc<AtomicBool>,
-    shutdown: Arc<AtomicBool>,
+    flags: RunFlags,
 ) {
+    let RunFlags {
+        cancel,
+        pause,
+        shutdown,
+        pending,
+    } = flags;
     while let Ok(job) = jobs.recv() {
+        let _counted = PendingJob::of(&job, &pending);
         if shutdown.load(Ordering::Relaxed) {
             break;
         }
@@ -434,6 +504,267 @@ fn run(
             }
         }
     }
+}
+
+/// A request for the updater thread (see [`Updater`]).
+#[derive(Debug)]
+pub enum UpdateJob {
+    /// Look for a newer stable release. Needs only the public release list.
+    Check,
+    /// Download and verify the archive of a release found by a check.
+    Download(Box<ReleaseInfo>),
+    /// Replace the executable with the verified update. Runs to completion once started.
+    Install(Box<VerifiedUpdate>),
+}
+
+/// What the updater thread reports. Kept apart from [`Event`]: these never drive the activity
+/// bar or a library refresh.
+#[derive(Debug)]
+pub enum UpdateEvent {
+    Checked(Option<Box<ReleaseInfo>>),
+    CheckFailed(String),
+    Progress {
+        done: u64,
+        total: u64,
+    },
+    /// The archive matched its published checksum and the files are staged for installation.
+    Ready(Box<VerifiedUpdate>),
+    DownloadFailed(String),
+    /// A check or download stopped because the user cancelled it.
+    Cancelled,
+    /// The executable was replaced; the value is the installed version.
+    Installed(String),
+    /// `attempted`: the replacement of the executable was entered (or the thread panicked
+    /// inside it), so the installed files may be in an unknown state. Otherwise nothing was
+    /// replaced, though the staged update is gone.
+    InstallFailed {
+        message: String,
+        attempted: bool,
+    },
+}
+
+/// What an installation did in this process. Once the replacement of the executable was entered,
+/// whatever its outcome, the file on disk may differ from the running build (a failed
+/// replacement can leave it changed), so the process neither checks, downloads nor installs
+/// again. The lock also serializes install requests of every updater in the process.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InstallAttempt {
+    None,
+    /// The executable was replaced; restarting runs the new version.
+    Succeeded,
+    /// The attempt ended in an error or a panic after the replacement was entered; the
+    /// installed files are in an unknown state.
+    Failed,
+}
+
+impl InstallAttempt {
+    fn refusal(self) -> Option<&'static str> {
+        match self {
+            InstallAttempt::None => None,
+            InstallAttempt::Succeeded => Some(
+                "Animatic has already been updated; restart it before checking for further updates",
+            ),
+            InstallAttempt::Failed => Some(
+                "An earlier installation attempt in this session did not finish cleanly; no \
+                 further updates are possible until Animatic has been restarted or reinstalled \
+                 manually",
+            ),
+        }
+    }
+}
+
+static INSTALL_ATTEMPT: parking_lot::Mutex<InstallAttempt> =
+    parking_lot::Mutex::new(InstallAttempt::None);
+/// Progress events are at most this frequent; the final one is always sent.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Update checks, downloads and installations on a thread of their own, with a cancel flag of
+/// their own: the main worker clears its flag whenever a job starts and may be busy for hours.
+///
+/// Dropping the updater cancels a check or download and **waits** for the thread. A running
+/// installation is never interrupted, so the executable cannot be replaced behind the back of an
+/// exiting process; queued jobs are discarded and an installation that has not started does not
+/// start. Network waits are bounded by the core client's timeouts.
+pub struct Updater {
+    jobs: Option<Sender<UpdateJob>>,
+    pub events: Receiver<UpdateEvent>,
+    cancel: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Updater {
+    /// `installation` identifies the executable the process was started from, captured before
+    /// any replacement; without it installation is refused.
+    pub fn spawn(installation: Option<Arc<InstallationTarget>>) -> Updater {
+        let (job_tx, job_rx) = crossbeam_channel::unbounded();
+        let (event_tx, event_rx) = crossbeam_channel::unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (c, s) = (cancel.clone(), shutdown.clone());
+        let thread = std::thread::Builder::new()
+            .name("animatic-updater".into())
+            .spawn(move || run_updates(job_rx, event_tx, c, s, installation))
+            .expect("start updater");
+        Updater {
+            jobs: Some(job_tx),
+            events: event_rx,
+            cancel,
+            shutdown,
+            thread: Some(thread),
+        }
+    }
+
+    /// The UI submits only while no operation is in flight (it waits for the typed reply or
+    /// cancel acknowledgement), so the cancel flag is cleared here, before the job is queued:
+    /// a cancel request made while the job is still queued then reaches the job.
+    pub fn submit(&self, job: UpdateJob) {
+        if let Some(jobs) = &self.jobs {
+            self.cancel.store(false, Ordering::SeqCst);
+            let _ = jobs.send(job);
+        }
+    }
+
+    /// Cancels the check or download that is running now (never an installation).
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Updater {
+    fn drop(&mut self) {
+        // `submit` cannot run concurrently with this, and the thread never clears `cancel`, so
+        // the request below always stands for whatever job is running or queued.
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.cancel.store(true, Ordering::SeqCst);
+        self.jobs = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn run_updates(
+    jobs: Receiver<UpdateJob>,
+    events: Sender<UpdateEvent>,
+    cancel: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    installation: Option<Arc<InstallationTarget>>,
+) {
+    let mut client: Option<UpdateClient> = None;
+    while let Ok(job) = jobs.recv() {
+        // `cancel` is only raised by the user or by `Updater::drop`; `submit` clears it.
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        let event = match job {
+            UpdateJob::Check => guarded(
+                || {
+                    if let Some(refusal) = INSTALL_ATTEMPT.lock().refusal() {
+                        return UpdateEvent::CheckFailed(refusal.into());
+                    }
+                    let Some(platform) = Platform::current() else {
+                        return UpdateEvent::CheckFailed(
+                            "Updates are only available for 64-bit Windows and Linux".into(),
+                        );
+                    };
+                    match update_client(&mut client)
+                        .and_then(|c| c.check(env!("CARGO_PKG_VERSION"), platform, &cancel))
+                    {
+                        Ok(release) => UpdateEvent::Checked(release.map(Box::new)),
+                        Err(_) if cancel.load(Ordering::SeqCst) => UpdateEvent::Cancelled,
+                        Err(e) => UpdateEvent::CheckFailed(e.to_string()),
+                    }
+                },
+                UpdateEvent::CheckFailed("The update check failed unexpectedly".into()),
+            ),
+            UpdateJob::Download(release) => guarded(
+                || {
+                    if let Some(refusal) = INSTALL_ATTEMPT.lock().refusal() {
+                        return UpdateEvent::DownloadFailed(refusal.into());
+                    }
+                    let mut last = None::<Instant>;
+                    let mut progress = |done: u64, total: u64| {
+                        let due = last.is_none_or(|at| at.elapsed() >= PROGRESS_INTERVAL);
+                        if due || done >= total {
+                            last = Some(Instant::now());
+                            let _ = events.send(UpdateEvent::Progress { done, total });
+                        }
+                    };
+                    match update_client(&mut client)
+                        .and_then(|c| c.download(&release, &cancel, &mut progress))
+                    {
+                        Ok(update) => UpdateEvent::Ready(Box::new(update)),
+                        Err(_) if cancel.load(Ordering::SeqCst) => UpdateEvent::Cancelled,
+                        Err(e) => UpdateEvent::DownloadFailed(e.to_string()),
+                    }
+                },
+                UpdateEvent::DownloadFailed("The download failed unexpectedly".into()),
+            ),
+            UpdateJob::Install(update) => {
+                let Some(target) = installation.as_deref() else {
+                    let _ = events.send(UpdateEvent::InstallFailed {
+                        message: "Animatic could not identify the program it was started from"
+                            .into(),
+                        attempted: false,
+                    });
+                    continue;
+                };
+                let mut attempt = INSTALL_ATTEMPT.lock();
+                if let Some(refusal) = attempt.refusal() {
+                    UpdateEvent::InstallFailed {
+                        message: refusal.into(),
+                        attempted: true,
+                    }
+                } else if shutdown.load(Ordering::SeqCst) {
+                    break;
+                } else {
+                    // Latched before the call: a panic inside must count as an attempt too.
+                    *attempt = InstallAttempt::Failed;
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        (*update).install(target)
+                    }));
+                    match outcome {
+                        Ok(Ok(version)) => {
+                            *attempt = InstallAttempt::Succeeded;
+                            UpdateEvent::Installed(version)
+                        }
+                        Ok(Err(e)) => {
+                            let attempted = e.install_attempted();
+                            if !attempted {
+                                // Refused before anything was replaced (another installer, a
+                                // different file on disk): the process is unchanged.
+                                *attempt = InstallAttempt::None;
+                            }
+                            UpdateEvent::InstallFailed {
+                                message: e.to_string(),
+                                attempted,
+                            }
+                        }
+                        Err(_) => UpdateEvent::InstallFailed {
+                            message: "The installation failed unexpectedly".into(),
+                            attempted: true,
+                        },
+                    }
+                }
+            }
+        };
+        let _ = events.send(event);
+    }
+}
+
+/// The client is built on first use so that a failure to build it is an ordinary check error.
+fn update_client(slot: &mut Option<UpdateClient>) -> animatic_core::update::Result<&UpdateClient> {
+    if slot.is_none() {
+        *slot = Some(UpdateClient::new()?);
+    }
+    Ok(slot.as_ref().expect("client was just stored"))
+}
+
+/// Runs `job`; a panic inside it becomes `on_panic` instead of silently ending the thread and
+/// leaving the UI waiting for a reply.
+fn guarded(job: impl FnOnce() -> UpdateEvent, on_panic: UpdateEvent) -> UpdateEvent {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or(on_panic)
 }
 
 /// A request for the projection thread.
@@ -1064,6 +1395,29 @@ mod tests {
         wait_for(&worker, |e| matches!(e, Event::Finished));
         assert!(!worker.cancel.load(Ordering::Relaxed));
         assert_eq!(db.open().queue_len().unwrap(), 1, "titles dump queued");
+    }
+
+    #[test]
+    fn idle_tracks_unfinished_jobs_and_survives_a_stopped_worker() {
+        let db = TempDb::new();
+        drop(db.open());
+        let mut worker = Worker::spawn(db.path.clone());
+        assert!(worker.is_idle());
+        worker.submit(Job::QueueFullUpdate);
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        // `Finished` is sent before the job is counted off.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !worker.is_idle() {
+            assert!(Instant::now() < deadline, "worker never became idle");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        worker.stop_and_join();
+        worker.submit(Job::QueueFullUpdate);
+        assert!(
+            worker.is_idle(),
+            "a job nobody can run must not stay counted"
+        );
     }
 
     #[test]

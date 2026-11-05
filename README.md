@@ -16,6 +16,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 - Compatible rename expressions with diagnostics, preview and explicit confirmation.
 - Configurable players, AVDump integration and XML/INI statistics exports.
 - Safe settings-backup recovery that starts offline and preserves the original files.
+- Explicit, user-confirmed updates from published GitHub releases (check, download and
+  verify, install, restart); nothing is downloaded or installed unattended.
 
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
 There is **no full-account MyList bootstrap, scheduled folder scanning, automatic
@@ -31,10 +33,26 @@ Published [GitHub Releases](https://github.com/RetroHazard/animatic/releases) ca
 unsigned `animatic-vVERSION-windows-x86_64.zip`, an unsigned
 `animatic-vVERSION-linux-x86_64.tar.gz` and a `SHA256SUMS` file. Each archive contains the
 executable plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the Markdown guides from `docs/`
-(Rust API documentation is not included). There is no installer, code signing or auto-update.
+(Rust API documentation is not included). There is no installer or code signing.
 Verify the checksum before unpacking; the Windows PowerShell and Linux `sha256sum` commands
 are in [Releases](docs/releases.md#install-a-release). Linux runtime behavior has not been
 exercised by the project, and the Linux build is made on Ubuntu 22.04.
+
+### Update an installed release
+
+On Windows and Linux x86_64, Animatic can update **its own executable** from the latest stable
+published GitHub release. Updates are always explicit: **Help → Check for updates…** (or the
+optional startup check) only looks for a newer version; you then press **Download and
+verify**, confirm the installation, and choose **Restart now** or **Later**. Nothing is
+downloaded or installed unattended, and there is no privilege elevation: the folder that
+holds the executable must be writable. The archive is checked against the release's
+`SHA256SUMS`, which detects a corrupted or mismatched download but is **not** a signature and
+does not prove who produced it; releases are unsigned. Contacting GitHub exposes your IP
+address and the Animatic version to GitHub; no account, token or library data is sent. The
+startup check is controlled by **Check for updates at startup** (`updates.auto_check`, on by
+default) and is skipped while *Work offline* is set or settings were recovered from a backup.
+See [Updating Animatic](docs/user-guide.md#updating-animatic) and
+[Releases](docs/releases.md#in-app-updates).
 
 ### Build from source
 
@@ -57,7 +75,9 @@ The executable is `target/release/animatic.exe` on Windows or
 Start **offline**. Before synchronizing, configure your AniDB credentials and a registered
 client identifier. Do not test production AniDB with invented client credentials.
 The [getting-started guide](docs/getting-started.md) covers downloads, first run,
-portable paths and the complete CLI.
+portable paths and the complete CLI. A source-checkout or package-manager executable
+can run the updater but should normally be updated through its own workflow; see
+[Updating Animatic](docs/user-guide.md#updating-animatic).
 
 ## Documentation
 
@@ -66,8 +86,8 @@ portable paths and the complete CLI.
   which compatibility fields actually affect runtime behavior.
 - [Troubleshooting and recovery](docs/troubleshooting.md): backups, startup failures,
   queue/network problems, renaming and privacy-safe diagnostics.
-- [Releases](docs/releases.md): versioning, changelog, release workflows, archive contents and
-  checksum verification.
+- [Releases](docs/releases.md): versioning, changelog, release workflows, archive contents,
+  checksum verification and the in-app update contract.
 - [Complete documentation index](docs/README.md): rename language, architecture,
   storage/network contracts, development and historical research.
 
@@ -93,6 +113,8 @@ Settings and backups can contain plaintext credentials. Library databases, expor
 logs can expose viewing history and filesystem paths. Keep runtime data outside this
 repository; use synthetic fixtures for development and redact support reports.
 Original AOM binaries, databanks and extraction artifacts are not part of this project.
+Update checks and downloads contact GitHub (`github.com`, `api.github.com`), not AniDB; see
+[Storage and network](docs/storage-and-network.md#github-update-transport) for exactly what is sent.
 
 MIT; see [LICENSE](LICENSE). AniDB and AniDB O'Matic are independent projects.
 

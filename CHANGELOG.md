@@ -23,3 +23,20 @@ added under conventional headings.
   file. Each archive contains the `animatic` executable, the MIT `LICENSE`, `README.md`,
   `CHANGELOG.md`, generated third-party dependency license notices
   (`THIRD-PARTY-NOTICES.html`) and the tracked `docs/` guides.
+- Explicit in-app updates from published GitHub releases (Windows and Linux x86_64): **Help →
+  Check for updates…** and an optional startup check (**Check for updates at startup**,
+  `updates.auto_check`, on by default, skipped while *Work offline* is on or after settings
+  recovery) find the highest stable CalVer release that is newer than the running version, never a
+  draft, prerelease, equal or lower version. **Download and verify** fetches the platform archive and
+  `SHA256SUMS` with size limits, cancellation and timeouts on a dedicated updater thread, checks
+  the SHA-256 and stages the executable; **Install** needs a confirmation, replaces only the
+  executable (via `self-replace`, no elevation) and adds `LICENSE-vVERSION` and
+  `THIRD-PARTY-NOTICES-vVERSION.html` next to it; **Restart now** relaunches only after the window and
+  database are released, with the current `--database` path only. Nothing is downloaded or installed
+  unattended, install and restart are blocked while work or unsaved settings are pending, the AOM settings
+  import keeps the preference, and archives remain unsigned (the checksum detects corruption, not
+  forgery). Update traffic goes to GitHub anonymously (IP address and `Animatic/VERSION` user agent),
+  never to AniDB, and has no AniDB spacing or cooldown. While the repository's releases are not
+  publicly readable, a manual check reports the release feed as unavailable (never "up to date"). On Windows a failed executable swap restores the previous executable
+  best-effort from a kept recovery copy; no rollback or power-loss guarantee is made. Bundled
+  guides and notices keep the old version until the archive is replaced manually.

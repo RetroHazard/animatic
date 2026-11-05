@@ -10,13 +10,14 @@ capability is in [Feature parity](feature-parity.md).
 
 ```mermaid
 flowchart LR
-    APP["animatic<br/>window, UI state, worker, CLI"] --> CORE["animatic-core<br/>SQLite, queue, command executor,<br/>hashing, rename, import"]
+    APP["animatic<br/>window, UI state, worker, updater thread, CLI"] --> CORE["animatic-core<br/>SQLite, queue, command executor,<br/>hashing, rename, import, update"]
     APP --> API["animatic-anidb<br/>UDP and HTTP protocol clients"]
     CORE --> API
     API --> UDP[AniDB UDP API]
     API --> HTTP[AniDB HTTP API and title dump]
     CORE --> DB[(SQLite library)]
     CORE --> FS[local media files]
+    CORE --> GH[GitHub releases<br/>HTTPS, anonymous]
     IMPORT[user-supplied AOM databank] --> CORE
 ```
 
@@ -54,7 +55,8 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `stats` | Library aggregation and XML/INI rendering |
 | `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
 | `format` | Size, date, duration and count formatting |
-| `error` | Crate-wide `Error`/`Result` |
+| `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
+| `error` | Crate-wide `Error`/`Result` (the update module has its own) |
 
 ### `animatic-anidb`
 
@@ -64,8 +66,8 @@ and strict reply decoding), `http` (anime XML, title dump streaming, image downl
 
 ### `animatic`
 
-`main.rs` (paths, environment, CLI flags, window), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping), `worker.rs` (jobs, events, queue runs, projection thread).
+`main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
+projection bookkeeping, the Software updates window), `worker.rs` (jobs, events, queue runs, projection thread, updater thread).
 
 ## Runtime model
 
@@ -74,6 +76,7 @@ projection bookkeeping), `worker.rs` (jobs, events, queue runs, projection threa
 | UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); rename apply; hash-export file write; settings save |
 | `animatic-worker` | A fresh `Db::open` per job (hashing: per file) | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins) and `Job::ExportStatistics` |
+| `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
 
 The UI sends `Job`s over an unbounded crossbeam channel and drains `Event`s every frame.
@@ -86,7 +89,8 @@ when it is made and is cleared only when the next job starts.
 Dropping `Worker` (application exit) sets the shutdown and cancel flags, sends `Stop`, and joins
 only the projection thread, so accepted statistics exports finish. The network thread is not
 joined: it can be inside an exchange of up to the 20 s UDP timeout (or the 60 s HTTP budget) and
-is simply abandoned at process exit.
+is simply abandoned at process exit. The updater thread is the exception described below: its
+network work is cancelled on drop, and an install in progress is joined.
 
 SQLite is the shared state. WAL mode lets the projection thread and the UI read while the worker
 writes; only one writer proceeds at a time. Writers that read-modify-write use
@@ -263,6 +267,81 @@ normal exit the application otherwise saves the current in-memory settings (Opti
 live), so the file can change without pressing Save. See
 the [settings reference](settings-reference.md) for fields.
 
+### Updater thread
+
+Checking, downloading and installing an Animatic update run on a dedicated `Updater` thread
+(`animatic-updater` in `worker.rs`) with its own job channel (`UpdateJob::{Check, Download,
+Install}`), its own cancel flag and its own typed `UpdateEvent`s, **not** on `animatic-worker`.
+Reasons: a queue run can last hours and must not delay an update check, and the normal worker
+clears its shared `cancel` flag at the start of every job, which would silently un-cancel an
+update download. `UpdateEvent`s are separate from the normal `Started`/`Progress`/`Finished`
+`Event`s because those drive the status-bar activity and trigger a library refresh. The UI owns
+the `Updater` next to the `Worker`; update jobs never pass through `Worker::submit`.
+
+```mermaid
+sequenceDiagram
+    participant UI
+    participant Updater as animatic-updater
+    participant GH as GitHub (HTTPS)
+    UI->>Updater: Check (startup if auto_check and online, or Help menu)
+    Updater->>GH: release pages
+    Updater-->>UI: Checked(Some or None) / CheckFailed
+    UI->>Updater: Download (user pressed Download and verify)
+    Updater->>GH: archive + SHA256SUMS (bounded, cancellable)
+    Updater-->>UI: Progress, then Ready (VerifiedUpdate staged)
+    UI->>Updater: Install (user confirmed)
+    Updater->>Updater: versioned licenses, then self-replace
+    Updater-->>UI: Installed(version)
+    UI->>UI: Restart now: close window, drop app, worker and updater
+    UI->>UI: main spawns the captured executable after run_native returns
+```
+
+Rules the code relies on:
+
+- **One operation at a time.** The UI tracks a single update state (idle, checking, available,
+  downloading, ready, installing, installed); buttons that would start a second operation are
+  disabled. Install requests are additionally serialized behind an in-process guard, and
+  across Animatic processes by an OS advisory lock (`File::try_lock`) on an empty
+  `.animatic-update.lock` file in the install directory, so two instances can never install
+  at once. The kernel releases the lock if a process crashes; the empty file may remain and is
+  harmless. There are no PIDs, retries or elevation. Nothing starts automatically except the startup check.
+- **No install/shutdown race.** Dropping the `Updater` cancels a check or download through the
+  update cancel flag, discards queued jobs and **waits** for the thread, so a running install is
+  never interrupted and the process never exits halfway through the executable swap (an install
+  that has not started does not start). Cancel is checked per downloaded chunk and never applied
+  inside `self-replace`. Once an install succeeded, or the replacement was entered and failed
+  (`UpdateError::install_attempted()`), the process stops checking, downloading, installing and
+  restarting by itself until the user restarts Animatic manually, because the executable on disk
+  no longer matches the running process (or may be damaged). An install refused before the
+  replacement (another installer, a different file on disk) leaves the process unchanged and the
+  user must download again.
+- **Install gating.** Install and restart are disabled (`update_blocker`) while the worker has
+  queued or running jobs or the activity is busy, an AOM import or imported-settings review is
+  pending, deferred (unsaved) commands exist, or the install location is unknown; restart is also
+  disabled while recovered settings are unsaved. The UI checks the worker's real state
+  (`Worker::is_idle`), not just the events it has already processed.
+- **Executable identity.** `main` calls `InstallationTarget::capture()` first thing at startup,
+  before any swap (after a Windows self-replace the live path can differ). It records the path and
+  the OS file identity of the running executable; `install` re-validates it before and after taking
+  the install lock and refuses when the file at that path is not the same file, so a second
+  instance cannot replace an executable another instance already replaced. Without a captured
+  target, updates are disabled.
+- **Restart after teardown.** **Restart now** saves the settings first (a failed save keeps the
+  application open), sets a shared `AtomicBool` and asks egui to close the window. On the way out the
+  app stops and joins the idle main worker thread (`Worker::stop_and_join`), so its database
+  connection is closed. `main` spawns the new process only after `run_native` has returned, i.e.
+  after the app, its database connection, the worker and the updater have been dropped, so two
+  processes never share the database or settings files. The child receives the current
+  `--database FILE` (absolute) and nothing else (never media files or `--full-update`), inherits the
+  environment, and gets `ANIMATIC_SETTINGS` as the absolute path in use when it was set. A failed spawn is reported as an error telling the
+  user to start Animatic manually; there is no retry.
+- **Scope of an install.** Only the executable is replaced; versioned license files are added next
+  to it. Profiles, database, settings, backups, queue and media are untouched, and the canonical
+  `LICENSE`, `THIRD-PARTY-NOTICES.html`, README, changelog and docs of the original archive remain.
+- **No AniDB coupling.** The update path uses no AniDB client, spacing or cooldown, and its failures
+  never enter the command queue. Only the startup check consults AniDB *settings* (offline,
+  recovery) to decide whether to contact GitHub automatically.
+
 ### Rename
 
 `rename::plan::plan` compiles and evaluates the pattern against database-backed objects and
@@ -281,6 +360,7 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
 | `move_file` | The database path changes only after `fs::rename` succeeded; an existing destination is refused first | See below |
 | Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. `.bak` may retain old or removed credentials. Directory-entry durability. Encryption (plain text). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
+| Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
 | Statistics and hash export | Hash export uses the UI's loaded projection; statistics run on the projection thread | Atomic replace: both use `fs::write` (truncate then write) on the destination. `library_stats` is several separate queries, not one read transaction, so concurrent writes can be mixed into one report, and a failed scalar total is reported as 0 |
 | Hashing | One read pass; cancel/pause per 4 MiB block | Detecting a file that changes while it is read |
 | Local-record removal | Only after affirmative absence under a reachable manager root | Atomic against a disconnect between planning and execution |
@@ -313,7 +393,9 @@ archives from an explicit binary plus the licence, a generated `THIRD-PARTY-NOTI
 `SHA256SUMS`. `release-prepare.yml` and `release.yml` orchestrate it: preparation opens a
 reviewed pull request, and a maintainer-pushed `vVERSION` tag produces a draft GitHub Release.
 Archives carry no database, settings, media or credentials. Contracts, permissions and
-procedure: [Releases](releases.md).
+procedure: [Releases](releases.md). The in-app updater consumes the published form of this output
+(archive names, folder layout and `SHA256SUMS` format are an API: change them together with
+`update.rs`; see [In-app updates](releases.md#in-app-updates)).
 
 ## State rules
 
@@ -340,14 +422,18 @@ Worked examples with real signatures, including a compilable offline snippet, ar
 | New persistent field or table | New table: add `CREATE TABLE IF NOT EXISTS` to `schema.sql`. New column on an existing table: also add an idempotent migration in `db::init` *before* the schema script (the script cannot add columns). Update store writes, library reads and import mapping; test an existing database and a new one |
 | New AniDB command | Typed request/reply in `animatic-anidb::commands`; a `Command` variant in `core::sync` (`describe`, `priority`, `mylist_lid` when it targets an entry) and an arm in `sync::execute`; reply application in `store` using `write_tx` and pending-intent overlays; UI producer; tests with local fixtures, never production AniDB |
 | New background operation | `Job` and `Event` in `worker.rs`; keep blocking work off `app.rs`; define progress, cancellation and failure events; reload only affected projections; exercise the real UI path |
-| New setting | Field with `#[serde(default)]` in `settings.rs`; a runtime consumer; an entry in the [settings reference](settings-reference.md). A persisted field with no consumer must be documented as stored-only |
+| New setting | Field with `#[serde(default)]` in `settings.rs`; a runtime consumer; an entry in the [settings reference](settings-reference.md). A persisted field with no consumer must be documented as stored-only. `AOM import` builds on `Settings::default()`, so a preference AOM does not know (like `updates`) must be carried over in `keep_preferences_unknown_to_legacy` |
 
 ## Security and privacy
 
 Settings contain AniDB credentials and an optional API key in plain text; libraries and
 statistics reveal viewing habits and filesystem layout. Keep runtime data outside the repository,
 out of logs and out of tests, and preserve the `.gitignore` protections. The UDP protocol is
-not TLS: see [Transport security](storage-and-network.md#transport-security).
+not TLS: see [Transport security](storage-and-network.md#transport-security). The update check and
+download contact GitHub over HTTPS with the client's IP address and the `Animatic/VERSION`
+`User-Agent`, no credentials or library data, and install only after an explicit confirmation;
+release archives are checksummed but unsigned (see
+[GitHub update transport](storage-and-network.md#github-update-transport)).
 
 Migration crypto constants are format-interoperability material, not credentials. Legacy tests
 build records and pages from explicit synthetic values; encoded dumps or ciphertext copied from

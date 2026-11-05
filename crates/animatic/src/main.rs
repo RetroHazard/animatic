@@ -1,13 +1,26 @@
 mod app;
 mod worker;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 
 fn main() -> anyhow::Result<()> {
+    // Captured first, before anything can replace the file: the updater installs over exactly
+    // this file (checked by identity, not just by path) and the restart starts exactly this path.
+    let installation = match animatic_core::update::InstallationTarget::capture() {
+        Ok(target) => Some(Arc::new(target)),
+        Err(e) => {
+            log::warn!("updates are unavailable, the executable could not be identified: {e}");
+            None
+        }
+    };
     let mut db_override = std::env::var_os("ANIMATIC_DB").map(PathBuf::from);
-    let settings_override = std::env::var_os("ANIMATIC_SETTINGS").map(PathBuf::from);
+    let settings_override = std::env::var_os("ANIMATIC_SETTINGS")
+        .map(PathBuf::from)
+        .map(|path| std::path::absolute(&path).unwrap_or(path));
     let mut files = Vec::new();
     let mut full_update = false;
     let mut args = std::env::args_os().skip(1);
@@ -37,22 +50,34 @@ fn main() -> anyhow::Result<()> {
         directories::ProjectDirs::from("net", "AniDB", "Animatic")
             .ok_or_else(|| anyhow::anyhow!("unable to determine the default application directory; use --database and ANIMATIC_SETTINGS"))
     };
+    // Absolute from here on, so the restart opens the very same database even if a file dialog
+    // changed the working directory meanwhile.
     let db_path = match db_override {
         Some(path) => path,
         None => default_dirs()?.data_dir().join("animatic.sqlite3"),
     };
+    let db_path = std::path::absolute(&db_path).unwrap_or(db_path);
+    let relaunch_settings = settings_override.clone();
     let settings_path = match settings_override {
         Some(path) => path,
         None => default_dirs()?.config_dir().join("settings.json"),
     };
-    let app = app::AnimaticApp::new(db_path.clone(), settings_path.clone(), files, full_update)
-        .with_context(|| {
-            format!(
-                "Animatic could not start (database: {}, settings: {})",
-                db_path.display(),
-                settings_path.display()
-            )
-        })?;
+    let restart = Arc::new(AtomicBool::new(false));
+    let app = app::AnimaticApp::new(app::Startup {
+        db_path: db_path.clone(),
+        settings_path: settings_path.clone(),
+        files,
+        full_update,
+        installation: installation.clone(),
+        restart: restart.clone(),
+    })
+    .with_context(|| {
+        format!(
+            "Animatic could not start (database: {}, settings: {})",
+            db_path.display(),
+            settings_path.display()
+        )
+    })?;
     let native = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Animatic — AniDB library manager")
@@ -60,6 +85,7 @@ fn main() -> anyhow::Result<()> {
             .with_min_inner_size([900.0, 600.0]),
         ..Default::default()
     };
+    // The app (and with it the worker and database connections) is dropped when this returns.
     eframe::run_native(
         "Animatic",
         native,
@@ -68,5 +94,24 @@ fn main() -> anyhow::Result<()> {
             Ok(Box::new(app))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("the window system failed: {e}"))
+    .map_err(|e| anyhow::anyhow!("the window system failed: {e}"))?;
+    if restart.load(Ordering::SeqCst) {
+        let target = installation.context("the executable was not identified at startup")?;
+        relaunch(target.path(), &db_path, relaunch_settings.as_deref()).context(
+            "Animatic was updated but could not start the new version; start it manually",
+        )?;
+    }
+    Ok(())
+}
+
+/// Starts the updated executable against the database that was open. Nothing else is passed on:
+/// not the media files (they would be hashed again), not `--full-update`. A settings location
+/// given through `ANIMATIC_SETTINGS` is handed on as the absolute path that was in use.
+fn relaunch(executable: &Path, db_path: &Path, settings: Option<&Path>) -> std::io::Result<()> {
+    let mut command = std::process::Command::new(executable);
+    command.arg("--database").arg(db_path);
+    if let Some(settings) = settings {
+        command.env("ANIMATIC_SETTINGS", settings);
+    }
+    command.spawn().map(|_| ())
 }

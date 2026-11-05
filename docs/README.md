@@ -9,10 +9,10 @@ explicitly; the historical forum audit is evidence, not a product specification.
 | Guide | Read it for |
 |---|---|
 | [Getting started](getting-started.md) | Download a release or build, first run, data locations, portable setup and CLI reference |
-| [User guide](user-guide.md) | Library views, hashing, identification, MyList edits, scans, migration, exports and external tools |
-| [Settings reference](settings-reference.md) | JSON fields, defaults, UI controls, active versus stored-only options and recovery rules |
+| [User guide](user-guide.md) | Library views, hashing, identification, MyList edits, scans, migration, exports, external tools and updating Animatic |
+| [Settings reference](settings-reference.md) | JSON fields (including `updates.auto_check`), defaults, UI controls, active versus stored-only options and recovery rules |
 | [Rename language](rename-language.md) | Expressions, functions, object properties, working patterns, validation and safe application |
-| [Troubleshooting](troubleshooting.md) | Backups, recovery, synchronization failures, filesystem problems and privacy-safe support |
+| [Troubleshooting](troubleshooting.md) | Backups, recovery, synchronization failures, update problems, filesystem problems and privacy-safe support |
 
 For an existing AOM library, start with the migration section in the user guide. Keep the
 original databank and all runtime output outside the source checkout. Before online work,
@@ -22,10 +22,10 @@ review imported settings and use a registered AniDB client identifier.
 
 | Guide | Read it for |
 |---|---|
-| [Architecture](architecture.md) | Crate dependencies, threads, data flows, invariants and extension points |
-| [Storage and network contracts](storage-and-network.md) | Schema, queue ordering and failure states, protocol handling and Rust API entry points |
+| [Architecture](architecture.md) | Crate dependencies, threads (including the updater thread), data flows, invariants and extension points |
+| [Storage and network contracts](storage-and-network.md) | Schema, queue ordering and failure states, AniDB protocol handling, the GitHub update transport and Rust API entry points |
 | [Development](development.md) | Toolchain, checks, native smoke verification, CI and contribution/privacy rules |
-| [Releases](releases.md) | Versioning and changelog, release tool, workflows, maintainer procedure, archive contents and checksum verification |
+| [Releases](releases.md) | Versioning and changelog, release tool, workflows, maintainer procedure, archive contents, checksum verification and the in-app update contract |
 | [Feature parity](feature-parity.md) | Desktop workflows versus core-only capabilities, compatibility differences and open gaps |
 
 Generate API documentation with `cargo doc --workspace --no-deps`; the local entry points

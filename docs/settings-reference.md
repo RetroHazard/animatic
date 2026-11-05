@@ -33,8 +33,8 @@ consumers named in each table.
 | **Core only** | The core library supports it, but no desktop action calls that code. |
 
 Options is **Tools → Options…**. Its sections, in order: AniDB account, Appearance, Hashing,
-Managed folders, Statistics export, External player, AVDump, Renaming pattern, Mylist states
-(read-only label).
+Managed folders, Statistics export, External player, AVDump, Renaming pattern, Updates,
+Mylist states (read-only label).
 
 ## Document layout
 
@@ -52,13 +52,14 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 | `avdump` | object | disabled | [AVDump](#avdump-avdump) |
 | `ed2k_space_replacement` | string or `null` | `null` | [Top-level keys](#top-level-keys) |
 | `first_launch` | boolean | `true` | [Top-level keys](#top-level-keys) |
+| `updates` | object | `{ "auto_check": true }` | [Updates](#updates) |
 
 ## AniDB account
 
 Object `anidb`. See [Storage and network contracts](storage-and-network.md) for what the queue sends
-and how failures are handled. Animatic contacts AniDB only when you run the command queue (Tools →
+and how failures are handled. Animatic contacts **AniDB** only when you run the command queue (Tools →
 Run command queue, or Queue → Synchronize now); the worker receives a copy of this object at that
-moment, so edits apply from the next run.
+moment, so edits apply from the next run. (Update checks contact GitHub, not AniDB; see [Updates](#updates).)
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
@@ -71,7 +72,7 @@ moment, so edits apply from the next run.
 | `local_port` | integer (u16) | `29456` | none | **Active, JSON only.** Local UDP port to bind (all interfaces); if binding fails the client falls back to an OS-chosen port. Also passed to AVDump as `{port}`. `0` means OS-chosen. |
 | `image_server` | string | `cdn.anidb.net` | none | **Import only.** The HTTP client has an image-download method, but nothing calls it; no image feature exists in the UI. |
 | `update_file_information` | boolean | `false` | "Update known file information" | **Inert control.** Saved, never read. (Import fills it from AOM.) |
-| `offline` | boolean | `false` | "Work offline (keep commands queued)" | **Active.** When true, Run command queue / Synchronize now send nothing and report "Offline mode is enabled; commands remain queued". Commands are still queued locally. The status bar shows "Offline" or "Ready for AniDB". Forced to `true` by backup recovery and by applying imported AOM settings. |
+| `offline` | boolean | `false` | "Work offline (keep commands queued)" | **Active.** When true, Run command queue / Synchronize now send nothing and report "Offline mode is enabled; commands remain queued". Commands are still queued locally. The status bar shows "Offline" or "Ready for AniDB". Forced to `true` by backup recovery and by applying imported AOM settings. It also suppresses the automatic startup [update check](#updates); an explicit **Help → Check for updates…** is still allowed. |
 | `idle_logout_minutes` | integer (u32) | `10` | none | **Stored only.** Not read. Each queue run ends with a logout regardless of this value. |
 
 Registration of a client identifier and the first online run are covered in
@@ -323,6 +324,23 @@ Animatic only starts the program for the selected file and does not read its out
 | `ed2k_space_replacement` | string or `null` | `null` | none | **Stored only.** No consumer; ED2K links are always built with the file name as is. |
 | `first_launch` | boolean | `true` | "Dismiss first-run card" on Overview | **Active.** While true the Overview page shows the first-run card; dismissing sets it false and saves. After an AOM settings import it is set to whether the imported username is empty. |
 
+## Updates
+
+Object `updates`. It controls only the *automatic* check for a newer Animatic release on GitHub.
+Checking, downloading and installing are always started by you; see
+[Updating Animatic](user-guide.md#updating-animatic) for the flow and
+[Storage and network](storage-and-network.md#github-update-transport) for the traffic.
+
+| Key | Type | Default | Options control | Status and effect |
+|---|---|---|---|---|
+| `auto_check` | boolean | `true` | "Check for updates at startup" | **Active.** When true, one background check for a newer stable GitHub release runs at startup, but only if `anidb.offline` is false and the settings were not recovered from a backup. It never downloads or installs anything. When false, no request is made until you choose **Help → Check for updates…**, which works regardless of this key and of `anidb.offline`. |
+
+There is no automatic install, no last-check timestamp, no skipped-version list and no
+release channel setting. A file without an `updates` object (every earlier version's file) loads
+with `auto_check` true, so upgrading to this version turns the startup check on unless you set it
+to `false`. An older Animatic build ignores and drops the unknown `updates` key on its next save.
+Applying an AOM settings import keeps your current `updates` object because AOM has no such preference.
+
 ## Hash export template tokens
 
 Used by **File → Export hashes…** (it exports every hashed file in the library, in list order, to
@@ -430,6 +448,7 @@ templates or credentials on load or save.
 |---|---|
 | Options → **Save options** | Yes; also applies theme and scale and closes Options |
 | Applying reviewed AOM settings | Yes, immediately (see [AOM import](#aom-settings-import)) |
+| Help → Check for updates…, Download and verify, Install | No; none of these writes the settings file. Only **Save options** (including the `updates.auto_check` checkbox) does |
 | Overview → "Dismiss first-run card" | Yes, unless the [recovery guard](#recovery-matrix) holds |
 | Closing the application | Yes, unless the guard holds; a failed exit save is silent |
 | Starting with neither file present | No; defaults are used and no file is created until the first save |
@@ -564,7 +583,9 @@ recognized setting is rejected instead of resetting your configuration. The impo
 defaults of a fresh file, not from your current settings: **every value the XML does not mention
 (including your current client name, API key, UDP server and port, theme and scale) is replaced
 by its default**, and the importer's own fallbacks for absent XML values (shown below) can differ
-from those defaults. The previous settings survive only in the backup file. Migration workflow:
+from those defaults. The one exception is `updates.auto_check`: the apply step copies your current
+`updates` object into the imported settings before saving, because AOM has no such preference.
+The previous settings otherwise survive only in the backup file. Migration workflow:
 [User guide](user-guide.md).
 
 | AOM element | Animatic key |
