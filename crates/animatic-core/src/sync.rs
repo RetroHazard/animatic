@@ -8,7 +8,7 @@ use std::time::Duration;
 use animatic_anidb::AnidbError;
 use animatic_anidb::commands::{self, FileRef, MylistAddResult, MylistEdit};
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
-use animatic_anidb::http::HttpClient;
+use animatic_anidb::http::{HttpClient, TitlesLimits};
 use animatic_anidb::udp::UdpClient;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -919,13 +919,14 @@ pub fn execute(
         },
         Command::MylistStats => Ok(Outcome::Stats(commands::mylist_stats(udp)?)),
         Command::TitlesDump => {
-            let mut titles = Vec::new();
-            http.titles_dump(|t| titles.push(t))?;
-            let added = db.store_title_dump(&titles)?;
-            db.set_meta("titles_dump_date", &format::now().to_string())?;
+            // The download is spooled outside the library database; it is only written to
+            // (in one short transaction) once the whole dump has been validated.
+            let limits = TitlesLimits::default();
+            let import =
+                db.import_title_dump::<CommandError>(|sink| http.titles_dump(&limits, sink))?;
             Ok(Outcome::Updated(format!(
-                "{} titles downloaded ({added} new)",
-                titles.len()
+                "{} titles downloaded ({} new)",
+                import.titles, import.added
             )))
         }
     }

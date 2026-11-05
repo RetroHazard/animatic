@@ -1,6 +1,8 @@
 //! AniDB HTTP API (anime XML), anime title dump and image downloads.
 
-use std::io::{BufRead, Read};
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::io::{self, BufRead, BufReader, Read};
 use std::time::{Duration, Instant};
 
 use quick_xml::events::Event;
@@ -345,64 +347,430 @@ pub struct DumpTitle {
     pub name: String,
 }
 
-/// Stream-parse `anime-titles.xml` (already decompressed).
-pub fn parse_titles_dump<R: BufRead>(input: R, mut out: impl FnMut(DumpTitle)) -> Result<usize> {
-    let mut r = Reader::from_reader(input);
+/// Resource bounds for one titles dump. Exceeding any of them rejects the whole dump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TitlesLimits {
+    /// Bytes accepted from the server (the possibly gzip compressed body).
+    pub max_compressed: u64,
+    /// Bytes of XML accepted after decompression.
+    pub max_decompressed: u64,
+    /// `<anime>` elements.
+    pub max_anime: usize,
+    /// `<title>` elements over the whole document.
+    pub max_titles: usize,
+    /// Bytes of one title text.
+    pub max_name_bytes: usize,
+}
+
+impl Default for TitlesLimits {
+    fn default() -> Self {
+        TitlesLimits {
+            max_compressed: 32 << 20,
+            max_decompressed: 128 << 20,
+            max_anime: 250_000,
+            max_titles: 2_000_000,
+            max_name_bytes: 2048,
+        }
+    }
+}
+
+/// Longest accepted `type` / `xml:lang` attribute value.
+const MAX_TITLE_ATTR_BYTES: usize = 32;
+
+/// Why a reader below failed, recorded where the cause is still known: the XML parser and the
+/// gzip decoder only see an opaque `io::Error`.
+type Fault = Cell<Option<AnidbError>>;
+
+/// Counts and caps the bytes read from the network (or any other source) and remembers
+/// transport failures.
+struct Source<'a, R> {
+    inner: R,
+    read: u64,
+    limit: u64,
+    fault: &'a Fault,
+}
+
+impl<R: Read> Read for Source<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // One byte past the limit is enough to tell that the body is too large.
+        let room = self.limit.saturating_sub(self.read).saturating_add(1);
+        let take = buf.len().min(usize::try_from(room).unwrap_or(usize::MAX));
+        match self.inner.read(&mut buf[..take]) {
+            Ok(n) => {
+                self.read += n as u64;
+                if self.read > self.limit {
+                    self.fault.set(Some(AnidbError::Protocol(format!(
+                        "titles dump larger than the {} byte download limit",
+                        self.limit
+                    ))));
+                    return Err(io::Error::other("download limit exceeded"));
+                }
+                Ok(n)
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => Err(e),
+            Err(e) => {
+                self.fault.set(Some(transport_error(ureq::Error::from(e))));
+                Err(io::Error::other("body read failed"))
+            }
+        }
+    }
+}
+
+/// Fails (instead of silently ending) once more than `left` decompressed bytes are available.
+struct Capped<'a, R> {
+    inner: R,
+    left: u64,
+    limit: u64,
+    fault: &'a Fault,
+}
+
+impl<R: Read> Read for Capped<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.left == 0 {
+            // The limit is reached exactly: only a clean end of stream is acceptable.
+            return match self.inner.read(&mut [0u8; 1])? {
+                0 => Ok(0),
+                _ => {
+                    self.fault.set(Some(AnidbError::Protocol(format!(
+                        "titles dump larger than the {} byte decompressed limit",
+                        self.limit
+                    ))));
+                    Err(io::Error::other("decompressed limit exceeded"))
+                }
+            };
+        }
+        let take = buf
+            .len()
+            .min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..take])?;
+        self.left -= n as u64;
+        Ok(n)
+    }
+}
+
+fn read_full(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
+/// The error behind a failed read: a recorded transport/limit fault, else a corrupt body.
+fn read_failure(fault: &Fault, e: &io::Error) -> AnidbError {
+    fault
+        .take()
+        .unwrap_or_else(|| AnidbError::Xml(format!("invalid compressed body: {e}")))
+}
+
+fn xml_failure(fault: &Fault, e: quick_xml::Error) -> AnidbError {
+    if let Some(cause) = fault.take() {
+        return cause;
+    }
+    match e {
+        quick_xml::Error::Io(io) => AnidbError::Xml(format!("invalid compressed body: {io}")),
+        other => xerr(other),
+    }
+}
+
+/// Value of a required, non-empty attribute of at most `max` bytes. Every attribute of the tag
+/// is parsed and unescaped, so malformed syntax anywhere in it (including a duplicate name)
+/// is an error even after the wanted attribute was found.
+fn required_attr(e: &quick_xml::events::BytesStart, name: &str, max: usize) -> Result<String> {
+    let mut found = None;
+    for a in e.attributes() {
+        let a = a.map_err(xerr)?;
+        let value = a
+            .normalized_value(quick_xml::XmlVersion::default())
+            .map_err(xerr)?;
+        if a.key.0 == name {
+            let value = value.trim();
+            if value.is_empty() || value.len() > max {
+                return Err(AnidbError::Xml(format!(
+                    "attribute {name} of <{}> must be 1..={max} bytes",
+                    e.name().0
+                )));
+            }
+            found = Some(value.to_string());
+        }
+    }
+    found
+        .ok_or_else(|| AnidbError::Xml(format!("<{}> is missing the {name} attribute", e.name().0)))
+}
+
+/// Parse every attribute of a tag whose attributes are otherwise not used.
+fn check_attrs(e: &quick_xml::events::BytesStart) -> Result<()> {
+    for a in e.attributes() {
+        a.map_err(xerr)?
+            .normalized_value(quick_xml::XmlVersion::default())
+            .map_err(xerr)?;
+    }
+    Ok(())
+}
+
+/// Character of a predefined entity or numeric character reference.
+fn ref_char(g: &quick_xml::events::BytesRef) -> Option<char> {
+    if let Ok(Some(c)) = g.resolve_char_ref() {
+        return Some(c);
+    }
+    match &**g {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => None,
+    }
+}
+
+fn push_name_text(text: &mut String, s: &str, max: usize) -> Result<()> {
+    if text.len() + s.len() > max {
+        return Err(AnidbError::Xml(format!("title longer than {max} bytes")));
+    }
+    text.push_str(s);
+    Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Before the root element.
+    Prolog,
+    Root,
+    Anime,
+    Title,
+    /// After the root element's end tag.
+    Epilog,
+}
+
+/// Validate and stream-parse `anime-titles.xml` (already decompressed). The document must be
+/// exactly `<animetitles><anime aid="N"><title type=".." xml:lang="..">name</title>..</anime>..
+/// </animetitles>`: every `anime` has a positive unique id and at least one title, every title
+/// has non-empty `type`, `xml:lang` and text, and nothing but whitespace, comments and
+/// processing instructions surrounds the root. Rows are passed to `out` as soon as their
+/// `</title>` is read, so `out` runs on a document that may still turn out invalid: the caller
+/// must not make rows permanent before this returns `Ok`. An error from `out` stops parsing.
+fn parse_titles_xml<R: BufRead, E: From<AnidbError>>(
+    mut input: R,
+    limits: &TitlesLimits,
+    fault: &Fault,
+    mut out: impl FnMut(DumpTitle) -> std::result::Result<(), E>,
+) -> std::result::Result<usize, E> {
+    macro_rules! bad {
+        ($($arg:tt)*) => {
+            return Err(E::from(AnidbError::Xml(format!($($arg)*))))
+        };
+    }
+    // Skip a UTF-8 byte order mark at the very start of the stream (and nowhere else). Short
+    // reads are collected first; a non-BOM prefix is chained back, so nothing is copied.
+    const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
+    let mut head = [0u8; 3];
+    let got = read_full(&mut input, &mut head).map_err(|e| read_failure(fault, &e))?;
+    let prefix: &[u8] = if head[..got] == BOM {
+        &[]
+    } else {
+        &head[..got]
+    };
+    let mut r = Reader::from_reader(prefix.chain(input));
     r.config_mut().trim_text(false);
+    // Reject `--` inside comments.
+    r.config_mut().check_comments = true;
     let mut buf = Vec::new();
+    let mut first_event = true;
+    let mut scope = Scope::Prolog;
     let mut aid = 0i64;
+    let mut seen = HashSet::new();
+    let mut anime_titles = 0usize;
     let mut cur: Option<(String, String)> = None;
     let mut text = String::new();
-    let mut n = 0;
-    let mut depth = 0usize;
+    let mut n = 0usize;
     loop {
-        match r.read_event_into(&mut buf).map_err(xerr)? {
-            Event::Start(e) => {
-                depth += 1;
-                match e.local_name().as_ref() {
-                    "anime" => aid = attr(&e, "aid").and_then(|v| v.parse().ok()).unwrap_or(0),
-                    "title" => {
-                        text.clear();
-                        cur = Some((
-                            attr(&e, "type").unwrap_or_else(|| "synonym".into()),
-                            attr(&e, "xml:lang").unwrap_or_else(|| "x-unk".into()),
-                        ));
+        buf.clear();
+        let event = r
+            .read_event_into(&mut buf)
+            .map_err(|e| xml_failure(fault, e))?;
+        // A byte order mark is consumed by the reader before the first event.
+        let first = std::mem::replace(&mut first_event, false);
+        match event {
+            Event::Start(e) => match (scope, e.name().0) {
+                (Scope::Prolog, "animetitles") => {
+                    check_attrs(&e)?;
+                    scope = Scope::Root
+                }
+                (Scope::Prolog, other) => {
+                    bad!("root element is <{other}>, expected <animetitles>")
+                }
+                (Scope::Root, "anime") => {
+                    aid = match required_attr(&e, "aid", 20)?.parse::<i64>() {
+                        Ok(v) if v > 0 => v,
+                        _ => bad!("anime id is not a positive number"),
+                    };
+                    if seen.len() >= limits.max_anime {
+                        bad!("more than {} anime in the titles dump", limits.max_anime);
                     }
-                    _ => {}
+                    if !seen.insert(aid) {
+                        bad!("anime {aid} appears twice in the titles dump");
+                    }
+                    anime_titles = 0;
+                    scope = Scope::Anime;
                 }
-            }
-            Event::Text(t) => text.push_str(&t),
-            Event::GeneralRef(g) => text.push_str(&general_ref(&g)),
-            Event::End(e) => {
-                depth = depth.saturating_sub(1);
-                if e.local_name().as_ref() != "title" {
-                    buf.clear();
-                    continue;
+                (Scope::Anime, "title") => {
+                    cur = Some((
+                        required_attr(&e, "type", MAX_TITLE_ATTR_BYTES)?,
+                        required_attr(&e, "xml:lang", MAX_TITLE_ATTR_BYTES)?,
+                    ));
+                    text.clear();
+                    scope = Scope::Title;
                 }
-                if let Some((kind, lang)) = cur.take() {
+                (Scope::Epilog, _) => bad!("content after the </animetitles> end tag"),
+                (_, other) => bad!("unexpected element <{other}>"),
+            },
+            Event::Empty(e) => bad!("unexpected empty element <{}/>", e.name().0),
+            Event::End(_) => match scope {
+                Scope::Title => {
+                    let Some((kind, lang)) = cur.take() else {
+                        bad!("title without attributes")
+                    };
+                    let name = text.trim();
+                    if name.is_empty() {
+                        bad!("anime {aid} has an empty title");
+                    }
+                    if n >= limits.max_titles {
+                        bad!("more than {} titles in the titles dump", limits.max_titles);
+                    }
                     out(DumpTitle {
                         aid,
                         kind,
                         lang,
-                        name: std::mem::take(&mut text).trim().to_string(),
-                    });
+                        name: name.to_string(),
+                    })?;
                     n += 1;
+                    anime_titles += 1;
+                    scope = Scope::Anime;
+                }
+                Scope::Anime => {
+                    if anime_titles == 0 {
+                        bad!("anime {aid} has no titles");
+                    }
+                    scope = Scope::Root;
+                }
+                Scope::Root => scope = Scope::Epilog,
+                // The parser already rejects end tags without a start tag.
+                Scope::Prolog | Scope::Epilog => bad!("unbalanced end tag"),
+            },
+            Event::Text(t) => {
+                if scope == Scope::Title {
+                    push_name_text(&mut text, &t, limits.max_name_bytes)?;
+                } else if !t.chars().all(char::is_whitespace) {
+                    bad!("text outside of a title");
                 }
             }
+            Event::CData(t) => {
+                if scope == Scope::Title {
+                    push_name_text(&mut text, &t, limits.max_name_bytes)?;
+                } else {
+                    bad!("text outside of a title");
+                }
+            }
+            Event::GeneralRef(g) => match (scope, ref_char(&g)) {
+                (Scope::Title, Some(c)) => {
+                    push_name_text(&mut text, c.encode_utf8(&mut [0; 4]), limits.max_name_bytes)?
+                }
+                (Scope::Title, None) => bad!("unsupported entity reference in a title"),
+                _ => bad!("text outside of a title"),
+            },
+            Event::DocType(_) => bad!("document type declarations are not accepted"),
+            Event::Decl(_) => {
+                if !first {
+                    bad!("an XML declaration is only allowed at the very start of the document");
+                }
+            }
+            Event::PI(_) | Event::Comment(_) => {}
             Event::Eof => {
-                if depth != 0 {
-                    return Err(AnidbError::Xml("truncated titles dump".into()));
+                match scope {
+                    Scope::Epilog => {}
+                    Scope::Prolog => bad!("no <animetitles> root element"),
+                    _ => bad!("truncated titles dump"),
                 }
                 if n == 0 {
-                    return Err(AnidbError::Xml("titles dump contains no titles".into()));
+                    bad!("titles dump contains no titles");
                 }
-                break;
+                return Ok(n);
             }
-            _ => {}
         }
-        buf.clear();
     }
-    Ok(n)
+}
+
+/// Read one titles dump from `source` (a gzip file or plain XML, told apart by the gzip magic)
+/// and pass every title to `out`, using constant memory regardless of the dump size.
+///
+/// `Ok` is returned only for a complete, valid document: the XML is closed and well formed, the
+/// compressed and decompressed limits held, the gzip trailer (CRC and length) matched and no
+/// data follows the compressed stream. Any other outcome is an error, but rows already handed
+/// to `out` stay handed over: stage them (the library must not be written, let alone locked,
+/// while the network is read) and apply them only after this returns `Ok`, as
+/// `Db::import_title_dump` does. Errors of `out` are returned unchanged.
+pub fn read_titles_dump<R: Read, E: From<AnidbError>>(
+    source: R,
+    limits: &TitlesLimits,
+    out: impl FnMut(DumpTitle) -> std::result::Result<(), E>,
+) -> std::result::Result<usize, E> {
+    let fault = Fault::new(None);
+    let mut source = Source {
+        inner: source,
+        read: 0,
+        limit: limits.max_compressed,
+        fault: &fault,
+    };
+    let mut magic = [0u8; 2];
+    let got = read_full(&mut source, &mut magic).map_err(|e| read_failure(&fault, &e))?;
+    let body = (&magic[..got]).chain(source);
+    if magic == [0x1f, 0x8b] {
+        let mut gz = flate2::bufread::GzDecoder::new(BufReader::with_capacity(32 << 10, body));
+        let n = {
+            let capped = Capped {
+                inner: &mut gz,
+                left: limits.max_decompressed,
+                limit: limits.max_decompressed,
+                fault: &fault,
+            };
+            parse_titles_xml(
+                BufReader::with_capacity(64 << 10, capped),
+                limits,
+                &fault,
+                out,
+            )?
+        };
+        // The XML parser only ends at the decoder's end of stream, which is reported after
+        // the CRC and length trailer matched. Nothing may follow the single gzip member.
+        let rest = gz
+            .get_mut()
+            .fill_buf()
+            .map_err(|e| read_failure(&fault, &e))?;
+        if !rest.is_empty() {
+            return Err(E::from(AnidbError::Xml(
+                "unexpected data after the compressed titles dump".into(),
+            )));
+        }
+        Ok(n)
+    } else {
+        let capped = Capped {
+            inner: body,
+            left: limits.max_decompressed,
+            limit: limits.max_decompressed,
+            fault: &fault,
+        };
+        parse_titles_xml(
+            BufReader::with_capacity(64 << 10, capped),
+            limits,
+            &fault,
+            out,
+        )
+    }
 }
 
 /// HTTP API client with the mandatory 2 second spacing between requests.
@@ -462,11 +830,26 @@ impl HttpClient {
         parse_anime_xml(&text)
     }
 
-    /// Download and parse the daily titles dump.
-    pub fn titles_dump(&mut self, out: impl FnMut(DumpTitle)) -> Result<usize> {
-        let bytes = self.get_bytes(TITLES_DUMP, 256 << 20)?;
-        let text = decode_maybe_gzip(&bytes)?;
-        parse_titles_dump(text.as_bytes(), out)
+    /// Download the daily titles dump and stream its rows to `out` (see [`read_titles_dump`]
+    /// for the guarantees and for what the caller must do to stay atomic).
+    pub fn titles_dump<E: From<AnidbError>>(
+        &mut self,
+        limits: &TitlesLimits,
+        out: impl FnMut(DumpTitle) -> std::result::Result<(), E>,
+    ) -> std::result::Result<usize, E> {
+        self.titles_dump_from(TITLES_DUMP, limits, out)
+    }
+
+    fn titles_dump_from<E: From<AnidbError>>(
+        &mut self,
+        url: &str,
+        limits: &TitlesLimits,
+        out: impl FnMut(DumpTitle) -> std::result::Result<(), E>,
+    ) -> std::result::Result<usize, E> {
+        let resp = self.agent.get(url).call().map_err(transport_error)?;
+        let mut body = resp.into_body();
+        // Unlimited here: `read_titles_dump` enforces the byte limits itself.
+        read_titles_dump(body.as_reader(), limits, out)
     }
 
     pub fn image(&mut self, server: &str, picname: &str) -> Result<Vec<u8>> {
@@ -616,22 +999,313 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parses_titles_dump() {
-        let xml = r#"<animetitles><anime aid="1"><title type="main" xml:lang="x-jat">Seikai no Monshou</title>
-          <title type="official" xml:lang="en">Crest of the Stars</title></anime>
-          <anime aid="2"><title type="main" xml:lang="x-jat">3x3 Eyes</title></anime></animetitles>"#;
+    const DUMP: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!-- synthetic fixture -->
+<animetitles>
+<anime aid="1"><title type="main" xml:lang="x-jat">Alpha &amp; Omega</title>
+<title type="official" xml:lang="en">Alpha</title></anime>
+<anime aid="2"><title type="main" xml:lang="x-jat">3x3 Eyes</title></anime>
+</animetitles>
+"#;
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn read_all(source: &[u8], limits: &TitlesLimits) -> (Result<usize>, Vec<DumpTitle>) {
         let mut rows = Vec::new();
-        let n = parse_titles_dump(xml.as_bytes(), |t| rows.push(t)).unwrap();
-        assert_eq!(n, 3);
+        let n = read_titles_dump(source, limits, |t| {
+            rows.push(t);
+            Ok(())
+        });
+        (n, rows)
+    }
+
+    fn one_title(aid: i64, name: &str) -> String {
+        format!(r#"<anime aid="{aid}"><title type="main" xml:lang="en">{name}</title></anime>"#)
+    }
+
+    #[test]
+    fn reads_plain_and_gzip_titles_dumps() {
+        let limits = TitlesLimits::default();
+        let (n, plain) = read_all(DUMP.as_bytes(), &limits);
+        assert_eq!(n.unwrap(), 3);
         assert_eq!(
-            rows[2],
+            plain[0],
             DumpTitle {
-                aid: 2,
+                aid: 1,
                 kind: "main".into(),
                 lang: "x-jat".into(),
-                name: "3x3 Eyes".into()
+                name: "Alpha & Omega".into()
             }
         );
+        assert_eq!(plain[2].name, "3x3 Eyes");
+        let (n, zipped) = read_all(&gzip(DUMP.as_bytes()), &limits);
+        assert_eq!(n.unwrap(), 3);
+        assert_eq!(zipped, plain);
+    }
+
+    #[test]
+    fn accepts_a_leading_byte_order_mark_before_the_declaration() {
+        let mut doc = vec![0xef, 0xbb, 0xbf];
+        doc.extend_from_slice(DUMP.as_bytes());
+        let limits = TitlesLimits::default();
+        assert_eq!(read_all(&doc, &limits).0.unwrap(), 3);
+        assert_eq!(read_all(&gzip(&doc), &limits).0.unwrap(), 3);
+    }
+
+    #[test]
+    fn rejects_malformed_titles_documents() {
+        let title = r#"<title type="main" xml:lang="en">A</title>"#;
+        let docs = [
+            String::new(),
+            "not xml".into(),
+            format!("<other>{}</other>", one_title(1, "A")),
+            format!("<animetitles>{}", one_title(1, "A")),
+            format!(r#"<animetitles><anime aid="1">{}"#, &title[..30]),
+            "<animetitles></animetitles>".into(),
+            format!(
+                r#"<animetitles><anime aid="0">{title}</anime></animetitles>"#
+            ),
+            format!(
+                r#"<animetitles><anime aid="x">{title}</anime></animetitles>"#
+            ),
+            format!("<animetitles><anime>{title}</anime></animetitles>"),
+            format!(
+                "<animetitles>{}{}</animetitles>",
+                one_title(1, "A"),
+                one_title(1, "B")
+            ),
+            r#"<animetitles><anime aid="1"></anime></animetitles>"#.into(),
+            r#"<animetitles><anime aid="1"><title xml:lang="en">A</title></anime></animetitles>"#
+                .into(),
+            r#"<animetitles><anime aid="1"><title type="main">A</title></anime></animetitles>"#
+                .into(),
+            format!("<animetitles>{}</animetitles>", one_title(1, "   ")),
+            format!("<animetitles>{}</animetitles>", one_title(1, "A&nbsp;B")),
+            format!(
+                "<animetitles>{}</animetitles><animetitles/>",
+                one_title(1, "A")
+            ),
+            format!("<animetitles>{}</animetitles>junk", one_title(1, "A")),
+            format!(
+                r#"<animetitles><anime aid="1"><note/>{title}</anime></animetitles>"#
+            ),
+            r#"<animetitles><anime aid="1"><title type="main" xml:lang="en"><b>A</b></title></anime></animetitles>"#
+                .into(),
+            format!("<!DOCTYPE animetitles><animetitles>{}</animetitles>", one_title(1, "A")),
+            r#"<animetitles><anime aid="1"></animetitles>"#.into(),
+            // Attributes after the wanted one are still validated.
+            format!(r#"<animetitles><anime aid="1" aid="2">{title}</anime></animetitles>"#),
+            format!(r#"<animetitles><anime aid="1" broken>{title}</anime></animetitles>"#),
+            format!(r#"<animetitles broken><anime aid="1">{title}</anime></animetitles>"#),
+            r#"<animetitles><anime aid="1"><title type="main" xml:lang="en" xml:lang="ja">A</title></anime></animetitles>"#
+                .into(),
+            r#"<animetitles><anime aid="1"><title type="main" xml:lang="en" x=>A</title></anime></animetitles>"#
+                .into(),
+            // An XML declaration is only valid as the very first thing.
+            format!(r#"<?xml version="1.0"?><?xml version="1.0"?><animetitles>{}</animetitles>"#, one_title(1, "A")),
+            format!(r#"<animetitles><?xml version="1.0"?>{}</animetitles>"#, one_title(1, "A")),
+            format!(r#"<animetitles><anime aid="1"><?xml version="1.0"?>{title}</anime></animetitles>"#),
+            format!(r#"<animetitles>{}</animetitles><?xml version="1.0"?>"#, one_title(1, "A")),
+            format!(r#" <?xml version="1.0"?><animetitles>{}</animetitles>"#, one_title(1, "A")),
+            format!(r#"<!-- c --><?xml version="1.0"?><animetitles>{}</animetitles>"#, one_title(1, "A")),
+            // `--` inside a comment is not well formed.
+            format!("<animetitles><!--a--b-->{}</animetitles>", one_title(1, "A")),
+            format!("<!--a--b--><animetitles>{}</animetitles>", one_title(1, "A")),
+        ];
+        for doc in docs {
+            assert!(
+                matches!(
+                    read_all(doc.as_bytes(), &TitlesLimits::default()).0,
+                    Err(AnidbError::Xml(_))
+                ),
+                "{doc:?}"
+            );
+            assert!(
+                matches!(
+                    read_all(&gzip(doc.as_bytes()), &TitlesLimits::default()).0,
+                    Err(AnidbError::Xml(_))
+                ),
+                "gzip {doc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gzip_trailer_and_framing_errors_are_never_accepted() {
+        let limits = TitlesLimits::default();
+        let good = gzip(DUMP.as_bytes());
+
+        // The XML is complete and closed, only the CRC is wrong: still an error, even though
+        // every row was already delivered.
+        let mut bad_crc = good.clone();
+        let crc = bad_crc.len() - 8;
+        bad_crc[crc] ^= 0xff;
+        let (n, rows) = read_all(&bad_crc, &limits);
+        assert!(matches!(n, Err(AnidbError::Xml(_))), "{n:?}");
+        assert_eq!(rows.len(), 3);
+
+        let mut bad_len = good.clone();
+        let isize = bad_len.len() - 1;
+        bad_len[isize] ^= 0x01;
+        assert!(matches!(
+            read_all(&bad_len, &limits).0,
+            Err(AnidbError::Xml(_))
+        ));
+
+        for cut in [1, 4, 8, 12, good.len() / 2] {
+            let (n, _) = read_all(&good[..good.len() - cut], &limits);
+            assert!(matches!(n, Err(AnidbError::Xml(_))), "cut {cut}: {n:?}");
+        }
+
+        let mut trailing = good.clone();
+        trailing.extend_from_slice(b"\0\0\0");
+        assert!(matches!(
+            read_all(&trailing, &limits).0,
+            Err(AnidbError::Xml(_))
+        ));
+        let mut second_member = good.clone();
+        second_member.extend_from_slice(&good);
+        assert!(matches!(
+            read_all(&second_member, &limits).0,
+            Err(AnidbError::Xml(_))
+        ));
+    }
+
+    #[test]
+    fn titles_dump_limits_reject_oversized_input() {
+        let big = format!(
+            "<animetitles>{}</animetitles>",
+            (1..=200)
+                .map(|i| one_title(i, "Repeated title text"))
+                .collect::<String>()
+        );
+        let zipped = gzip(big.as_bytes());
+        assert!(zipped.len() < big.len() / 4, "fixture must compress well");
+        let fits = TitlesLimits {
+            max_decompressed: big.len() as u64,
+            max_compressed: big.len() as u64,
+            ..TitlesLimits::default()
+        };
+        assert_eq!(read_all(big.as_bytes(), &fits).0.unwrap(), 200);
+        assert_eq!(read_all(&zipped, &fits).0.unwrap(), 200);
+
+        let small_output = TitlesLimits {
+            max_decompressed: big.len() as u64 - 1,
+            ..fits
+        };
+        for source in [big.as_bytes(), zipped.as_slice()] {
+            assert!(matches!(
+                read_all(source, &small_output).0,
+                Err(AnidbError::Protocol(_))
+            ));
+        }
+        let small_download = TitlesLimits {
+            max_compressed: zipped.len() as u64 - 1,
+            ..fits
+        };
+        assert!(matches!(
+            read_all(&zipped, &small_download).0,
+            Err(AnidbError::Protocol(_))
+        ));
+        for limits in [
+            TitlesLimits {
+                max_anime: 199,
+                ..fits
+            },
+            TitlesLimits {
+                max_titles: 199,
+                ..fits
+            },
+            TitlesLimits {
+                max_name_bytes: 5,
+                ..fits
+            },
+        ] {
+            assert!(matches!(
+                read_all(&zipped, &limits).0,
+                Err(AnidbError::Xml(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn sink_errors_stop_the_dump_unchanged() {
+        let mut seen = 0;
+        let r = read_titles_dump(&gzip(DUMP.as_bytes())[..], &TitlesLimits::default(), |_| {
+            seen += 1;
+            Err(AnidbError::Network("sink".into()))
+        });
+        assert!(matches!(r, Err(AnidbError::Network(m)) if m == "sink"));
+        assert_eq!(seen, 1);
+    }
+
+    /// Serve one canned HTTP response on a local socket and return its URL.
+    fn serve(status: &str, declared_len: usize, body: Vec<u8>) -> String {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/titles.xml.gz", listener.local_addr().unwrap());
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {declared_len}\r\nConnection: close\r\n\r\n"
+        );
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match s.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&chunk[..n]),
+                }
+            }
+            let _ = s.write_all(head.as_bytes());
+            let _ = s.write_all(&body);
+        });
+        url
+    }
+
+    fn fetch(url: &str) -> (Result<usize>, Vec<DumpTitle>) {
+        let mut rows = Vec::new();
+        let mut client = HttpClient::new("synthetic", 1);
+        // Loopback fixture: never route through a proxy picked up from the environment.
+        client.agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build()
+            .into();
+        let n = client.titles_dump_from(url, &TitlesLimits::default(), |t| {
+            rows.push(t);
+            Ok(())
+        });
+        (n, rows)
+    }
+
+    #[test]
+    fn titles_dump_streams_from_a_local_http_server() {
+        let body = gzip(DUMP.as_bytes());
+        let (n, rows) = fetch(&serve("200 OK", body.len(), body));
+        assert_eq!(n.unwrap(), 3);
+        assert_eq!(rows.len(), 3);
+
+        // The connection ends before the announced length: a transient network failure.
+        let body = gzip(DUMP.as_bytes());
+        let announced = body.len();
+        let (n, _) = fetch(&serve("200 OK", announced, body[..announced / 2].to_vec()));
+        assert!(matches!(n, Err(AnidbError::Network(_))), "{n:?}");
+
+        // A corrupt compressed body is a permanent failure, not a network problem.
+        let mut bad = gzip(DUMP.as_bytes());
+        let crc = bad.len() - 8;
+        bad[crc] ^= 0xff;
+        let (n, _) = fetch(&serve("200 OK", bad.len(), bad));
+        assert!(matches!(n, Err(AnidbError::Xml(_))), "{n:?}");
+
+        let (n, rows) = fetch(&serve("503 Service Unavailable", 0, Vec::new()));
+        assert!(matches!(n, Err(AnidbError::Http(_))), "{n:?}");
+        assert!(rows.is_empty());
     }
 }
