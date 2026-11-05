@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a new workflow or a missing AOM capability.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [feature-parity matrix](https://github.com/RetroHazard/animatic/blob/main/docs/feature-parity.md)
+        first: it lists what is implemented, partial, core-only or deliberately absent. Animatic uses
+        current AniDB APIs and prefers AniDB's web editors over retired metadata-change protocols.
+        Issues are public: use placeholders instead of real user names, paths, titles or library data.
+  - type: dropdown
+    id: origin
+    attributes:
+      label: Relation to AniDB O'Matic
+      options:
+        - AOM had this and Animatic lacks it
+        - AOM had this and Animatic behaves differently
+        - New capability
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: The workflow you are trying to complete and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What Animatic should do, including how it behaves offline and on both Windows and Linux.
+    validations:
+      required: true
+  - type: textarea
+    id: aom
+    attributes:
+      label: AOM behavior
+      description: If AOM had this, describe how it worked from a user's point of view. Do not attach AOM files, databanks or screenshots containing library data.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and workarounds

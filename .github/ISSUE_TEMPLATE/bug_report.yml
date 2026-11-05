@@ -1,0 +1,109 @@
+name: Bug report
+description: Something in Animatic does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Settings files hold your AniDB password and API keys in plain text, and the
+        database, exports and Log page contain file paths, hashes and AniDB identifiers. Follow
+        [Privacy-safe support and bug reports](https://github.com/RetroHazard/animatic/blob/main/docs/troubleshooting.md#privacy-safe-support-and-bug-reports)
+        before pasting anything, and check the [Troubleshooting](https://github.com/RetroHazard/animatic/blob/main/docs/troubleshooting.md)
+        guide and [feature-parity matrix](https://github.com/RetroHazard/animatic/blob/main/docs/feature-parity.md)
+        first: some AOM features are intentionally not implemented.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I attached no settings file, database, export or backup, and replaced user names, paths, titles, hashes, AniDB ids and credentials with placeholders.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Animatic version
+      description: As shown in **Help → About Animatic**.
+      placeholder: 2026.11.0
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options:
+        - Release archive
+        - CI artifact
+        - Local build
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: Operating system version
+      placeholder: Windows 11 24H2, Ubuntu 22.04, ...
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - AOM databank or settings import
+        - Hashing or folder scanning
+        - Library views, search or MyList editing
+        - AniDB queue, synchronization or cooldowns
+        - Renaming
+        - Players, AVDump or exports
+        - Settings or settings recovery
+        - Updates
+        - Startup
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: offline
+    attributes:
+      label: Work offline
+      description: State of **Work offline** when the problem happened.
+      options:
+        - 'On'
+        - 'Off'
+        - Not sure
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you clicked or ran. A synthetic reproduction (temporary database and settings, fictitious paths, `animatic-test-user`) is best.
+      placeholder: |
+        1. Start with ANIMATIC_DB and ANIMATIC_SETTINGS pointing at a temporary folder
+        2. Tools -> Run command queue
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Keep exact message wording and status-bar indicators (for example **N blocked**, **N commands NOT saved yet**).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Sanitized Log page lines
+      description: Only the lines you need, with `<user>`, `<root>`, `<file>` and `<id>` placeholders.
+      render: text
