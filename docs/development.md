@@ -16,7 +16,7 @@ Repository-specific engineering rules for coding agents live in
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
 | CI | Pull requests **targeting `main`** (a cheap `scope` job defers stacked children at runtime) and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. No server-side merge requirement is configured while the repository is private (see [Continuous integration](#continuous-integration)) | [`ci.yml`](../.github/workflows/ci.yml) |
-| Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
+| Distribution | GitHub Releases published when a `release`-labelled release pull request merges: the Release workflow tags the merge commit and publishes an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
 Local runtime verification and CI coverage are different evidence. Linux runtime behavior and
@@ -585,17 +585,18 @@ Also available to the maintainer, and equally unconfigured here: a `release` env
 
 ## Release and distribution
 
-Releases are produced by the `release-prepare.yml` and `release.yml` workflows and the
-[`scripts/release.py`](../scripts/release.py) tool. The full contract, maintainer procedure,
-required GitHub settings, archive layout and installation/verification instructions are in
-[Releases](releases.md). In short:
+Releases are produced by the `release-prepare.yml`, `auto-release.yml` and `release.yml`
+workflows and the [`scripts/release.py`](../scripts/release.py) tool. The full contract,
+maintainer procedure, required GitHub settings, archive layout and installation/verification
+instructions are in [Releases](releases.md). In short:
 
 - A maintainer runs **Release prepare** (dry run first) to bump the version in lockstep,
-  update the changelog and open a pull request from `release/vVERSION`.
-- After merging, the maintainer pushes the tag `vVERSION` explicitly (or runs **Release**
-  manually from `main` for an existing tag); **Release** verifies it, reruns CI with packaging
-  on that commit and creates a **draft** GitHub Release with a Windows ZIP, a Linux tar.gz and
-  `SHA256SUMS`. Publishing the draft is a separate manual act.
+  update the changelog and open a `release`-labelled pull request from `release/vVERSION`.
+- Merging that pull request into `main` makes **Auto release** dispatch **Release** with the
+  merge commit; **Release** validates it, builds clean packaged archives on that commit, then
+  creates the tag `vVERSION` at it and **publishes** the GitHub Release with a Windows ZIP, a
+  Linux tar.gz and `SHA256SUMS`. Nobody pushes release tags by hand; a dry **Release** run can
+  rehearse the release branch before merging.
 - Archives are unsigned. There are no installers, packages or attestations. The app can update
   *itself* from a published release (the in-app updater; see
   [Releases](releases.md#in-app-updates)), so the archive names, the single root folder

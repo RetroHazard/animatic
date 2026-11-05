@@ -1,0 +1,38 @@
+name: Auto release
+
+# Merging the pull request that Prepare release opened (branch release/vVERSION, label
+# `release`) into main dispatches Release with that merge commit. Release validates the
+# commit, builds, then creates the tag and publishes. Nothing is built here.
+#
+# workflow_dispatch events created with the workflow token are exempt from GitHub's rule
+# that workflow-token events start no workflows, so no personal access token is needed.
+# A merge queue still emits pull_request `closed` with `merged`, which is all this needs.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      startsWith(github.event.pull_request.head.ref, 'release/v') &&
+      contains(github.event.pull_request.labels.*.name, 'release')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the release of the merge commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          echo "Pull request #$PR_NUMBER merged as $MERGE_SHA; dispatching Release"
+          gh workflow run release.yml --ref main -f sha="$MERGE_SHA" -f dry_run=false

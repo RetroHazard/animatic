@@ -70,3 +70,9 @@ added under conventional headings.
   toolchain changed, and reports *Main cache refresh*. A release builds only the clean, uncached
   release executables and notices. The license-notices job restores a Cargo registry cache
   instead of downloading every crate.
+- Releases are gated behind a reviewed merge and a tag at that merge, and are published directly.
+  Prepare release labels its pull request `release`; merging it makes the new Auto release
+  workflow dispatch Release with the merge commit, which validates it, builds the archives, then
+  creates `vVERSION` at that commit and publishes the GitHub Release (previously a maintainer
+  pushed the tag by hand and published a draft). Release no longer starts on a tag push. A dry
+  Release run can rehearse the head of an unmerged release branch.
