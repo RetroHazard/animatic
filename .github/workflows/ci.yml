@@ -6,6 +6,17 @@ name: CI
 # REST API for the pull request's actual base and defers everything unless it is main.
 # A push to any other branch never starts this workflow. Nothing here publishes
 # anything. Release workflows call it explicitly.
+#
+# Three modes, so no commit pays for the same work twice:
+# - check (pull requests, merge groups, manual and release-preparation runs): Clippy,
+#   tests and rustdoc on Windows and Linux in the `ci` profile, plus the license notices.
+#   No release executable unless a manual run asks for one.
+# - refresh (pushes to main): the merged code was checked on its pull request, so only
+#   the dependency caches that pull requests restore are kept current. A cache that
+#   already exists for the lockfile and toolchain costs a lookup; a missing one is
+#   rebuilt by running the same checks, which also checks that commit.
+# - package (`package: true`, releases): the tag is on checked main history, so only the
+#   clean, uncached release executables and notices are built and packaged.
 on:
   push:
     branches: [main]
@@ -18,6 +29,11 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      executables:
+        description: Also build release executables and upload them as artifacts
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
@@ -124,7 +140,9 @@ jobs:
           if [ -n "$BASE_SHA" ]; then args+=(--base "$BASE_SHA"); fi
           force=0
           case "$EVENT_NAME" in
-            workflow_dispatch | merge_group) force=1 ;;
+            # A main push selects everything so each cache stays current even after a
+            # toolchain release; the refresh mode keeps that to a lookup when nothing changed.
+            workflow_dispatch | merge_group | push) force=1 ;;
           esac
           if [ -z "$BASE_SHA" ] || [ -n "$CALLER_REF" ] || [ "$PACKAGE" = true ]; then force=1; fi
           if [ "$force" = 1 ]; then args+=(--force); fi
@@ -183,6 +201,7 @@ jobs:
 
   # Dependency license policy and the generated notices bundled into releases.
   # Starts only after quality passed, so a failed quality run spends no further runners.
+  # Refresh runs only keep the registry and renderer caches current; they generate nothing.
   notices:
     name: Dependency license notices
     needs: [plan, quality]
@@ -191,6 +210,9 @@ jobs:
     timeout-minutes: 15
     env:
       CARGO_ABOUT_VERSION: '0.9.3'
+      # Not a CARGO*/RUST*/CC* name: rust-cache hashes those into its key, and pull
+      # requests must compute the same key as the main run that saved the cache.
+      CI_MODE: ${{ inputs.package && 'package' || (github.event_name == 'push' && 'refresh' || 'check') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -198,28 +220,44 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
       # `cargo about` resolves full metadata and reads every crate's license files, so
-      # without this it downloads the whole dependency graph. Registry only: no target
-      # directory is built here, and ~/.cargo/bin is left to the renderer cache below.
-      - name: Cache Cargo registry
-        if: ${{ !inputs.package }}
+      # without a registry cache it downloads the whole dependency graph. Registry only:
+      # nothing is compiled here, and ~/.cargo/bin is left to the renderer cache below.
+      - name: Look up the main registry cache
+        id: registry-lookup
+        if: env.CI_MODE == 'refresh'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-targets: false
           cache-bin: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: true
+          save-if: false
+      # Release packaging never restores a cache.
+      - name: Cache Cargo registry
+        id: registry-cache
+        if: env.CI_MODE == 'check' || (env.CI_MODE == 'refresh' && steps.registry-lookup.outputs.cache-hit != 'true')
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+          cache-bin: false
+          save-if: ${{ env.CI_MODE == 'refresh' }}
+      - name: Fetch dependency sources for the registry cache
+        if: env.CI_MODE == 'refresh' && steps.registry-lookup.outputs.cache-hit != 'true'
+        run: cargo fetch --locked
       # Release packaging always compiles the renderer from source; only ordinary
       # checks may reuse the binary cached by a main-branch run.
       - name: Restore cached license renderer
         id: renderer-cache
-        if: ${{ !inputs.package }}
+        if: env.CI_MODE != 'package'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-about
           key: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-cli-ubuntu-22.04
+          lookup-only: ${{ env.CI_MODE == 'refresh' }}
       - name: Install pinned license renderer
         if: steps.renderer-cache.outputs.cache-hit != 'true'
         run: cargo install --locked --version "$CARGO_ABOUT_VERSION" --features cli cargo-about
       - name: Verify the renderer CLI
+        if: env.CI_MODE != 'refresh' || steps.renderer-cache.outputs.cache-hit != 'true'
         run: |
           version="$(cargo about --version)"
           echo "$version"
@@ -228,12 +266,13 @@ jobs:
             *) echo "::error::expected cargo-about $CARGO_ABOUT_VERSION"; exit 1 ;;
           esac
       - name: Save license renderer cache
-        if: ${{ !inputs.package && github.ref == 'refs/heads/main' && steps.renderer-cache.outputs.cache-hit != 'true' }}
+        if: env.CI_MODE == 'refresh' && steps.renderer-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-about
           key: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-cli-ubuntu-22.04
       - name: Generate notices for both supported targets
+        if: env.CI_MODE != 'refresh'
         run: |
           log="$RUNNER_TEMP/cargo-about.stderr"
           if ! cargo about generate --locked --fail about.hbs --output-file "$RUNNER_TEMP/THIRD-PARTY-NOTICES.html" 2> "$log"; then
@@ -244,7 +283,8 @@ jobs:
           # cargo-about can warn and succeed after discarding a changed clarification.
           # Require maintainer review rather than silently accepting fallback notices.
           test ! -s "$log"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - if: env.CI_MODE != 'refresh'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dependency-notices
           path: ${{ runner.temp }}/THIRD-PARTY-NOTICES.html
@@ -271,6 +311,11 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: animatic
     runs-on: ${{ matrix.os }}
+    env:
+      # Not CARGO*/RUST*/CC* names: rust-cache hashes those into its key, and pull
+      # requests must compute the same key as the main run that saved the cache.
+      CI_MODE: ${{ inputs.package && 'package' || (github.event_name == 'push' && 'refresh' || 'check') }}
+      CI_EXECUTABLE: ${{ (inputs.package || inputs.executables) && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -281,27 +326,58 @@ jobs:
         with:
           components: clippy
           targets: ${{ matrix.target }}
-      # Release builds never restore a cache; only main saves one for pull requests.
-      - name: Cache Rust dependencies
-        if: ${{ !inputs.package }}
+      # A refresh probes without downloading; an exact hit means pull requests already
+      # have a cache for this lockfile and toolchain, so the run ends here.
+      - name: Look up the main dependency cache
+        id: lookup
+        if: env.CI_MODE == 'refresh'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          lookup-only: true
+          save-if: false
+      - name: Select the work for this mode
+        id: work
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.lookup.outputs.cache-hit }}
+        run: |
+          checks=false
+          case "$CI_MODE" in
+            check) checks=true ;;
+            refresh) if [ "$CACHE_HIT" != true ]; then checks=true; fi ;;
+          esac
+          echo "checks=$checks" >> "$GITHUB_OUTPUT"
+          echo "mode=$CI_MODE checks=$checks executable=$CI_EXECUTABLE"
+      # Pull requests restore what main saved; only a refresh saves. Release builds never
+      # restore a cache.
+      - name: Cache Rust dependencies
+        if: steps.work.outputs.checks == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ env.CI_MODE == 'refresh' }}
       - name: Linux desktop dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (steps.work.outputs.checks == 'true' || env.CI_EXECUTABLE == 'true')
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libssl-dev
-      - run: cargo clippy --locked --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
-      - run: cargo test --locked --workspace --target ${{ matrix.target }}
-      - run: cargo doc --locked --workspace --no-deps
+      # One profile and one target for all three, so rustdoc reuses Clippy's dependency
+      # metadata instead of checking the whole graph again.
+      - if: steps.work.outputs.checks == 'true'
+        run: cargo clippy --locked --workspace --all-targets --profile ci --target ${{ matrix.target }} -- -D warnings
+      - if: steps.work.outputs.checks == 'true'
+        run: cargo test --locked --workspace --profile ci --target ${{ matrix.target }}
+      - if: steps.work.outputs.checks == 'true'
+        run: cargo doc --locked --workspace --no-deps --profile ci --target ${{ matrix.target }}
         env:
           RUSTDOCFLAGS: -D warnings
-      - run: cargo build --locked --release -p animatic --target ${{ matrix.target }}
+      - if: env.CI_EXECUTABLE == 'true'
+        run: cargo build --locked --release -p animatic --target ${{ matrix.target }}
       - name: Smoke the release executable
+        if: env.CI_EXECUTABLE == 'true'
         shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.binary }} --help
-
       - name: Upload CI executable
+        if: env.CI_EXECUTABLE == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: animatic-${{ matrix.platform }}-x86_64
@@ -356,13 +432,14 @@ jobs:
   # The single stable status to require on main. It fails closed: a job may only be
   # skipped when the plan did not select it, and a failed or cancelled scope, plan or
   # quality job fails it (a failed scope leaves its mode empty, which is not `defer`, so
-  # this job still runs and reports the failure). Two cases never report "Required checks":
-  # a metadata-only pull request edit is skipped under its own name, and a pull request
-  # whose actual base (looked up by the scope job) is not main reports the intentionally
+  # this job still runs and reports the failure). Three cases never report "Required checks":
+  # a metadata-only pull request edit is skipped under its own name; a pull request whose
+  # actual base (looked up by the scope job) is not main reports the intentionally
   # non-passing "Stacked PR (deferred)" name and is skipped, so neither can ever show
-  # "Required checks" as passing or skipped or mask a failure reported for the same commit.
+  # "Required checks" as passing or skipped or mask a failure reported for the same commit;
+  # and a main push reports "Main cache refresh", because it normally runs no Rust checks.
   required:
-    name: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'PR metadata (no code checks)' || (needs.scope.outputs.mode == 'defer' && 'Stacked PR (deferred)' || 'Required checks') }}
+    name: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'PR metadata (no code checks)' || (needs.scope.outputs.mode == 'defer' && 'Stacked PR (deferred)' || (github.event_name == 'push' && 'Main cache refresh' || 'Required checks')) }}
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '') && needs.scope.outputs.mode != 'defer' }}
     needs: [scope, plan, quality, notices, rust, package]
     runs-on: ubuntu-22.04

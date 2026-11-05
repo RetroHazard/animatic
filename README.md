@@ -102,9 +102,10 @@ cargo doc --workspace --no-deps
 ```
 
 See [development](docs/development.md) for the verification matrix, CI (pull requests
-targeting `main` (stacked children are deferred by a runtime base check) and `main` pushes, one `Required checks` result; not enforced server-side while the repository is
-private) and contribution workflow, and [releases](docs/releases.md) for the maintainer
-release procedure.
+targeting `main` are checked, with stacked children deferred by a runtime base check; `main`
+pushes only refresh caches and releases only build; one `Required checks` result; not enforced
+server-side while the repository is private) and contribution workflow, and
+[releases](docs/releases.md) for the maintainer release procedure.
 [`AGENTS.md`](AGENTS.md) is the coding-agent handoff.
 The [forum audit](docs/aom-forum-audit.md) records historical verification evidence and
 research limits; it is not a claim of complete AOM parity or exhaustive forum coverage.

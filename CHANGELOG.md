@@ -61,3 +61,12 @@ added under conventional headings.
   A ShellCheck SC2129 finding in `release.yml`, missed locally because no `shellcheck` was
   installed next to `actionlint`, is fixed by grouping the `$GITHUB_OUTPUT` redirects.
   Server-side enforcement of the check is not configured while the repository is private.
+- CI no longer repeats work across a pull request, its merge and a release. Pull requests (and
+  merge groups and manual runs) run Clippy, tests and rustdoc on Windows and Linux in a new `ci`
+  build profile (dev semantics, unoptimized dependencies, line-table debuginfo) with one shared
+  target, so rustdoc reuses Clippy's dependency metadata; they no longer build release
+  executables (a manual run can, with **executables**). A `main` push only keeps the dependency,
+  Cargo registry and `cargo-about` caches current, rebuilding them only when the lockfile or
+  toolchain changed, and reports *Main cache refresh*. A release builds only the clean, uncached
+  release executables and notices. The license-notices job restores a Cargo registry cache
+  instead of downloading every crate.
