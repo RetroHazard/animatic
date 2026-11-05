@@ -20,13 +20,13 @@ The indexed board reports 134 topics over five pages. Those pages and the releas
 
 These links intentionally point to the board when the exact thread ID is unavailable. No thread IDs, quotes, failure causes, or request details have been reconstructed from guesses. Generic AniDB page hints about renaming and reports about **AniSub**, Shoko, or unrelated clients are excluded from AOM evidence.
 
-## Comparison with the successor
+## Baseline comparison and decisions
 
-The implementation comparison below is based on repository code, **not** an assertion that inaccessible forum posts requested these exact changes. Existing coverage is not equivalent to proof against a historical failure.
+The implementation comparison below describes the initial baseline, **not** an assertion that inaccessible forum posts requested these exact changes. Existing coverage is not equivalent to proof against a historical failure.
 
 | Need / research lead | Existing Animatic coverage | Gap or opportunity | Decision |
 |---|---|---|---|
-| Continued operation without retired AOM services | Maintained UDP/HTTP transports, registered-client configuration, offline durable queue; web links replace retired metadata-change protocols | Actual historical connection errors cannot be compared until posts are readable | Preserve offline defaults and flood/session handling; do not claim all old failures solved |
+| Continued operation without retired AOM services | Maintained UDP/HTTP transports, registered-client configuration, offline durable queue; web links replace retired metadata-change protocols | Actual historical connection errors cannot be compared until posts are readable | Preserve offline workflows and flood/session handling; do not claim all old failures solved |
 | Statistics discrepancy | `stats.rs` aggregates SQLite library records and renders XML/INI | No verified expected/actual historical figures; local inventory and AniDB MyList may represent different populations | Obtain thread details before changing counting semantics |
 | Local cache failure / recovery | SQLite source of truth, reloadable UI projections, read-only transactional legacy import | No verified cache failure scenario; no user-facing backup/restore workflow | High-value research lead, not an implemented repair or evidence-backed diagnosis |
 | Preserve settings during migration | UTF-16 AOM settings parser existed, but had no UI caller | Claimed migration workflow was unreachable | Add native settings-import selection, background parse, non-secret review, explicit Apply/Cancel, and offline application |
@@ -35,7 +35,7 @@ The implementation comparison below is based on repository code, **not** an asse
 | Automatic managed renaming | Rename engine, manual preview/apply, persisted `auto_rename` option | Worker does not consume `auto_rename`; the visible setting is not proof of automation | Open product gap; design around metadata arrival, collision handling and cancellation before enabling |
 | Truthful settings and discoverable refresh | Legacy imports retain hashing autostart/priority and file-information options; full update is available through CLI | Some settings have no runtime consumer; no equivalent full-update menu action | Open product gaps; do not represent persistence as implemented behavior |
 
-## Selected changes and acceptance criteria
+## Implemented changes and acceptance
 
 ### Safe missing-file planning
 
@@ -47,7 +47,36 @@ Storage, source and other fields use independent apply checkboxes. Unchecked mea
 
 ### Reachable, reviewable settings migration
 
-Settings import reads the selected AOM XML without modifying it, parses in the background, and requires an explicit review/apply step. Review must not expose usernames, passwords or API keys. Cancel/failure leaves active settings unchanged. Applied settings remain offline so users can review registered-client settings, credentials and folder policies before synchronization or scanning.
+Settings import reads the selected AOM XML without modifying it, parses in the background, and requires an explicit review/apply step. Review does not expose usernames, passwords or API keys. XML with no supported settings is rejected. Worker submissions are disabled throughout parsing and review. Cancel/parse failure leaves active settings unchanged; a save failure retains both the active settings and review candidate. Apply persists the candidate before activating it, always offline, so users can review registered-client settings, credentials and folder policies before synchronization or scanning.
+
+Implementation anchors:
+
+- [`file_manager::plan_scan`](../crates/animatic-core/src/file_manager.rs): affirmative absence and trailing root-availability check; seven removal-boundary regressions.
+- [`sync::manager_mylist_edit`](../crates/animatic-core/src/sync.rs): explicit empty fields; regression applies a serialized queued edit to an existing MyList record.
+- [`settings::import_legacy_settings`](../crates/animatic-core/src/settings.rs): recognize consumed fields/collections; reject unrelated XML while accepting recognized default values.
+- [`app.rs`](../crates/animatic/src/app.rs) and [`worker.rs`](../crates/animatic/src/worker.rs): native picker, typed background import, review gating, save-before-activate and folder controls.
+
+## Exercised verification
+
+Windows verification on the research date used synthetic media/settings and temporary
+runtime databases outside the repository. No production AniDB API was contacted.
+
+| Check | Observed result |
+|---|---|
+| Before/after runtime scan probe | Unavailable-root removal actions changed from **1 to 0**; genuinely missing file under available root remained **1** |
+| Before/after checked-empty probe | Storage/source/other changed from omitted to explicit empty values |
+| Before/after unrelated-XML probe | Unsupported XML changed from accepted to rejected |
+| Targeted regression tests | File-manager, synchronization and settings suites passed |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo test --workspace` | **58 passed** |
+| `cargo clippy --workspace --all-targets -- -D warnings` | Passed |
+| `cargo build --release -p animatic` | Passed |
+| Native desktop exercise | Picker/review cancellation; non-secret review; save failure retains review; offline apply; unrelated/malformed UTF-16 XML rejection; queue action disabled during review and restored after cancel |
+| Native folder editor | Checked empty storage, edited source, and unchecked preserved other persisted to settings |
+
+The release executable was launched and exercised, not only compiled. Linux was not run
+locally; the existing Windows/Ubuntu CI matrix remains the cross-platform verification
+mechanism. Temporary probes and runtime fixtures were removed after verification.
 
 ## Remaining research prerequisite
 

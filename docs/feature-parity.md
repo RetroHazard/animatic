@@ -6,7 +6,7 @@ This audit maps the reverse-engineered AOM behavior to Animatic. “Equivalent�
 |---|---|
 | Startup databank loading | Transactional encrypted `kowai` import into SQLite, with cancellable progress |
 | Hash queue | Background ED2K-red, CRC32, MD5, and SHA-1 hashing with pause/cancel and one disk pass |
-| Batch/file manager | Recursive managed-folder scans, extension filters, rehash/remove-missing plans, and per-folder mylist policy |
+| Batch/file manager | Recursive managed-folder scans, extension filters, safe remove-missing plans gated by root availability, and per-folder MyList watched/state/storage/source/other policy |
 | Hashed files | Known/unknown local-file inventory, AniDB identification queue, local paths and hash metadata |
 | Anime/mylist trees | Searchable Anime and My list tables, watched/state editing, details, episodes, genres, relations, reviews, and AniDB links |
 | Advanced search | Title, year, type, mylist-only, and watched-only filters over the local cache |
@@ -17,10 +17,15 @@ This audit maps the reverse-engineered AOM behavior to Animatic. “Equivalent�
 | Rename files | Compatible expression parser/evaluator, user functions, database-backed objects, preview, and safe apply |
 | Hash export | Original sequential `%token%` expansion and configurable export template |
 | Players/AVDump | Configurable external process launchers with parsed arguments |
-| Settings | JSON settings plus UTF-16 AOM settings migration; account, UI, hashing, managers, players, AVDump, exports, and rename configuration |
+| Settings | JSON settings plus native UTF-16 AOM settings import with non-secret review, Apply/Cancel and offline application; account, UI, hashing, managers, players, AVDump, exports, and rename configuration |
 | Add anime/episode/file change requests | Opens AniDB’s maintained web editors; AOM’s retired TCP `ADDANIMEDATA`/`ADDEP` route is not used |
 | Command line/shell handoff | Media paths, `--database`, `--full-update`, and legacy `/database`/`/fullupdate` arguments |
 | Status/progress/log | Persistent queue view, activity log, job progress, pause, and cancel |
+
+This table maps workflow areas, not complete behavior of every persisted option.
+Automatic managed renaming and some imported hashing/refresh options still lack runtime
+consumers. See the [forum/product opportunity audit](aom-forum-audit.md) for these gaps
+and the limits of historical forum evidence.
 
 ## Deliberate non-ports
 

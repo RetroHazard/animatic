@@ -13,12 +13,15 @@ Animatic is a modern, cross-platform successor to **AniDB O'Matic (AOM)**. It ma
 - Mylist watched/state editing, anime detail pages, full-text filtering, and AniDB links.
 - AOM-compatible file-renaming language and database-backed `A`, `E`, `F`, `G`, `H`, and `M` objects.
 - Per-folder file-manager rules, discovery planning, automatic hash/rehash/removal decisions, and safe file moves.
-- JSON settings plus import of AOM's UTF-16 `local_settings.xml`.
+- JSON settings plus reviewable, offline-first import of AOM's UTF-16 `local_settings.xml`.
 
 The clean-room behavior mapping is documented in the [feature parity audit](docs/feature-parity.md). Original AOM binaries, extracted reverse-engineering work files, and imported library data are intentionally excluded from this repository.
 
 Development context is captured in [`AGENTS.md`](AGENTS.md); system boundaries and
 data flows are documented in [`docs/architecture.md`](docs/architecture.md).
+
+The [AOM forum opportunity audit](docs/aom-forum-audit.md) separates verified topic
+leads, blocked historical research, current implementation gaps, and shipped improvements.
 
 ## Build
 
@@ -66,6 +69,14 @@ ANIMATIC_DB=/path/library.sqlite3 ANIMATIC_SETTINGS=/path/settings.json cargo ru
 
 Import reads the encrypted source files and writes a new SQLite database. It never rewrites or deletes AOM data.
 
+To migrate preferences, choose **File → Import AOM settings…** and select
+`local_settings.xml`. A non-secret summary is shown before **Apply imported settings**
+replaces your configuration. **Cancel** leaves it unchanged. Parsing happens in the
+background; unrelated XML is rejected. Worker actions stay disabled until review ends.
+Applied settings are saved offline; review credentials, registered client name,
+managed folders and external players in **Tools → Options…** before enabling online work.
+The selected XML is never modified. Parse/save failures leave current settings intact.
+
 ## AniDB client registration
 
 AniDB requires API clients to use a registered client identifier. Configure the identifier and version under **Tools → Options…**. Keep offline mode enabled until this is set. The UDP client enforces AniDB's packet spacing and handles session expiry.
@@ -77,6 +88,10 @@ directory root, and a file lookup that reports absence. Unavailable drives, netw
 and other filesystem errors preserve local records. A genuinely missing file or nested
 folder under an available root can still be removed from the local inventory. This does
 not delete media or remove entries from AniDB MyList.
+
+Under **Tools → Options… → Managed folders**, each rule can set MyList storage,
+source and other fields. Unchecked means leave unchanged; checked with an empty value
+means explicitly clear that field. Watched and state policies remain independent.
 
 ## Verification
 

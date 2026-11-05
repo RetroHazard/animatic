@@ -124,6 +124,10 @@ sequenceDiagram
 
 Offline work remains in `command_queue`. Queue processing must be restart-safe and duplicate-aware. The UDP client owns authentication and flood control; callers must not bypass it with raw sockets.
 
+Per-folder MyList storage/source/other checkboxes distinguish an omitted field (`None`,
+leave unchanged) from an explicit empty string (`Some("")`, clear). Both states survive
+durable command serialization.
+
 ### Legacy migration
 
 1. Locate either a selected `kowai` directory or an install directory containing it.
@@ -135,6 +139,20 @@ Offline work remains in `command_queue`. Queue processing must be restart-safe a
 7. Remove temporary plaintext material.
 
 The source databank is read-only. Import cancellation and errors must leave source files untouched. Private migration inputs and outputs never belong in Git.
+
+### Legacy settings migration
+
+**File → Import AOM settings…** submits `Job::ImportLegacySettings`; the worker reads
+and parses the XML and returns typed success/failure events. The importer requires at
+least one supported setting or collection, without assuming a particular wrapper tag.
+The UI retains a pending candidate and shows counts and a generic credential warning,
+never credential values. Worker submissions are gated from selection through review;
+prior work is cancelled before parsing. Cancel or parse failure preserves current settings.
+
+Apply forces offline mode and saves the candidate before replacing live settings.
+Save failure keeps both the old active configuration and the review candidate.
+The original XML remains read-only. Review folder rules, external processes, credentials
+and the registered client name before deliberately resuming work.
 
 ### Rename workflow
 

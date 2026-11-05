@@ -166,11 +166,9 @@ pub fn manager_mylist_edit(m: &FileManager) -> MylistEdit {
         state: m.mylist_state_check.then_some(m.mylist_state),
         viewed: m.mylist_watched_check.then_some(m.mylist_watched),
         viewdate: (m.mylist_watched_check && m.mylist_watched).then_some(now),
-        storage: (m.mylist_storage_check && !m.mylist_storage.is_empty())
-            .then(|| m.mylist_storage.clone()),
-        source: (m.mylist_source_check && !m.mylist_source.is_empty())
-            .then(|| m.mylist_source.clone()),
-        other: (m.mylist_other_check && !m.mylist_other.is_empty()).then(|| m.mylist_other.clone()),
+        storage: m.mylist_storage_check.then(|| m.mylist_storage.clone()),
+        source: m.mylist_source_check.then(|| m.mylist_source.clone()),
+        other: m.mylist_other_check.then(|| m.mylist_other.clone()),
     }
 }
 
@@ -533,6 +531,40 @@ mod tests {
         assert_eq!(e.viewed, None);
         assert_eq!(e.storage.as_deref(), Some("Shelf"));
         assert_eq!(e.source, None);
+    }
+
+    #[test]
+    fn checked_empty_manager_fields_clear_existing_mylist_values() {
+        let db = Db::memory().unwrap();
+        db.upsert_mylist(&crate::library::MylistEntry {
+            lid: 1,
+            fid: 2,
+            storage: Some("Synthetic shelf".into()),
+            source: Some("Synthetic source".into()),
+            other: Some("Synthetic note".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let manager = FileManager {
+            mylist_storage_check: true,
+            mylist_source_check: true,
+            mylist_other_check: true,
+            ..Default::default()
+        };
+        db.queue_push(&Command::MylistEdit {
+            lid: 1,
+            edit: manager_mylist_edit(&manager),
+        })
+        .unwrap();
+        let (_, command, _) = db.queue_peek().unwrap().unwrap();
+        let Command::MylistEdit { lid, edit } = command else {
+            panic!("expected a durable MyList edit");
+        };
+        apply_edit_locally(&db, lid, &edit).unwrap();
+        let entry = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!(entry.storage.as_deref(), Some(""));
+        assert_eq!(entry.source.as_deref(), Some(""));
+        assert_eq!(entry.other.as_deref(), Some(""));
     }
 
     #[test]

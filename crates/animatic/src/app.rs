@@ -74,6 +74,8 @@ pub struct AnimaticApp {
     selected_local: Option<i64>,
     rename_preview: Option<(i64, PathBuf, PathBuf)>,
     import_source: String,
+    imported_settings: Option<Box<Settings>>,
+    import_pending: bool,
     search_year: String,
     search_type: i64,
     search_mylist_only: bool,
@@ -108,6 +110,8 @@ impl AnimaticApp {
             settings_open: false,
             about_open: false,
             import_source: String::new(),
+            imported_settings: None,
+            import_pending: false,
             search_year: String::new(),
             search_type: 0,
             search_mylist_only: false,
@@ -250,6 +254,13 @@ impl AnimaticApp {
                     }
                 }
                 Event::Imported { summary } => self.log(summary),
+                Event::LegacySettingsImported(settings) => {
+                    self.imported_settings = Some(settings);
+                }
+                Event::LegacySettingsImportFailed(e) => {
+                    self.import_pending = false;
+                    self.error(e);
+                }
                 Event::Synced {
                     description,
                     changed,
@@ -271,6 +282,9 @@ impl AnimaticApp {
     }
 
     fn submit_files(&mut self) {
+        if self.import_pending {
+            return;
+        }
         let mut dialog = rfd::FileDialog::new().set_title("Add files to hash");
         if !self.settings.ui.last_directory.is_empty() {
             dialog = dialog.set_directory(&self.settings.ui.last_directory);
@@ -292,8 +306,90 @@ impl AnimaticApp {
             self.worker.submit(Job::Hash(files));
         }
     }
+    fn import_legacy_settings(&mut self) {
+        if self.import_pending {
+            return;
+        }
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Choose AOM local_settings.xml")
+            .add_filter("AOM settings XML", &["xml"]);
+        if !self.settings.ui.last_directory.is_empty() {
+            dialog = dialog.set_directory(&self.settings.ui.last_directory);
+        }
+        let Some(source) = dialog.pick_file() else {
+            return;
+        };
+        self.import_pending = true;
+        self.worker.cancel.store(true, Ordering::Relaxed);
+        let _ = self.worker.jobs.send(Job::ImportLegacySettings { source });
+    }
+
+    fn legacy_settings_review_window(&mut self, ctx: &egui::Context) {
+        let Some(imported) = self.imported_settings.as_ref() else {
+            return;
+        };
+        let managed_folders = imported.file_managers.managers.len();
+        let players = imported.players.len();
+        let extensions = imported.hashing.extensions.len();
+        let credentials_detected = !imported.anidb.username.is_empty()
+            || !imported.anidb.password.is_empty()
+            || !imported.avdump.key.is_empty();
+        let mut open = true;
+        let mut apply = false;
+        let mut cancelled = false;
+        egui::Window::new("Review imported AOM settings")
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.strong("Applying will replace your current Animatic settings.");
+                ui.colored_label(
+                    Color32::YELLOW,
+                    "Imported credentials will not connect to AniDB: offline mode remains enabled.",
+                );
+                ui.label("Review managed folders before scanning them.");
+                ui.separator();
+                ui.label(format!("Managed folders: {managed_folders}"));
+                ui.label(format!("External players: {players}"));
+                ui.label(format!("Hash file extensions: {extensions}"));
+                ui.label(if credentials_detected {
+                    "Imported credentials were detected and will require review."
+                } else {
+                    "No imported credentials were detected."
+                });
+                ui.add_space(8.0);
+                if ui.button("Apply imported settings").clicked() {
+                    apply = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancelled = true;
+                }
+            });
+        if apply {
+            let mut imported = *self.imported_settings.take().expect("reviewed settings");
+            imported.anidb.offline = true;
+            match imported.save(&self.settings_path) {
+                Ok(()) => {
+                    self.settings = imported;
+                    self.worker.cancel.store(true, Ordering::Relaxed);
+                    self.import_pending = false;
+                    self.log("Settings saved");
+                    self.apply_visuals(ctx);
+                }
+                Err(e) => {
+                    self.error(format!("Could not save settings: {e}"));
+                    self.imported_settings = Some(Box::new(imported));
+                }
+            }
+        } else if cancelled || !open {
+            self.imported_settings = None;
+            self.import_pending = false;
+        }
+    }
 
     fn import_legacy(&mut self) {
+        if self.import_pending {
+            return;
+        }
         let source = PathBuf::from(self.import_source.trim());
         if !animatic_core::legacy::import::is_databank(&source) {
             self.error(format!("No AOM databank found in {}", source.display()));
@@ -491,11 +587,20 @@ impl AnimaticApp {
         egui::Panel::top("menu").show(root, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("Add files…").clicked() {
+                    if ui
+                        .add_enabled(!self.import_pending, egui::Button::new("Add files…"))
+                        .clicked()
+                    {
                         ui.close();
                         self.submit_files();
                     }
-                    if ui.button("Import AOM databank…").clicked() {
+                    if ui
+                        .add_enabled(
+                            !self.import_pending,
+                            egui::Button::new("Import AOM databank…"),
+                        )
+                        .clicked()
+                    {
                         ui.close();
                         if let Some(dir) = rfd::FileDialog::new()
                             .set_title("Choose AOM kowai folder")
@@ -504,6 +609,16 @@ impl AnimaticApp {
                             self.import_source = dir.to_string_lossy().into_owned();
                             self.import_legacy();
                         }
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.import_pending,
+                            egui::Button::new("Import AOM settings…"),
+                        )
+                        .clicked()
+                    {
+                        ui.close();
+                        self.import_legacy_settings();
                     }
                     if ui.button("Export statistics…").clicked() {
                         ui.close();
@@ -526,13 +641,15 @@ impl AnimaticApp {
                         self.settings_open = true;
                         ui.close();
                     }
-                    if ui.button("Scan managed folders").clicked() {
-                        self.worker.submit(Job::Scan {
-                            settings: self.settings.file_managers.clone(),
-                            extensions: self.settings.hashing.extensions.join(","),
-                        });
-                        ui.close();
-                    }
+                    ui.add_enabled_ui(!self.import_pending, |ui| {
+                        if ui.button("Scan managed folders").clicked() {
+                            self.worker.submit(Job::Scan {
+                                settings: self.settings.file_managers.clone(),
+                                extensions: self.settings.hashing.extensions.join(","),
+                            });
+                            ui.close();
+                        }
+                    });
                     if ui.button("Download anime titles").clicked() {
                         if let Err(e) = self
                             .db
@@ -568,11 +685,13 @@ impl AnimaticApp {
                             }
                         }
                     });
-                    if ui.button("Run command queue").clicked() {
-                        self.worker
-                            .submit(Job::ProcessQueue(self.settings.anidb.clone()));
-                        ui.close();
-                    }
+                    ui.add_enabled_ui(!self.import_pending, |ui| {
+                        if ui.button("Run command queue").clicked() {
+                            self.worker
+                                .submit(Job::ProcessQueue(self.settings.anidb.clone()));
+                            ui.close();
+                        }
+                    });
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("AniDB website").clicked() {
@@ -658,7 +777,10 @@ impl AnimaticApp {
         }
         ui.add_space(20.0);
         ui.horizontal(|ui| {
-            if ui.button("Add files").clicked() {
+            if ui
+                .add_enabled(!self.import_pending, egui::Button::new("Add files"))
+                .clicked()
+            {
                 self.submit_files();
             }
             if ui.button("Open hashed files").clicked() {
@@ -675,9 +797,16 @@ impl AnimaticApp {
                 ui.label("Import the encrypted databank directly. Existing anime, mylist, hashes and local paths are preserved.");
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.import_source);
-                    if ui.button("Browse…").clicked()
-                        && let Some(d) = rfd::FileDialog::new().pick_folder() { self.import_source = d.to_string_lossy().into_owned(); }
-                    if ui.button("Import").clicked() { self.import_legacy(); }
+                    ui.add_enabled_ui(!self.import_pending, |ui| {
+                        if ui.button("Browse…").clicked()
+                            && let Some(d) = rfd::FileDialog::new().pick_folder()
+                        {
+                            self.import_source = d.to_string_lossy().into_owned();
+                        }
+                        if ui.button("Import").clicked() {
+                            self.import_legacy();
+                        }
+                    });
                 });
                 if ui.button("Dismiss first-run card").clicked() { self.settings.first_launch = false; self.save_settings(); }
             });
@@ -1065,10 +1194,12 @@ impl AnimaticApp {
                 }
                 self.reload();
             }
-            if ui.button("Synchronize now").clicked() {
-                self.worker
-                    .submit(Job::ProcessQueue(self.settings.anidb.clone()));
-            }
+            ui.add_enabled_ui(!self.import_pending, |ui| {
+                if ui.button("Synchronize now").clicked() {
+                    self.worker
+                        .submit(Job::ProcessQueue(self.settings.anidb.clone()));
+                }
+            });
         });
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (id, cmd, tries, err) in &self.cache.queue {
@@ -1330,6 +1461,18 @@ impl AnimaticApp {
                                         });
                                 }
                             });
+                            ui.checkbox(&mut manager.mylist_storage_check, "Set storage");
+                            ui.add_enabled_ui(manager.mylist_storage_check, |ui| {
+                                field(ui, "Storage", &mut manager.mylist_storage);
+                            });
+                            ui.checkbox(&mut manager.mylist_source_check, "Set source");
+                            ui.add_enabled_ui(manager.mylist_source_check, |ui| {
+                                field(ui, "Source", &mut manager.mylist_source);
+                            });
+                            ui.checkbox(&mut manager.mylist_other_check, "Set other");
+                            ui.add_enabled_ui(manager.mylist_other_check, |ui| {
+                                field(ui, "Other", &mut manager.mylist_other);
+                            });
                             if manager.can_edit_path && ui.button("Remove folder rule").clicked() {
                                 remove_manager = Some(index);
                             }
@@ -1484,6 +1627,7 @@ impl eframe::App for AnimaticApp {
             Page::Queue => self.queue_page(ui),
             Page::Log => self.log_page(ui),
         });
+        self.legacy_settings_review_window(&ctx);
         self.settings_window(&ctx);
         self.rename_window(&ctx);
         if self.about_open {

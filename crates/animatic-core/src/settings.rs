@@ -708,11 +708,20 @@ fn tcolor_to_rgb(v: i64) -> u32 {
     ((v & 0xff) << 16) | (v & 0xff00) | ((v >> 16) & 0xff)
 }
 
-/// Import a legacy `local_settings.xml` on top of the defaults.
+/// Import supported settings from a legacy `local_settings.xml` on top of the defaults.
+/// XML without recognized settings is rejected rather than replacing a configuration with defaults.
 pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
     let bytes = std::fs::read(path)?;
     let x = parse_legacy_xml(&decode_legacy_text(&bytes))?;
-    let g = |k: &str| x.values.get(k);
+    // Track fields actually consumed below without duplicating the import schema in an allowlist.
+    let recognized = std::cell::Cell::new(false);
+    let g = |k: &str| {
+        let value = x.values.get(k);
+        if value.is_some() {
+            recognized.set(true);
+        }
+        value
+    };
     let mut s = Settings::default();
 
     if let Some(v) = g("anidb/username") {
@@ -786,6 +795,7 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
     }
     for (tag, value) in &x.colors {
         if let Some((slot, bg)) = ColorSlot::from_tag(*tag) {
+            recognized.set(true);
             let mut c = s.ui.color(slot);
             if bg {
                 c.background = tcolor_to_rgb(*value);
@@ -809,6 +819,9 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
             default: b(p.get("default"), false),
         })
         .collect();
+    if !s.players.is_empty() {
+        recognized.set(true);
+    }
 
     if let Some(v) = num("filemanager/actionDelay") {
         s.file_managers.action_delay_ms = v.max(1) as u64;
@@ -851,7 +864,13 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
         })
         .collect();
     if !managers.is_empty() {
+        recognized.set(true);
         s.file_managers.managers = managers;
+    }
+    if !recognized.get() {
+        return Err(Error::Xml(
+            "No supported AOM settings found in the selected XML".into(),
+        ));
     }
     s.fixup();
     Ok(s)
@@ -918,6 +937,30 @@ x</renamingPattern>
         assert_eq!(s.file_managers.sleep_time_ms, 450_000);
         assert_eq!(s.file_managers.managers.len(), 2);
         assert!(s.file_managers.default_manager().auto_rename);
+    }
+
+    #[test]
+    fn rejects_unrelated_or_empty_legacy_settings() {
+        for xml in [
+            "",
+            "<catalog><entry>synthetic media</entry></catalog>",
+            "<aomsettings><general><unsupported>true</unsupported></general></aomsettings>",
+        ] {
+            let path = utf16_file(xml);
+            let result = import_legacy_settings(&path);
+            std::fs::remove_file(path).unwrap();
+            assert!(result.is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_recognized_legacy_settings_with_default_values() {
+        let path = utf16_file(
+            "<aomsettings><general><autostartHashing>false</autostartHashing></general></aomsettings>",
+        );
+        let settings = import_legacy_settings(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert!(!settings.hashing.autostart);
     }
 
     #[test]

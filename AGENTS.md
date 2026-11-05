@@ -34,6 +34,7 @@ The migration implementation necessarily contains clean-room format knowledge an
 - `crates/animatic`: native eframe/egui application, background worker, UI state, and CLI entry point.
 - `docs/architecture.md`: architecture, data flow, invariants, and extension points.
 - `docs/feature-parity.md`: mapping from legacy workflows to Animatic equivalents.
+- `docs/aom-forum-audit.md`: source-linked historical research, access limitations, baseline product gaps, and improvement verification.
 - `.github/workflows/ci.yml`: Windows and Ubuntu formatting, lint, tests, release builds, and artifacts.
 
 ## Architectural rules
@@ -49,6 +50,7 @@ The migration implementation necessarily contains clean-room format knowledge an
 9. Prefer current AniDB web editors over reviving retired metadata-change protocols.
 10. Avoid platform-specific behavior unless isolated behind a cross-platform abstraction and verified on Windows and Linux.
 11. Automatic local-record removal requires affirmative file absence beneath a reachable, explicitly configured manager root. Unavailable drives and filesystem errors must preserve library records.
+12. AOM settings import runs on the worker, requires non-secret review, and applies offline only after successful persistence. Cancel/failure must preserve active settings; block other worker submissions until review ends.
 
 ## Commands
 

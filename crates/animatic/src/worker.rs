@@ -7,7 +7,7 @@ use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
 use animatic_core::db::Db;
 use animatic_core::file_manager::hash_and_register;
 use animatic_core::hash::Ed2kVariant;
-use animatic_core::settings::{AnidbSettings, FileManagerSettings};
+use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings};
 use crossbeam_channel::{Receiver, Sender};
 
 #[derive(Debug)]
@@ -20,6 +20,9 @@ pub enum Job {
     ImportLegacy {
         source: PathBuf,
         temp: PathBuf,
+    },
+    ImportLegacySettings {
+        source: PathBuf,
     },
     ProcessQueue(AnidbSettings),
     Stop,
@@ -45,6 +48,8 @@ pub enum Event {
     Imported {
         summary: String,
     },
+    LegacySettingsImported(Box<Settings>),
+    LegacySettingsImportFailed(String),
     Synced {
         description: String,
         changed: bool,
@@ -307,6 +312,23 @@ fn run(
                                 let _ = events.send(Event::Error(e.to_string()));
                             }
                         },
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::ImportLegacySettings { source } => {
+                let _ = events.send(Event::Started {
+                    label: "Reading AOM settings".into(),
+                    total: 1,
+                });
+                match animatic_core::settings::import_legacy_settings(&source) {
+                    Ok(settings) => {
+                        let _ = events.send(Event::LegacySettingsImported(Box::new(settings)));
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::LegacySettingsImportFailed(format!(
+                            "Could not import AOM settings: {e}"
+                        )));
                     }
                 }
                 let _ = events.send(Event::Finished);
