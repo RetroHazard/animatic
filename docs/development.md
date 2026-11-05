@@ -79,6 +79,8 @@ crates/animatic-core/         storage, schema, queue, hashing, import, rename, s
 crates/animatic/              native egui/eframe app, worker thread, CLI entry point
 docs/                         this documentation set
 .github/workflows/            CI, release preparation and release workflows
+.github/ISSUE_TEMPLATE/       issue forms (bug, feature, accessibility, documentation)
+.github/pull_request_template.md  pull request summary, verification and checklist
 scripts/                      release tooling (release.py) and its tests
 ```
 
@@ -708,6 +710,9 @@ credential in it as exposed.
   resolves.
 
 ## Contribution checklist
+
+The [pull request template](../.github/pull_request_template.md) carries a short form of this
+list; this one is authoritative.
 
 - [ ] I read [`AGENTS.md`](../AGENTS.md), and the change respects its architectural rules.
 - [ ] The change needs no private data; fixtures are synthetic and built in code.

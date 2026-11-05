@@ -1,0 +1,22 @@
+name: Documentation problem
+description: A guide is wrong, unclear, missing or disagrees with the application.
+labels: [documentation]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page and section
+      placeholder: docs/user-guide.md#mylist-editing
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What the page says, and what is wrong or missing. If the application behaves differently, say what you observed and in which version.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording
