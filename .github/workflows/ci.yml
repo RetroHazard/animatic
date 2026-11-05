@@ -1,9 +1,11 @@
 name: CI
 
-# Pull requests that target main and pushes to main are the only automatic triggers; a
-# push to any other branch (for example a long-lived dev branch) never starts this
-# workflow, and a pull request into a stacked branch never starts it either. Nothing here
-# publishes anything. Release workflows call it explicitly.
+# The `branches` filters below are only an optimization: GitHub has been observed running
+# this workflow for a pull request whose real target is a stacked branch, with a
+# synthetic merge context whose `base_ref` says main. The `scope` job therefore asks the
+# REST API for the pull request's actual base and defers everything unless it is main.
+# A push to any other branch never starts this workflow. Nothing here publishes
+# anything. Release workflows call it explicitly.
 on:
   push:
     branches: [main]
@@ -33,22 +35,68 @@ permissions:
 # Only superseded pull request runs are cancelled. Every other run (main pushes,
 # merge groups, manual and release-called runs) gets a unique group and always finishes.
 concurrency:
-  # A pull request run that is not checked (metadata-only edit, or a base other than main)
-  # gets its own group so it can never cancel a full run in flight.
-  group: ci-${{ github.event_name == 'pull_request' && github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '') && github.event.pull_request.number || github.run_id }}
+  # Any pull request run that checks code (everything except a metadata-only edit) shares
+  # the pull request's group, so a new push cancels the older run. The real base is only
+  # known from the REST lookup inside the run, so a base is not used here: retargeting
+  # away from main cancels the older main run of the same pull request, which is intended.
+  # A metadata-only edit gets its own group so it can never cancel a full run in flight.
+  group: ci-${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '') && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Branch filters and merge-context guards did not prevent observed stacked-PR
+  # integration runs. Read the actual target from the API instead of relying on the
+  # synthetic merge context. A main target runs checks; every other base is deferred.
+  # Deferred PRs run no planner, Quality, Rust, notices, or merge-gate job. A failed
+  # lookup leaves `mode` empty and fails the merge gate closed. Non-PR events proceed
+  # normally. Metadata-only edits skip this job. No checkout or secrets are printed.
+  scope:
+    name: Resolve pull request scope
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - name: Look up the actual pull request base
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "mode=run" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.ref // empty')"
+          if [ -z "$base" ]; then
+            echo "::error::the pull request API returned no base branch"
+            exit 1
+          fi
+          if [ "$base" = main ]; then
+            echo "mode=run" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=defer" >> "$GITHUB_OUTPUT"
+            {
+              printf '### Stacked pull request deferred\n\n'
+              printf 'The actual base branch is %s, not main. Code checks are deferred until the pull request targets main.\n' "$base"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   # Decide which expensive checks the change needs. Anything uncertain, manual,
   # called by a release workflow, or queued for merge runs everything.
-  # The run predicate is true for every event except a pull request that is not into main
-  # or an `edited` event that did not change the base branch. Only plan and required
-  # evaluate it: quality, notices and rust need plan (and quality) with the implicit
-  # success() condition, so they are skipped with it. The base check is redundant for
-  # direct runs (the trigger filters branches) and defends reusable-workflow callers.
+  # Runs only when scope resolved to `run`. Quality, notices and rust need plan (and
+  # quality) with the implicit success() condition, so they are skipped with it.
   plan:
     name: Plan checks
-    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) }}
+    needs: scope
+    if: ${{ needs.scope.outputs.mode == 'run' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:
@@ -296,14 +344,17 @@ jobs:
           retention-days: 14
 
   # The single stable status to require on main. It fails closed: a job may only be
-  # skipped when the plan did not select it, and a failed or cancelled plan or quality
-  # job fails it. For an unchecked pull request run (metadata-only edit) the job is
-  # skipped under a different name, so it can never report "Required checks" as passing
-  # or skipped and never masks a failure already reported for the same commit.
+  # skipped when the plan did not select it, and a failed or cancelled scope, plan or
+  # quality job fails it (a failed scope leaves its mode empty, which is not `defer`, so
+  # this job still runs and reports the failure). Two cases never report "Required checks":
+  # a metadata-only pull request edit is skipped under its own name, and a pull request
+  # whose actual base (looked up by the scope job) is not main reports the intentionally
+  # non-passing "Stacked PR (deferred)" name and is skipped, so neither can ever show
+  # "Required checks" as passing or skipped or mask a failure reported for the same commit.
   required:
-    name: ${{ (github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != ''))) && 'Required checks' || 'PR metadata (no code checks)' }}
-    if: ${{ always() && (github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != ''))) }}
-    needs: [plan, quality, notices, rust, package]
+    name: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'PR metadata (no code checks)' || (needs.scope.outputs.mode == 'defer' && 'Stacked PR (deferred)' || 'Required checks') }}
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '') && needs.scope.outputs.mode != 'defer' }}
+    needs: [scope, plan, quality, notices, rust, package]
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:

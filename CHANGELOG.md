@@ -45,8 +45,11 @@ added under conventional headings.
 
 - CI now runs for pull requests targeting `main`, `main` pushes and manual runs, and never creates
   a GitHub Release, tag or push itself (ordinary runs check and build raw executables; only a
-  release workflow calling it packages archives). Stacked child pull requests whose base is
-  another branch start no automatic CI until they are retargeted to `main`. Title and body
+  release workflow calling it packages archives). A cheap `scope` job queries the
+  pull request's actual base through the REST API (the `main` branch filter stays only as an
+  optimization); stacked children with another base defer all code and expensive jobs under a
+  separate *Stacked PR (deferred)* name, never `Required checks`, and an API error fails closed.
+  Full checks run after `scope` allows, then `plan` and a passing `quality`. Title and body
   edits start the workflow but skip every code check and report under a separate metadata job
   name, never as `Required checks`, so they cannot mask an earlier failure; any branch can be
   checked with a manual full run. A planner skips the Rust

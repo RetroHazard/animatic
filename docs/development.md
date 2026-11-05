@@ -15,7 +15,7 @@ Repository-specific engineering rules for coding agents live in
 | Workspace members | `animatic-core`, `animatic-anidb`, `animatic` | [`Cargo.toml`](../Cargo.toml) |
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
-| CI | Pull requests **targeting `main`** and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. No server-side merge requirement is configured while the repository is private (see [Continuous integration](#continuous-integration)) | [`ci.yml`](../.github/workflows/ci.yml) |
+| CI | Pull requests **targeting `main`** (a cheap `scope` job defers stacked children at runtime) and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. No server-side merge requirement is configured while the repository is private (see [Continuous integration](#continuous-integration)) | [`ci.yml`](../.github/workflows/ci.yml) |
 | Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
@@ -339,9 +339,12 @@ explicit manual run. Ordinary pull request, `main` and manual runs only check
 the code and build raw executables (`cargo build --release` is still a compile); a release
 workflow calling it with `package: true` additionally has it package archives. `ci.yml` itself
 never creates a GitHub Release, tag or push, so it cannot cut a release from a pull request or a development branch. A plain push
-to a development branch starts nothing, and neither does a pull request whose base is another
-development branch (for example a stacked child pull request): it gets automatic CI only after it is
-retargeted to `main`. To check a branch earlier, run the workflow manually
+to a development branch starts nothing. A pull request whose base is another development branch
+(a stacked child) may still start the workflow, because GitHub can evaluate the branch filter with
+`main` as context; the authoritative `scope` job therefore queries the pull request REST API for the
+actual base and, when it is not `main`, defers all code and expensive jobs under the separately named
+*Stacked PR (deferred)* job (never `Required checks`) until the pull request is retargeted to `main`.
+A `scope` API error fails closed. To check a branch earlier, run the workflow manually
 (**Actions → CI → Run workflow**), which always runs the full checks on any branch. How releases
 are made is in [Releases](releases.md).
 
@@ -350,6 +353,13 @@ are made is in [Releases](releases.md).
   matters if a merge queue is enabled); manual `workflow_dispatch`, which always runs the full
   checks on the chosen branch; and `workflow_call` with inputs `ref` (string, default empty) and
   `package` (boolean, default `false`), used by the release workflows to check an exact commit.
+  The `main` branch filter is kept as an optimization but is not authoritative: `scope` (Ubuntu 22.04,
+  no checkout, read-only `contents` and `pull-requests`) decides at runtime from the REST base, so
+  nothing relies on branch-filter context. `plan` needs `scope`, then `quality`, then the Rust and
+  license jobs; source heads are compiled only after that chain allows. A metadata-only edit costs no
+  jobs. This avoids relying on stack context without asserting a GitHub bug; the only root cause
+  actually observed in the quality failure was ShellCheck SC2129. Superseded migration runs may
+  already be queued and are cancelled when unnecessary.
   `edited` exists so that retargeting a pull request to `main` (a base change) starts CI for
   a stacked child pull request. GitHub cannot filter the `edited` subtype at the trigger, so
   an `edited` event that does not change the base (a title or body edit) **does start the

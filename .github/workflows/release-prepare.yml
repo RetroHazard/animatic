@@ -79,6 +79,9 @@ jobs:
   verify:
     if: ${{ !inputs.dry_run }}
     needs: prepare
+    permissions:
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.prepare.outputs.sha }}

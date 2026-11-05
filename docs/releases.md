@@ -266,8 +266,9 @@ generates `THIRD-PARTY-NOTICES.html` (artifact `dependency-notices`) after insta
 `cargo-about` with `--features cli`, and doubles as the license-policy gate. The `quality` job
 must pass before the Rust and license jobs start, and those then run in parallel. The stable aggregate
 job **`Required checks`** is the check to require on pull requests; it fails closed. Pull
-requests whose base is not `main` (stacked children) start no automatic CI until retargeted to
-`main`. Metadata-only (title/body) edits start the workflow but skip all code checks under a
+requests whose base is not `main` (stacked children) may start the workflow, but a cheap `scope` job checks
+the actual base through the REST API and defers all code and expensive jobs under a separately named
+*Stacked PR (deferred)* job until retargeted to `main`; a `scope` API error fails closed. Metadata-only (title/body) edits start the workflow but skip all code checks under a
 separately named job, never emitting `Required checks`.
 
 The job-by-job contract, the planner and gate rules, the local reproduction commands (including
