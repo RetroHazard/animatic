@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "animatic"
-version = "1.0.0"
+version = "2026.11.0"
 dependencies = [
  "animatic-anidb",
  "animatic-core",
@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "animatic-anidb"
-version = "1.0.0"
+version = "2026.11.0"
 dependencies = [
  "aes",
  "chrono",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "animatic-core"
-version = "1.0.0"
+version = "2026.11.0"
 dependencies = [
  "aes",
  "animatic-anidb",

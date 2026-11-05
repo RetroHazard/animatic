@@ -6,8 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-animatic-anidb = { version = "1.0.0", path = "../animatic-anidb" }
-animatic-core = { version = "1.0.0", path = "../animatic-core" }
+animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb" }
+animatic-core = { version = "2026.11.0", path = "../animatic-core" }
 anyhow = "1.0.104"
 chrono = "0.4.45"
 crossbeam-channel = "0.5.17"
