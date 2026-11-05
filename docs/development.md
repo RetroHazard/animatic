@@ -16,7 +16,7 @@ Repository-specific engineering rules for coding agents live in
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
 | CI | Locked Clippy, tests and release build, formatting, and the Python release-tool tests on `windows-latest` and `ubuntu-22.04`; runs on every push and pull request and is reusable by the release workflows | [`ci.yml`](../.github/workflows/ci.yml) |
-| Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package, signing or auto-update | [Releases](releases.md) |
+| Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
 Local runtime verification and CI coverage are different evidence. Linux runtime behavior and
@@ -208,7 +208,11 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
    built-in default folder rule adds identified files to MyList, and **Identify files with
    AniDB after hashing** is on by default, so hashing queues an Identify command. Nothing
    runs unless you choose **Tools → Run command queue** or **Synchronize now**, but a smoke
-   test must never be one click from the network.
+   test must never be one click from the network. The startup update check
+   (`updates.auto_check`, default on) also contacts GitHub on a fresh profile; seed the isolated
+   settings file with `{ "updates": { "auto_check": false }, "anidb": { "offline": true } }`
+   before the first launch (see
+   [Avoiding the startup update check](getting-started.md#avoiding-the-startup-update-check)).
 3. Create synthetic media under a fictitious test root. Contents need not be valid video,
    because hashing reads bytes:
 
@@ -279,6 +283,52 @@ client credentials against it. The existing tests show the pattern:
 - Deliberate production contact is a manual, maintainer-run activity with that person's own
   account and registered client identifier; it is not part of any test or CI job, and nothing
   in this repository records it as done.
+
+### Update tests and smoke rehearsals
+
+The same rule applies to the updater: **no automated test contacts GitHub or AniDB.**
+
+- `animatic-core::update` tests serve synthetic release JSON, `SHA256SUMS` and synthetic
+  archives from a loopback listener (with proxies disabled) and use fabricated future
+  versions and fictitious tags. Build archives in the test from explicit bytes; never embed a real
+  binary, a real checksum or data copied from a real release.
+- Cover at least: CalVer parsing and ordering, highest-version selection independent of API
+  order, draft/prerelease/equal/lower skipped, checksum mismatch or missing/duplicate lines,
+  traversal and unexpected archive entries, size limits, truncated downloads and cancellation.
+- **Never run `self-replace` against the test harness executable** (it would replace the running
+  test binary). Exercise the real swap only from a throwaway helper process that copies itself to a
+  new temporary folder and replaces that copy.
+- Worker and UI tests for the updater use the `Updater` (`UpdateJob`/`UpdateEvent`) path and must
+  not touch the normal worker's `cancel` flag semantics or the AniDB cooldown.
+- A manual install rehearsal uses a synthetic "new version" archive staged under a temporary
+  folder and a copy of a built executable in a disposable directory; it never replaces the
+  checkout's `target/` binary and never needs a real GitHub release. A Linux run is not verified by the
+  project until someone records one.
+
+#### Observed verification record (2026-11-05, Windows only)
+
+Reported by the implementing session; historical evidence, not a substitute for rerunning checks:
+
+- **Native Windows UI rehearsal, passed.** In a disposable workspace outside the repository, two
+  actual release builds (`2026.11.0` and a synthetic `2099.1.0`) were used, with the old one served
+  an update through a minimal **loopback HTTP fixture** and a small **external, throwaway patch of
+  the update origin** (a test-only substitution for this rehearsal, not a relaxation of production
+  TLS or host rules; the shipped code still requires HTTPS to GitHub). Observed: Help → Check for
+  updates found the version; Download and verify matched the SHA-256; the first **Install** click did
+  not modify the executable; **Confirm installation** replaced it with a file whose hash matched the
+  new build; **Restart now** exited the old process with status 0 and the new process showed
+  `2099.1.0` in About.
+- **Data safety observed.** A custom `--database` path was kept, a hash-cache row survived, and
+  synthetic queue/local rows that had been cleared before the install stayed empty after the restart
+  (no media-file or `--full-update` replay). SQLite integrity check reported `ok`. The fixture
+  served three anonymous requests (metadata, `SHA256SUMS`, the archive).
+- **Not production.** No production AniDB request and no real GitHub release was involved or created.
+- **Automated checks at that time:** the full workspace tests passed (208 Rust tests: 22 app, 26
+  AniDB, 160 core), strict Clippy, rustdoc and the release build passed, and an earlier test that ran
+  the real installer in a child process against a **release-profile (LTO, stripped) Windows build**
+  passed. Counts are a dated fact; do not quote them as current.
+- **Not exercised:** the Linux GUI and the Linux install path, and any update against real GitHub
+  releases.
 
 ## Continuous integration
 
@@ -358,8 +408,11 @@ required GitHub settings, archive layout and installation/verification instructi
 - After merging, the maintainer pushes the tag `vVERSION` explicitly; **Release** verifies it,
   reruns CI with packaging on that commit and creates a **draft** GitHub Release with a Windows
   ZIP, a Linux tar.gz and `SHA256SUMS`.
-- Archives are unsigned. There are no installers, packages, attestations or auto-update, and a
-  release run is not evidence of Linux desktop behavior or production AniDB validation.
+- Archives are unsigned. There are no installers, packages or attestations. The app can update
+  *itself* from a published release (the in-app updater; see
+  [Releases](releases.md#in-app-updates)), so the archive names, the single root folder
+  and the `SHA256SUMS` format are a compatibility contract with `update.rs`. A release run is
+  not evidence of Linux desktop behavior or production AniDB validation.
 - Nothing tags, bumps or publishes from an ordinary branch push. The workflows do not claim any
   GitHub environment or branch-protection setting is configured; see
   [the required settings](releases.md#repository-settings-the-maintainer-must-provide).
@@ -379,8 +432,9 @@ This table maps a change to the places you will touch and the documentation to u
 | New or changed setting | `Settings` types in [`settings.rs`](../crates/animatic-core/src/settings.rs) (keep `#[serde(default)]` so old files load), `Default`, the Options window in `app.rs`, and the consumer. Add the legacy-import mapping only if AOM had the setting | [Settings reference](settings-reference.md) must say whether the field is consumed or stored only |
 | New table, column or index | [`db/schema.sql`](../crates/animatic-core/src/db/schema.sql) (idempotent) or a migration in [`db/mod.rs`](../crates/animatic-core/src/db/mod.rs); store writes and library read models | [Storage and network contracts](storage-and-network.md), [Architecture](architecture.md) |
 | New AniDB command | Request/reply in `animatic-anidb` `commands.rs`; a serializable `Command` with a priority and `describe()` in [`sync.rs`](../crates/animatic-core/src/sync.rs); execution and reply application in `core::sync::execute`; error classification in `error.rs` and `CommandError`. The retry, block and cooldown **policy** lives in the desktop worker (`fail_command` and `process_queue` in `worker.rs`), while core supplies the durable primitives (`queue_block`, `queue_deferred`, `set_sync_cooldown` and so on) | [Storage and network contracts](storage-and-network.md); [User guide](user-guide.md) if reachable from the UI |
-| New background job | `Job` and `Event` in [`worker.rs`](../crates/animatic/src/worker.rs); define progress, cancellation and failure; keep blocking work off the UI thread | [Architecture](architecture.md) |
+| New background job | `Job` and `Event` in [`worker.rs`](../crates/animatic/src/worker.rs); define progress, cancellation and failure; keep blocking work off the UI thread. An operation that must not share the normal worker's `cancel` flag or queue (the updater) gets its own thread, cancel flag and typed events | [Architecture](architecture.md) |
 | New page, menu item or dialog | `app.rs`; consume only projections and events | [User guide](user-guide.md) |
+| Updater, archive layout or release asset names | [`update.rs`](../crates/animatic-core/src/update.rs), `scripts/release.py` and `release.yml` together | [Releases](releases.md#in-app-updates), [Storage and network](storage-and-network.md#github-update-transport), [User guide](user-guide.md#updating-animatic) |
 | Rename function, object or property | `rename/` (`parser`, `eval`, `objects`, `plan`); tests in `rename/tests.rs` | [Rename language](rename-language.md); record deliberate differences from AOM |
 | Public API of a library crate | Rust doc comments on the item | The generated `cargo doc` output is the API reference |
 | Version, changelog, packaging or workflow | [`scripts/release.py`](../scripts/release.py), its tests and `.github/workflows/` | [Releases](releases.md) and the README, Getting started and `AGENTS.md` claims about distribution |

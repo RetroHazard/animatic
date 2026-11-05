@@ -26,7 +26,9 @@ Know the limits before you rely on a recovery path:
   [The library is missing entries](#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed
   folders**, the queue runs only from **Tools → Run command queue** or **Synchronize now**,
-  and renaming is never automatic.
+  and renaming is never automatic. The one automatic action is the optional startup
+  *check* for a newer Animatic release on GitHub (`updates.auto_check`); it downloads and
+  installs nothing. See [Update problems](#update-problems).
 - **No logging backend.** Diagnostics are the in-memory **Log** page and the status bar. See
   [Privacy-safe support](#privacy-safe-support-and-bug-reports).
 
@@ -54,6 +56,7 @@ replies follow the source code, not a recorded run.
 | Import finished with fewer collections than expected | [AOM import problems](#aom-import-problems) |
 | Disk full, leftover temporary files | [Disk space, temporary files and leftovers](#disk-space-temporary-files-and-leftovers) |
 | Preparing a bug report | [Privacy-safe support](#privacy-safe-support-and-bug-reports) |
+| Update check, download, install or restart failed; Animatic will not start after an update | [Update problems](#update-problems) |
 
 ## Which files is Animatic using?
 
@@ -339,6 +342,35 @@ Permission checklist for the folders involved:
 Startup creates the database and its parent folder immediately; the settings folder is created
 only when settings are first saved.
 
+## Update problems
+
+How updating works and what it changes: [User guide](user-guide.md#updating-animatic). The
+update path is separate from AniDB: an update failure never touches the command queue or an
+AniDB cooldown, and an AniDB cooldown never blocks it.
+
+| Symptom | Cause and action |
+|---|---|
+| No check happens at startup | By design when `updates.auto_check` is off, *Work offline* is on, or settings were recovered from a backup. **Help → Check for updates…** still works |
+| Help → Check for updates… is disabled or the platform is reported unsupported | Only Windows and Linux on x86_64 are supported. Download releases manually elsewhere (none are built) |
+| The check fails, or reports a rate limit | Unauthenticated GitHub API requests are limited per IP address, and a firewall, proxy or offline machine also fails. Nothing is retried automatically; try again later. A manual check always shows the error, a startup check writes it only to the **Log** |
+| The check reports "not found" or the release feed as unavailable | GitHub answers HTTP 404 when the release data is not visible to an anonymous client: the repository's releases are not publicly readable, or nothing is published. This is an error, never "up to date". Animatic has no token or sign-in setting, so until the releases are publicly readable, update manually ([Releases](releases.md#install-a-release)). This guide does not state whether the repository is currently public |
+| "Animatic is up to date" although a newer tag exists on GitHub | Only published, non-draft, non-prerelease releases with a valid CalVer tag (no `-` suffix), and only when strictly newer than the running version, are offered; the platform archive and `SHA256SUMS` must be present and correctly named. Drafts, release candidates and older versions are never offered. If the newest stable release is incomplete the check reports an error instead of offering an older one |
+| Download or verify fails (size, checksum or archive error) | Nothing was installed. The staged files are in a private temporary folder that is removed when the update is dropped or Animatic exits. Retry; if the checksum keeps failing, do not install and download manually from the [releases page](https://github.com/RetroHazard/animatic/releases) as described in [Releases](releases.md#install-a-release), and report it |
+| Install or Restart now is disabled | They are blocked while a job is running, an AOM import is in progress, imported settings are waiting to be applied, or some changes are not yet saved to the database; Restart is also blocked while settings recovered from a backup are unsaved (use **Save options**). The reason is shown in the window. Finish or cancel that work first |
+| Install fails with a permission or read-only error | The folder holding the executable must be writable by your account. There is no elevation. Update the copy the way it was installed (administrator copy, package manager) or move Animatic to a user-writable folder |
+| Install refuses because the executable does not match | The running file is not the one Animatic started from (moved, replaced or launched through an unusual path). Restart Animatic normally and try again |
+| `LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` appear beside the executable | Expected after an install, even a failed one. They are the new release's license files, are never overwritten, and are harmless to keep. A different pre-existing file with the same name makes the install stop; inspect or rename it |
+| An empty `.animatic-update.lock` file beside the executable, or a message that another install is running | Created by the install step; the OS holds an advisory lock on it only while an install runs. The empty file is harmless and may remain. The message means another Animatic process holds the lock: wait for it or close that instance |
+| Dot-prefixed files next to the executable (`.animatic-recovery-*.exe`, `.animatic-restore-*`, or helper files from `self-replace` such as `.__selfdelete__.exe`) or a renamed old executable | `.animatic-recovery-*.exe` is the Windows copy of the previous executable made before the swap; it is removed after a successful install and **kept after any failed one**. Other files are left if the machine lost power or Animatic was killed mid-install. Animatic never deletes them automatically. Check which executable starts, and delete leftovers by hand only after confirming a working copy |
+| The window says the installation did not finish and the program files may be in an unknown state | The swap itself failed. Animatic stops offering updates and does not restart by itself. Check that the executable still starts; the message names the recovery copy and, if the old file was not restored, which file to copy to which name. Otherwise install the release manually ([Releases](releases.md#install-a-release)). Restart Animatic by hand before trying again |
+| Animatic does not start after an update | Download the archive for your platform from the releases page, verify `SHA256SUMS`, and run or copy the executable from it ([Releases](releases.md#install-a-release)). Your database and settings were not changed by the update |
+| The documentation or notices beside the executable are older than the program | Expected: only the executable and versioned license files are updated. Replace the whole folder from a newly downloaded archive to refresh the bundled documents |
+| Restart did not start a new window | The new process is started only after the old one exits, with only your `--database` path (and `ANIMATIC_SETTINGS` when it was set). Start Animatic yourself; nothing is lost because settings were saved before closing |
+
+The check, download and install are bounded by byte limits and timeouts and run on their own
+thread, so a slow or stuck GitHub connection never freezes the window; use **Cancel** during
+a download, or close Animatic (which cancels it). Closing during the short install step waits for it.
+
 ## Disk space, temporary files and leftovers
 
 | Operation | Where it needs space | Notes |
@@ -346,6 +378,7 @@ only when settings are first saved.
 | Database growth and the WAL | The database folder | The `-wal` file grows during large writes and is folded back by SQLite later. A full disk produces a SQLite `database or disk is full` error; the transaction is rolled back |
 | Settings save | The settings folder | A temporary file and the backup are written there |
 | Anime titles download | The system temporary directory | The download is spooled into a private SQLite temporary database, then merged atomically. The download limits are 32 MiB compressed, 128 MiB decoded, 250,000 anime, 2,000,000 titles and 2,048 bytes per name. Keep comfortable free space on the volume that holds the temp directory |
+| Update download | The system temporary directory (a private staging folder) and the executable's folder | Up to the archive (limit 256 MiB) plus the extracted executable (limit 512 MiB) are staged in the temporary directory; the install then needs room for a copy of the new executable beside the current one |
 | AOM databank import | The folder `import-temp` beside the database | One decrypted collection at a time, roughly the size of the largest source `.data` file in addition to the database growth |
 
 ### Leftover files and what is safe to delete
@@ -381,6 +414,7 @@ What the code uses (source: `animatic-anidb`):
 | UDP API | `api.anidb.net:9000` by default (**AniDB account** settings can change the server and local port) | IPv4 only. The client binds `0.0.0.0` on the configured local port (default 29456) and falls back to a random port if binding fails. Each exchange waits up to 20 s and a first timeout is retried once |
 | HTTP API | `http://api.anidb.net:9001/httpapi` | Plain HTTP; requests are spaced at least 2 s apart; 60 s timeout |
 | Titles dump | `https://anidb.net/api/anime-titles.xml.gz` | Public download, bounded as described above |
+| Update check and download | `https://api.github.com/` and `https://github.com/` (plus the CDN hosts GitHub redirects asset downloads to), HTTPS only | Not AniDB: no flood spacing and no cooldown. Anonymous: sends your IP address and `User-Agent: Animatic/VERSION`, no credentials or library data. Bounded sizes and timeouts. Used only for update checks and downloads you start, plus the optional startup check |
 
 The UDP client enforces AniDB packet spacing (2 s between packets for the first five, then
 4 s, resetting after 10 idle minutes) and re-authenticates when a session expires. A long

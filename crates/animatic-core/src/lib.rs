@@ -26,6 +26,8 @@
 //! * [`settings`] — serializable settings, backup-aware loading and AOM settings import.
 //! * [`stats`] — library statistics and XML/INI rendering.
 //! * [`external`] — launching external players and AVDump without a shell.
+//! * [`update`] — GitHub release check, verified download and in-place installation of a newer
+//!   stable release (separate [`update::UpdateError`]; never touches the AniDB cooldown).
 //! * [`mod@format`] — shared size/date/duration formatting.
 //!
 //! # Guarantees worth knowing
@@ -59,5 +61,6 @@ pub mod settings;
 pub mod stats;
 pub mod store;
 pub mod sync;
+pub mod update;
 
 pub use error::{Error, Result};

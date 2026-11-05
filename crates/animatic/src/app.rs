@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use animatic_core::db::Db;
@@ -8,10 +9,11 @@ use animatic_core::format;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::rename::plan::{self, PatternKind, Plan};
 use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
+use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedUpdate};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use crate::worker::{Event, Job, Worker};
+use crate::worker::{Event, Job, UpdateEvent, UpdateJob, Updater, Worker};
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
 const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
@@ -144,6 +146,259 @@ fn recovery_notice(settings_path: &Path) -> String {
     )
 }
 
+/// Release archives carry no signature; this is shown wherever an install can be started.
+const UNSIGNED_WARNING: &str = "Release archives are not code-signed. Animatic compares the \
+     downloaded archive with the SHA-256 checksum published in the same GitHub release. That \
+     detects a damaged or mismatched download, but it does not prove who published the release. \
+     Install only if you trust the release on GitHub.";
+const UPDATE_PRIVACY: &str = "Checking contacts github.com. GitHub sees your IP address and \
+     the Animatic version; no AniDB credentials and no library data are sent.";
+
+/// Where the update flow stands. Only the check can start by itself; downloading and \
+/// installing each need an explicit action, and installing a confirmation as well.
+#[derive(Debug, Clone, PartialEq)]
+enum UpdateStage {
+    Idle,
+    /// `manual`: the user asked (or joined an automatic check), so a failure is shown.
+    Checking {
+        manual: bool,
+        cancelling: bool,
+    },
+    UpToDate,
+    /// A newer release is known; nothing has been downloaded.
+    Available,
+    Downloading {
+        done: u64,
+        total: u64,
+        cancelling: bool,
+    },
+    /// Downloaded, verified against its checksum and staged.
+    Ready {
+        confirming: bool,
+    },
+    Installing,
+    /// The executable on disk is the new version; this process is not. Final.
+    Installed,
+    /// An installation was attempted and ended in an error. The executable on disk may be in an
+    /// unknown state, so this is final too: no further check, download, install or restart.
+    InstallFailed,
+}
+
+impl UpdateStage {
+    /// True when a check job must be submitted. A running automatic check is adopted by a
+    /// manual request instead of being repeated.
+    fn begin_check(&mut self, manual: bool) -> bool {
+        match self {
+            UpdateStage::Idle | UpdateStage::UpToDate => {
+                *self = UpdateStage::Checking {
+                    manual,
+                    cancelling: false,
+                };
+                true
+            }
+            UpdateStage::Checking { manual: known, .. } => {
+                *known |= manual;
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn check_finished(&mut self, found: bool) -> bool {
+        if matches!(self, UpdateStage::Checking { .. }) {
+            *self = if found {
+                UpdateStage::Available
+            } else {
+                UpdateStage::UpToDate
+            };
+            return true;
+        }
+        false
+    }
+
+    /// `Some(true)` when the user is waiting for this check and must see the failure.
+    fn check_failed(&mut self) -> Option<bool> {
+        if let UpdateStage::Checking { manual, .. } = *self {
+            *self = UpdateStage::Idle;
+            return Some(manual);
+        }
+        None
+    }
+
+    /// True when the cancel flag of the updater must be raised.
+    fn cancel(&mut self) -> bool {
+        match self {
+            UpdateStage::Checking { cancelling, .. }
+            | UpdateStage::Downloading { cancelling, .. } => {
+                *cancelling = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn cancelled(&mut self) {
+        match self {
+            UpdateStage::Checking { .. } => *self = UpdateStage::Idle,
+            UpdateStage::Downloading { .. } => *self = UpdateStage::Available,
+            _ => {}
+        }
+    }
+
+    fn begin_download(&mut self) -> bool {
+        if matches!(self, UpdateStage::Available) {
+            *self = UpdateStage::Downloading {
+                done: 0,
+                total: 0,
+                cancelling: false,
+            };
+            return true;
+        }
+        false
+    }
+
+    fn progress(&mut self, done_now: u64, total_now: u64) {
+        if let UpdateStage::Downloading { done, total, .. } = self {
+            (*done, *total) = (done_now, total_now);
+        }
+    }
+
+    fn download_ready(&mut self) -> bool {
+        if matches!(self, UpdateStage::Downloading { .. }) {
+            *self = UpdateStage::Ready { confirming: false };
+            return true;
+        }
+        false
+    }
+
+    /// A failed download keeps the release, so it can be tried again.
+    fn download_failed(&mut self) -> bool {
+        if matches!(self, UpdateStage::Downloading { .. }) {
+            *self = UpdateStage::Available;
+            return true;
+        }
+        false
+    }
+
+    fn set_confirming(&mut self, value: bool) {
+        if let UpdateStage::Ready { confirming } = self {
+            *confirming = value;
+        }
+    }
+
+    /// Dropping the staged update means downloading it again.
+    fn discard_ready(&mut self) -> bool {
+        if matches!(self, UpdateStage::Ready { .. }) {
+            *self = UpdateStage::Available;
+            return true;
+        }
+        false
+    }
+
+    /// Only a confirmed, staged update may be installed.
+    fn begin_install(&mut self) -> bool {
+        if matches!(self, UpdateStage::Ready { confirming: true }) {
+            *self = UpdateStage::Installing;
+            return true;
+        }
+        false
+    }
+
+    fn installed(&mut self) -> bool {
+        if matches!(self, UpdateStage::Installing) {
+            *self = UpdateStage::Installed;
+            return true;
+        }
+        false
+    }
+
+    /// `attempted`: the executable may have been changed, which ends the update flow for this
+    /// session (see `InstallFailed`). Otherwise nothing was replaced; the staged files are gone,
+    /// so the update has to be downloaded again.
+    fn install_failed(&mut self, attempted: bool) -> bool {
+        if matches!(self, UpdateStage::Installing) {
+            *self = if attempted {
+                UpdateStage::InstallFailed
+            } else {
+                UpdateStage::Available
+            };
+            return true;
+        }
+        false
+    }
+
+    /// An operation is in flight and its events must be polled for.
+    fn is_active(&self) -> bool {
+        matches!(
+            self,
+            UpdateStage::Checking { .. }
+                | UpdateStage::Downloading { .. }
+                | UpdateStage::Installing
+        )
+    }
+}
+
+struct UpdateState {
+    stage: UpdateStage,
+    release: Option<ReleaseInfo>,
+    ready: Option<Box<VerifiedUpdate>>,
+    /// Failure of the last action the user took, shown in the Updates window.
+    error: Option<String>,
+    installed_version: Option<String>,
+    open: bool,
+}
+
+#[derive(Clone, Copy)]
+enum UpdateAction {
+    Check,
+    Download,
+    Cancel,
+    Confirm,
+    Back,
+    Install,
+    Discard,
+    Restart,
+    Close,
+}
+
+/// Everything `AnimaticApp::new` needs from the command line and the process.
+pub struct Startup {
+    pub db_path: PathBuf,
+    pub settings_path: PathBuf,
+    pub files: Vec<PathBuf>,
+    pub full_update: bool,
+    /// The executable the process was started from, identified at startup before an update can
+    /// replace it. Without it updates are disabled.
+    pub installation: Option<Arc<InstallationTarget>>,
+    /// Raised when the user restarts after an update; `main` relaunches once the window closed.
+    pub restart: Arc<AtomicBool>,
+}
+
+/// The automatic check is the only update step that runs unasked. It follows the user's choice,
+/// never runs in offline mode, and never after a settings recovery (which forces offline mode,
+/// so even the in-memory state must not make network requests the user did not enable).
+fn startup_check_allowed(settings: &Settings, recovered: bool) -> bool {
+    settings.updates.auto_check && !settings.anidb.offline && !recovered
+}
+
+/// The license document shipped next to the executable for this exact version
+/// (`LICENSE-v2026.11.0`, left by an update) if there is one, else the canonical file of the
+/// manual package.
+fn bundled_document(dir: &Path, stem: &str, extension: &str, version: &str) -> Option<PathBuf> {
+    let suffix = if extension.is_empty() {
+        String::new()
+    } else {
+        format!(".{extension}")
+    };
+    [
+        format!("{stem}-v{version}{suffix}"),
+        format!("{stem}{suffix}"),
+    ]
+    .into_iter()
+    .map(|name| dir.join(name))
+    .find(|path| path.is_file())
+}
+
 /// A planned rename of one file, shown for confirmation.
 struct RenamePreview {
     id: i64,
@@ -208,15 +463,22 @@ pub struct AnimaticApp {
     activity: Activity,
     status: String,
     logs: Vec<String>,
+    updater: Updater,
+    update: UpdateState,
+    installation: Option<Arc<InstallationTarget>>,
+    restart: Arc<AtomicBool>,
 }
 
 impl AnimaticApp {
-    pub fn new(
-        db_path: PathBuf,
-        settings_path: PathBuf,
-        initial_files: Vec<PathBuf>,
-        full_update: bool,
-    ) -> anyhow::Result<Self> {
+    pub fn new(startup: Startup) -> anyhow::Result<Self> {
+        let Startup {
+            db_path,
+            settings_path,
+            files: initial_files,
+            full_update,
+            installation,
+            restart,
+        } = startup;
         let db = Db::open(&db_path)?;
         // The worker may hold the write lock for long stretches; small UI writes must fail
         // visibly instead of freezing the window for the default 30 seconds.
@@ -231,6 +493,7 @@ impl AnimaticApp {
             .then(|| recovery_notice(&settings_path));
         let settings = loaded.settings;
         let worker = Worker::spawn(db_path.clone());
+        let updater = Updater::spawn(installation.clone());
         let mut app = Self {
             db,
             db_path,
@@ -274,6 +537,17 @@ impl AnimaticApp {
             activity: Activity::default(),
             status: LOADING_STATUS.into(),
             logs: Vec::new(),
+            updater,
+            update: UpdateState {
+                stage: UpdateStage::Idle,
+                release: None,
+                ready: None,
+                error: None,
+                installed_version: None,
+                open: false,
+            },
+            installation,
+            restart,
         };
         app.request_library_refresh();
         if app.settings_notice.is_some() {
@@ -288,7 +562,17 @@ impl AnimaticApp {
         if !initial_files.is_empty() {
             app.worker.submit(Job::Hash(initial_files));
         }
+        // The check is the only thing that runs unasked. It never runs against the user's
+        // offline choice, nor after a settings recovery (which forces offline mode).
+        if startup_check_allowed(&app.settings, app.settings_guard.recovered) {
+            app.start_update_check(false);
+        }
         Ok(app)
+    }
+
+    /// Path of the executable identified at startup.
+    fn executable_path(&self) -> Option<&Path> {
+        self.installation.as_deref().map(InstallationTarget::path)
     }
 
     /// Ask for a fresh projection. Cheap: requests are coalesced and sent by `pump_library`.
@@ -435,6 +719,16 @@ impl AnimaticApp {
         }
     }
 
+    /// Adds to the log page without replacing the status line (background results nobody
+    /// waits for).
+    fn note(&mut self, text: impl Into<String>) {
+        self.logs.push(format!(
+            "{}  {}",
+            chrono::Local::now().format("%H:%M:%S"),
+            text.into()
+        ));
+    }
+
     fn log(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
@@ -454,6 +748,175 @@ impl AnimaticApp {
             "{}  ERROR  {text}",
             chrono::Local::now().format("%H:%M:%S")
         ));
+    }
+
+    fn process_update_events(&mut self, ctx: &egui::Context) {
+        let events: Vec<_> = self.updater.events.try_iter().collect();
+        for event in events {
+            match event {
+                UpdateEvent::Checked(release) => {
+                    let found = release.is_some();
+                    if self.update.stage.check_finished(found) {
+                        match release {
+                            Some(release) => {
+                                self.note(format!(
+                                    "Animatic {} is available (Help → Check for updates…)",
+                                    release.version
+                                ));
+                                self.update.release = Some(*release);
+                            }
+                            None => {
+                                self.update.release = None;
+                                self.note("No newer Animatic release found");
+                            }
+                        }
+                    }
+                }
+                UpdateEvent::CheckFailed(message) => match self.update.stage.check_failed() {
+                    Some(true) => {
+                        self.error(format!("Update check failed: {message}"));
+                        self.update.error = Some(message);
+                    }
+                    Some(false) => self.note(format!("Update check failed: {message}")),
+                    None => {}
+                },
+                UpdateEvent::Progress { done, total } => {
+                    self.update.stage.progress(done, total);
+                }
+                UpdateEvent::Ready(update) => {
+                    if self.update.stage.download_ready() {
+                        self.log(format!(
+                            "Update {} downloaded and verified",
+                            update.version()
+                        ));
+                        self.update.ready = Some(update);
+                    }
+                }
+                UpdateEvent::DownloadFailed(message) => {
+                    if self.update.stage.download_failed() {
+                        self.error(format!("Update download failed: {message}"));
+                        self.update.error = Some(message);
+                    }
+                }
+                UpdateEvent::Cancelled => {
+                    self.update.stage.cancelled();
+                    self.note("Update check or download cancelled");
+                }
+                UpdateEvent::Installed(version) => {
+                    if self.update.stage.installed() {
+                        self.log(format!(
+                            "Animatic {version} installed; restart to start using it"
+                        ));
+                        self.update.installed_version = Some(version);
+                    }
+                }
+                UpdateEvent::InstallFailed { message, attempted } => {
+                    if self.update.stage.install_failed(attempted) {
+                        self.error(format!("Update installation failed: {message}"));
+                        self.update.error = Some(message);
+                    }
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// Why installing or restarting must wait, from the state of the application itself (not
+    /// from events the window may not have processed yet).
+    fn update_blocker(&self) -> Option<&'static str> {
+        if self.installation.is_none() {
+            Some("Animatic cannot tell where it is installed.")
+        } else if !self.worker.is_idle() || self.activity.busy {
+            Some("Wait for the running task to finish, or cancel it, first.")
+        } else if self.import_pending {
+            Some("An import is in progress.")
+        } else if self.imported_settings.is_some() {
+            Some("Apply or cancel the imported settings first.")
+        } else if !self.deferred.is_empty() {
+            Some("Some changes are not saved to the database yet.")
+        } else {
+            None
+        }
+    }
+
+    fn start_update_check(&mut self, manual: bool) {
+        if Platform::current().is_none() {
+            return;
+        }
+        if self.update.stage.begin_check(manual) {
+            self.update.error = None;
+            self.updater.submit(UpdateJob::Check);
+        }
+    }
+
+    fn start_update_download(&mut self) {
+        let Some(release) = self.update.release.clone() else {
+            return;
+        };
+        if self.update.stage.begin_download() {
+            self.update.error = None;
+            self.updater.submit(UpdateJob::Download(Box::new(release)));
+        }
+    }
+
+    fn install_update(&mut self) {
+        if let Some(reason) = self.update_blocker() {
+            self.update.error = Some(reason.into());
+            return;
+        }
+        if self.update.ready.is_some() && self.update.stage.begin_install() {
+            self.update.error = None;
+            if let Some(update) = self.update.ready.take() {
+                self.log("Installing the update…");
+                self.updater.submit(UpdateJob::Install(update));
+            }
+        }
+    }
+
+    /// Restarting also needs the settings to be savable, since the window closing for it saves
+    /// them: a recovered settings file stays untouched until the user saves it explicitly.
+    fn restart_blocker(&self) -> Option<&'static str> {
+        self.update_blocker().or_else(|| {
+            (!self.settings_guard.allows_exit_save()).then_some(
+                "The settings were recovered from a backup. Save them first in Tools → Options…, \
+                 so that restarting does not decide about the damaged settings file.",
+            )
+        })
+    }
+
+    /// Saves the settings, then closes the window; `main` starts the new executable once
+    /// `run_native` has returned and the application (worker, database connections) is gone.
+    /// A failed save keeps the application open: closing cannot report it any more.
+    fn restart_now(&mut self, ctx: &egui::Context) {
+        if self.update.stage != UpdateStage::Installed {
+            return;
+        }
+        if let Some(reason) = self.restart_blocker() {
+            self.update.error = Some(reason.into());
+            return;
+        }
+        if let Err(e) = self.settings.save(&self.settings_path) {
+            let message = format!("Could not save settings, so Animatic was not restarted: {e}");
+            self.error(message.clone());
+            self.update.error = Some(message);
+            return;
+        }
+        self.update.error = None;
+        self.restart.store(true, Ordering::SeqCst);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Text of the nonblocking top-bar notice, if the update flow has news.
+    fn update_notice(&self) -> Option<String> {
+        match (&self.update.stage, &self.update.release) {
+            (UpdateStage::Available, Some(release)) => {
+                Some(format!("Update available: {}", release.version))
+            }
+            (UpdateStage::Ready { .. }, _) => Some("Update ready to install".into()),
+            (UpdateStage::Installed, _) => Some("Restart to finish updating".into()),
+            (UpdateStage::InstallFailed, _) => Some("Update failed: see details".into()),
+            _ => None,
+        }
     }
 
     fn process_events(&mut self, ctx: &egui::Context) {
@@ -605,7 +1068,7 @@ impl AnimaticApp {
         };
         self.import_pending = true;
         self.worker.cancel.store(true, Ordering::Relaxed);
-        let _ = self.worker.jobs.send(Job::ImportLegacySettings { source });
+        self.worker.submit(Job::ImportLegacySettings { source });
     }
 
     fn legacy_settings_review_window(&mut self, ctx: &egui::Context) {
@@ -650,6 +1113,7 @@ impl AnimaticApp {
             });
         if apply {
             let mut imported = *self.imported_settings.take().expect("reviewed settings");
+            imported.keep_preferences_unknown_to_legacy(&self.settings);
             imported.anidb.offline = true;
             match imported.save(&self.settings_path) {
                 Ok(()) => {
@@ -1154,11 +1618,32 @@ impl AnimaticApp {
                         let _ = open::that("https://anidb.net/");
                         ui.close();
                     }
+                    if ui
+                        .add_enabled(
+                            Platform::current().is_some(),
+                            egui::Button::new("Check for updates…"),
+                        )
+                        .on_disabled_hover_text(
+                            "Updates are only available for 64-bit Windows and Linux builds",
+                        )
+                        .clicked()
+                    {
+                        self.update.open = true;
+                        self.start_update_check(true);
+                        ui.close();
+                    }
                     if ui.button("About Animatic").clicked() {
                         self.about_open = true;
                         ui.close();
                     }
                 });
+                if let Some(notice) = self.update_notice() {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button(notice).clicked() {
+                            self.update.open = true;
+                        }
+                    });
+                }
             });
         });
     }
@@ -2234,6 +2719,19 @@ impl AnimaticApp {
                     ui.heading("Renaming pattern");
                     self.pattern_editor_ui(ui);
                     ui.separator();
+                    ui.heading("Updates");
+                    ui.checkbox(
+                        &mut self.settings.updates.auto_check,
+                        "Check for updates at startup",
+                    );
+                    ui.label(
+                        RichText::new(
+                            "Contacts github.com, not AniDB, and is skipped in offline mode. \
+                             Nothing is downloaded or installed without your confirmation.",
+                        )
+                        .weak(),
+                    );
+                    ui.separator();
                     ui.heading("Mylist states");
                     ui.label(MYLIST_STATES.join(" · "));
                     ui.add_space(12.0);
@@ -2249,6 +2747,227 @@ impl AnimaticApp {
         }
         if !open {
             self.settings_open = false;
+        }
+    }
+
+    fn update_window(&mut self, ctx: &egui::Context) {
+        if !self.update.open {
+            return;
+        }
+        let blocker = self.update_blocker();
+        let restart_blocker = self.restart_blocker();
+        let stage = self.update.stage.clone();
+        let mut action = None;
+        let mut open = true;
+        egui::Window::new("Software updates")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label(format!("Installed version: {}", env!("CARGO_PKG_VERSION")));
+                if Platform::current().is_none() {
+                    ui.label("Updates are only available for 64-bit Windows and Linux builds.");
+                    return;
+                }
+                ui.add_space(4.0);
+                if let Some(error) = &self.update.error {
+                    ui.colored_label(Color32::LIGHT_RED, error);
+                    ui.add_space(4.0);
+                }
+                let version = self.update.release.as_ref().map(|r| r.version.as_str());
+                match stage {
+                    UpdateStage::Idle => {
+                        if ui.button("Check now").clicked() {
+                            action = Some(UpdateAction::Check);
+                        }
+                    }
+                    UpdateStage::Checking { cancelling, .. } => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Checking GitHub for a newer release…");
+                        });
+                        if ui
+                            .add_enabled(!cancelling, egui::Button::new("Cancel"))
+                            .clicked()
+                        {
+                            action = Some(UpdateAction::Cancel);
+                        }
+                    }
+                    UpdateStage::UpToDate => {
+                        ui.label("Animatic is up to date.");
+                        if ui.button("Check again").clicked() {
+                            action = Some(UpdateAction::Check);
+                        }
+                    }
+                    UpdateStage::Available => {
+                        if let Some(release) = &self.update.release {
+                            ui.label(format!(
+                                "Version {} is available ({} download).",
+                                release.version,
+                                format::size_short(
+                                    i64::try_from(release.archive_size).unwrap_or(i64::MAX)
+                                )
+                            ));
+                            ui.hyperlink_to("Release notes on GitHub", &release.page_url);
+                        }
+                        ui.add_space(4.0);
+                        ui.colored_label(Color32::YELLOW, UNSIGNED_WARNING);
+                        ui.add_space(4.0);
+                        if ui.button("Download and verify").clicked() {
+                            action = Some(UpdateAction::Download);
+                        }
+                    }
+                    UpdateStage::Downloading {
+                        done,
+                        total,
+                        cancelling,
+                    } => {
+                        ui.label(format!("Downloading version {}…", version.unwrap_or("?")));
+                        ui.add(
+                            egui::ProgressBar::new(done as f32 / total.max(1) as f32)
+                                .show_percentage(),
+                        );
+                        if ui
+                            .add_enabled(!cancelling, egui::Button::new("Cancel"))
+                            .clicked()
+                        {
+                            action = Some(UpdateAction::Cancel);
+                        }
+                    }
+                    UpdateStage::Ready { confirming } => {
+                        if let Some(update) = &self.update.ready {
+                            ui.label(format!(
+                                "Version {} was downloaded and matches the published checksum.",
+                                update.version()
+                            ));
+                            ui.horizontal(|ui| {
+                                ui.label("SHA-256:");
+                                ui.label(RichText::new(update.sha256()).monospace());
+                            });
+                        }
+                        ui.add_space(4.0);
+                        ui.colored_label(Color32::YELLOW, UNSIGNED_WARNING);
+                        ui.add_space(4.0);
+                        if confirming {
+                            ui.label(match self.executable_path() {
+                                Some(path) => format!(
+                                    "Animatic will replace {} with the new version. Your \
+                                     database, settings, profiles and media are not touched; \
+                                     the new license files are added next to the program.",
+                                    path.display()
+                                ),
+                                None => "Animatic cannot tell where it is installed.".into(),
+                            });
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        blocker.is_none(),
+                                        egui::Button::new("Confirm installation"),
+                                    )
+                                    .on_disabled_hover_text(blocker.unwrap_or_default())
+                                    .clicked()
+                                {
+                                    action = Some(UpdateAction::Install);
+                                }
+                                if ui.button("Back").clicked() {
+                                    action = Some(UpdateAction::Back);
+                                }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(blocker.is_none(), egui::Button::new("Install"))
+                                    .on_disabled_hover_text(blocker.unwrap_or_default())
+                                    .clicked()
+                                {
+                                    action = Some(UpdateAction::Confirm);
+                                }
+                                if ui.button("Discard download").clicked() {
+                                    action = Some(UpdateAction::Discard);
+                                }
+                            });
+                        }
+                        if let Some(reason) = blocker {
+                            ui.label(RichText::new(reason).weak());
+                        }
+                    }
+                    UpdateStage::InstallFailed => {
+                        ui.label(
+                            "The installation did not finish. The program files may be in an \
+                             unknown state, so Animatic will not update or restart itself in \
+                             this session.",
+                        );
+                        ui.label(match self.executable_path() {
+                            Some(path) => format!(
+                                "Check that {} still starts. If it does not, download the \
+                                 release from GitHub and replace the program files manually.",
+                                path.display()
+                            ),
+                            None => "Download the release from GitHub and replace the program \
+                                     files manually."
+                                .into(),
+                        });
+                        if let Some(release) = &self.update.release {
+                            ui.hyperlink_to("Release page on GitHub", &release.page_url);
+                        }
+                    }
+                    UpdateStage::Installing => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Installing… do not close Animatic.");
+                        });
+                    }
+                    UpdateStage::Installed => {
+                        ui.label(format!(
+                            "Version {} is installed. Restart Animatic to start using it.",
+                            self.update.installed_version.as_deref().unwrap_or("?")
+                        ));
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    restart_blocker.is_none(),
+                                    egui::Button::new("Restart now"),
+                                )
+                                .on_disabled_hover_text(restart_blocker.unwrap_or_default())
+                                .clicked()
+                            {
+                                action = Some(UpdateAction::Restart);
+                            }
+                            if ui.button("Later").clicked() {
+                                action = Some(UpdateAction::Close);
+                            }
+                        });
+                        if let Some(reason) = restart_blocker {
+                            ui.label(RichText::new(reason).weak());
+                        }
+                    }
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new(UPDATE_PRIVACY).weak());
+            });
+        match action {
+            Some(UpdateAction::Check) => self.start_update_check(true),
+            Some(UpdateAction::Download) => self.start_update_download(),
+            Some(UpdateAction::Cancel) => {
+                if self.update.stage.cancel() {
+                    self.updater.cancel();
+                }
+            }
+            Some(UpdateAction::Confirm) => self.update.stage.set_confirming(true),
+            Some(UpdateAction::Back) => self.update.stage.set_confirming(false),
+            Some(UpdateAction::Install) => self.install_update(),
+            Some(UpdateAction::Discard) => {
+                if self.update.stage.discard_ready() {
+                    self.update.ready = None;
+                }
+            }
+            Some(UpdateAction::Restart) => self.restart_now(ctx),
+            Some(UpdateAction::Close) => open = false,
+            None => {}
+        }
+        if !open {
+            self.update.open = false;
         }
     }
 
@@ -2329,6 +3048,7 @@ impl eframe::App for AnimaticApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.process_events(&ctx);
+        self.process_update_events(&ctx);
         self.retry_deferred();
         self.pump_library(&ctx);
         self.top_bar(root);
@@ -2347,6 +3067,7 @@ impl eframe::App for AnimaticApp {
         });
         self.legacy_settings_review_window(&ctx);
         self.settings_window(&ctx);
+        self.update_window(&ctx);
         self.settings_notice_window(&ctx);
         self.rename_window(&ctx);
         if self.about_open {
@@ -2358,6 +3079,36 @@ impl eframe::App for AnimaticApp {
                     ui.label("Modern cross-platform AniDB library manager");
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.hyperlink_to("AniDB", "https://anidb.net/");
+                    if let Some(dir) = self.executable_path().and_then(Path::parent) {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let version = env!("CARGO_PKG_VERSION");
+                            let license = bundled_document(dir, "LICENSE", "", version);
+                            if ui
+                                .add_enabled(license.is_some(), egui::Button::new("View license"))
+                                .on_disabled_hover_text("No LICENSE file found next to the program")
+                                .clicked()
+                                && let Some(path) = license
+                            {
+                                let _ = open::that(path);
+                            }
+                            let notices =
+                                bundled_document(dir, "THIRD-PARTY-NOTICES", "html", version);
+                            if ui
+                                .add_enabled(
+                                    notices.is_some(),
+                                    egui::Button::new("Third-party notices"),
+                                )
+                                .on_disabled_hover_text(
+                                    "No THIRD-PARTY-NOTICES.html file found next to the program",
+                                )
+                                .clicked()
+                                && let Some(path) = notices
+                            {
+                                let _ = open::that(path);
+                            }
+                        });
+                    }
                 });
             if !open {
                 self.about_open = false;
@@ -2368,6 +3119,7 @@ impl eframe::App for AnimaticApp {
             || self.loader.outstanding.is_some()
             || self.loader.dirty
             || !self.deferred.is_empty()
+            || self.update.stage.is_active()
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.active_cooldown().is_some() {
@@ -2398,6 +3150,11 @@ impl eframe::App for AnimaticApp {
                         .join("; ")
                 );
             }
+        }
+        if self.restart.load(Ordering::SeqCst) {
+            // The window is closing for a restart: close the worker's database connection too
+            // before `main` relaunches. Everything was idle when the restart was requested.
+            self.worker.stop_and_join();
         }
     }
 }
@@ -2687,5 +3444,121 @@ mod tests {
         assert!(guard(false, false).allows_exit_save());
         assert!(!guard(true, false).allows_exit_save());
         assert!(guard(true, true).allows_exit_save());
+    }
+
+    #[test]
+    fn automatic_check_failures_are_silent_unless_the_user_joined_the_check() {
+        let mut stage = UpdateStage::Idle;
+        assert!(stage.begin_check(false));
+        assert_eq!(stage.check_failed(), Some(false));
+        assert_eq!(stage, UpdateStage::Idle, "a later check is possible");
+
+        assert!(stage.begin_check(false));
+        assert!(!stage.begin_check(true), "the running check is adopted");
+        assert_eq!(stage.check_failed(), Some(true));
+        assert_eq!(stage.check_failed(), None, "a stale failure is ignored");
+    }
+
+    #[test]
+    fn cancelling_returns_to_the_last_stable_stage_and_allows_a_retry() {
+        let mut stage = UpdateStage::Idle;
+        stage.begin_check(true);
+        assert!(stage.cancel());
+        stage.cancelled();
+        assert_eq!(stage, UpdateStage::Idle);
+
+        stage.begin_check(true);
+        assert!(stage.check_finished(true));
+        assert!(stage.begin_download());
+        stage.progress(5, 10);
+        assert!(stage.cancel());
+        stage.cancelled();
+        assert_eq!(stage, UpdateStage::Available);
+        assert!(stage.begin_download(), "the release is kept for a retry");
+        assert!(stage.download_failed());
+        assert_eq!(stage, UpdateStage::Available);
+    }
+
+    #[test]
+    fn installing_needs_a_staged_update_and_confirmation() {
+        let mut stage = UpdateStage::Available;
+        assert!(!stage.begin_install(), "nothing is staged");
+        stage.begin_download();
+        assert!(stage.download_ready());
+        assert!(!stage.begin_install(), "not confirmed");
+        stage.set_confirming(true);
+        stage.set_confirming(false);
+        assert!(!stage.begin_install(), "confirmation withdrawn");
+        stage.set_confirming(true);
+        assert!(stage.begin_install());
+        assert!(!stage.begin_install(), "one installation at a time");
+
+        // Refused before anything was replaced: only the staged files are lost.
+        assert!(stage.install_failed(false));
+        assert_eq!(stage, UpdateStage::Available);
+        stage.begin_download();
+        stage.download_ready();
+        stage.set_confirming(true);
+        assert!(stage.begin_install());
+
+        // After the replacement was entered nothing else follows: the file may be changed.
+        assert!(stage.install_failed(true));
+        assert_eq!(stage, UpdateStage::InstallFailed);
+        assert!(!stage.begin_check(true));
+        assert!(!stage.begin_download());
+        assert!(!stage.begin_install());
+        assert!(!stage.check_finished(true));
+    }
+
+    #[test]
+    fn after_an_installation_the_running_old_build_never_checks_again() {
+        let mut stage = UpdateStage::Installing;
+        assert!(stage.installed());
+        assert_eq!(stage, UpdateStage::Installed);
+        assert!(!stage.begin_check(true));
+        assert!(!stage.begin_check(false));
+        assert!(!stage.begin_download());
+        assert!(!stage.check_finished(true), "stale replies are ignored");
+        assert!(!stage.download_ready());
+        assert_eq!(stage, UpdateStage::Installed);
+    }
+
+    #[test]
+    fn the_startup_check_respects_the_preference_offline_mode_and_recovery() {
+        let mut settings = Settings::default();
+        assert!(startup_check_allowed(&settings, false));
+        assert!(!startup_check_allowed(&settings, true));
+        settings.anidb.offline = true;
+        assert!(!startup_check_allowed(&settings, false));
+        settings.anidb.offline = false;
+        settings.updates.auto_check = false;
+        assert!(!startup_check_allowed(&settings, false));
+    }
+
+    #[test]
+    fn license_documents_prefer_the_copy_for_this_version() {
+        let dir = std::env::temp_dir().join(format!("animatic-docs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let version = "2099.1.0";
+        assert_eq!(bundled_document(&dir, "LICENSE", "", version), None);
+
+        std::fs::write(dir.join("LICENSE"), "canonical").unwrap();
+        std::fs::write(dir.join("LICENSE-v2098.1.0"), "other version").unwrap();
+        assert_eq!(
+            bundled_document(&dir, "LICENSE", "", version),
+            Some(dir.join("LICENSE"))
+        );
+
+        std::fs::write(dir.join("LICENSE-v2099.1.0"), "this version").unwrap();
+        std::fs::write(dir.join("THIRD-PARTY-NOTICES-v2099.1.0.html"), "n").unwrap();
+        assert_eq!(
+            bundled_document(&dir, "LICENSE", "", version),
+            Some(dir.join("LICENSE-v2099.1.0"))
+        );
+        assert_eq!(
+            bundled_document(&dir, "THIRD-PARTY-NOTICES", "html", version),
+            Some(dir.join("THIRD-PARTY-NOTICES-v2099.1.0.html"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

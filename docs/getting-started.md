@@ -23,14 +23,21 @@ Contents: [Status and limits](#status-and-limits) ·
   production AniDB traffic have not been exercised** (see the
   [v2 verification record](aom-forum-audit.md#v2-verification-observed-only)). Treat
   Linux desktop launch and any real AniDB exchange as unverified.
-- There is no installer, code signing or auto-update. Releases are published as GitHub
+- There is no installer or code signing. Releases are published as GitHub
   Releases only after a maintainer reviews a draft; see [Releases](releases.md). A CI build
   artifact is not a release.
-- Animatic never contacts AniDB at startup. Network traffic happens only when you start
+- Animatic never contacts AniDB at startup. Network traffic to AniDB happens only when you start
   **Tools → Run command queue** or **Queue → Synchronize now** (see
   [Synchronization](user-guide.md#synchronization)). The default settings still have
   *Work offline* **off**, so the first thing to do in a fresh profile is turn it on
   ([first launch](#first-launch)).
+- Separately, a startup **update check** (`updates.auto_check`, on by default) asks GitHub for
+  a newer stable release unless *Work offline* is on or the settings were recovered from a
+  backup. It only looks for a version: nothing is downloaded or installed until you choose
+  **Download and verify** and confirm the installation
+  ([Updating Animatic](user-guide.md#updating-animatic)). On a brand-new profile that means
+  one request to GitHub (your IP address and the Animatic version) at the very first start;
+  see [Portable and rehearsal setups](#portable-and-rehearsal-setups) to avoid it.
 
 ## Get an executable
 
@@ -49,6 +56,15 @@ commands for PowerShell and for Linux `sha256sum` are in
 [Releases](releases.md#install-a-release). Each archive has a single root folder named after
 the archive; the Linux binary keeps its executable bit. The archives are **unsigned** and the
 bundled documentation works offline, but the Rust API documentation is not included.
+
+Once running, an installed release can replace its own executable with a newer published
+release through **Help → Check for updates…** (Windows and Linux x86_64, writable folder
+required, no elevation). The bundled `LICENSE`, `THIRD-PARTY-NOTICES.html`, README, changelog
+and guides stay at the version you unpacked; the new version's licenses are added as
+`LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` beside the executable. Details and
+limits: [Updating Animatic](user-guide.md#updating-animatic). A checkout built from source can run
+the updater, but it only replaces the compiled binary, never the source; use `git pull` and
+rebuild, and update package-manager installations with that manager.
 
 The Linux binary links against the desktop libraries listed below, so those must be present at
 run time as well [INFERENCE: the CI job installs them for the build; the workflows do not
@@ -230,7 +246,10 @@ remembered between launches.
 Both overrides together give a self-contained profile anywhere. The examples below create a
 **brand-new, uniquely named** scratch folder in the system temporary directory and put a synthetic
 one-megabyte media file in it, so no real library, credentials or repository file is involved.
-They never contact AniDB unless *you* run the queue.
+They never contact AniDB unless *you* run the queue. A brand-new settings file has
+`updates.auto_check` on, so the first launch of a scratch profile would contact GitHub for an
+update check; [keep a rehearsal local](#avoiding-the-startup-update-check) by pre-seeding the
+settings file as shown below.
 
 Creation fails instead of reusing a folder that already exists (`mktemp -d` picks a fresh random
 name; the PowerShell example uses a new GUID and `New-Item` without `-Force`). Only that folder is
@@ -242,6 +261,8 @@ POSIX shell (Linux):
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/animatic-rehearsal.XXXXXX") || exit 1
 mkdir "$ROOT/media"
 head -c 1048576 /dev/zero > "$ROOT/media/synthetic-sample.mkv"
+# keep the rehearsal local: no startup update check, offline AniDB
+printf '%s\n' '{ "updates": { "auto_check": false }, "anidb": { "offline": true } }' > "$ROOT/settings.json"
 
 ANIMATIC_DB="$ROOT/library.sqlite3" \
 ANIMATIC_SETTINGS="$ROOT/settings.json" \
@@ -256,6 +277,8 @@ New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $root 'media') -ErrorAction Stop | Out-Null
 $sample = Join-Path $root 'media\synthetic-sample.mkv'
 [IO.File]::WriteAllBytes($sample, (New-Object byte[] 1048576))
+# keep the rehearsal local: no startup update check, offline AniDB
+Set-Content -LiteralPath (Join-Path $root 'settings.json') -Value '{ "updates": { "auto_check": false }, "anidb": { "offline": true } }'
 
 $env:ANIMATIC_DB = Join-Path $root 'library.sqlite3'
 $env:ANIMATIC_SETTINGS = Join-Path $root 'settings.json'
@@ -289,9 +312,26 @@ Environment variables set with `$env:` last for the PowerShell session; remove t
 shown or start a new session, otherwise a later launch silently reuses the rehearsal
 profile.
 
+### Avoiding the startup update check
+
+The update check runs at startup only when `updates.auto_check` is `true` (the default), *Work
+offline* is off and the settings were not recovered from a backup. To keep a new or rehearsal
+profile from contacting GitHub, create the settings file before the first launch with a minimal
+document (omitted keys take their defaults, see
+[settings reference](settings-reference.md#document-layout)):
+
+```json
+{ "updates": { "auto_check": false }, "anidb": { "offline": true } }
+```
+
+Save it as the file named by `ANIMATIC_SETTINGS` (for the rehearsal above, `$ROOT/settings.json`
+or `$root\settings.json`). Either key alone prevents the check; **Help → Check for updates…**
+still works whenever you choose to use it.
+
 ## First launch
 
-On a fresh profile:
+On a fresh profile (a first launch with default settings also performs one automatic update
+check, see [status](#status-and-limits)):
 
 1. **Startup.** The database is created and opened first, then settings are loaded:
    a missing primary and missing backup mean defaults; a valid primary loads; an

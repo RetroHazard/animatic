@@ -498,6 +498,22 @@ impl Default for AvdumpSettings {
     }
 }
 
+/// Release-check preferences. Animatic never downloads or installs without an explicit action,
+/// so the only persisted choice is whether the startup check may contact GitHub.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Check GitHub for a newer stable release at startup (skipped in AniDB offline mode and
+    /// after settings recovery). The Help menu check does not depend on it.
+    pub auto_check: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        UpdateSettings { auto_check: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -513,6 +529,7 @@ pub struct Settings {
     pub ed2k_space_replacement: Option<String>,
     /// True until the first-run assistant has been completed.
     pub first_launch: bool,
+    pub updates: UpdateSettings,
 }
 
 impl Default for Settings {
@@ -528,6 +545,7 @@ impl Default for Settings {
             avdump: AvdumpSettings::default(),
             ed2k_space_replacement: None,
             first_launch: true,
+            updates: UpdateSettings::default(),
         }
     }
 }
@@ -614,6 +632,12 @@ fn read_slot(path: &Path) -> Slot {
 }
 
 impl Settings {
+    /// Carries over preferences an AOM export cannot know about (they did not exist there), so
+    /// applying an imported settings review keeps the user's current choices.
+    pub fn keep_preferences_unknown_to_legacy(&mut self, current: &Settings) {
+        self.updates = current.updates.clone();
+    }
+
     /// Location of the backup written by [`Settings::save`] next to the primary file.
     pub fn backup_path(path: &Path) -> std::path::PathBuf {
         path.with_extension("json.bak")
@@ -1421,5 +1445,50 @@ x</renamingPattern>
                 "{document} must not replace the backup"
             );
         }
+    }
+
+    #[test]
+    fn settings_without_updates_section_check_at_startup() {
+        let mut document = serde_json::to_value(Settings::default()).unwrap();
+        document.as_object_mut().unwrap().remove("updates");
+        let loaded: Settings = serde_json::from_value(document).unwrap();
+        assert!(loaded.updates.auto_check);
+        let partial: Settings = serde_json::from_str(r#"{"updates":{}}"#).unwrap();
+        assert!(partial.updates.auto_check);
+        let off: Settings = serde_json::from_str(r#"{"updates":{"auto_check":false}}"#).unwrap();
+        assert!(!off.updates.auto_check);
+    }
+
+    #[test]
+    fn legacy_import_keeps_the_current_update_preference() {
+        let mut current = Settings::default();
+        current.updates.auto_check = false;
+        let mut imported = Settings::default();
+        imported.anidb.username = "legacy-user".into();
+        imported.keep_preferences_unknown_to_legacy(&current);
+        assert!(!imported.updates.auto_check);
+        assert_eq!(imported.anidb.username, "legacy-user");
+    }
+
+    #[test]
+    fn minimal_updates_only_file_loads_and_the_choice_survives_a_save() {
+        let dir = TestDir::new("updates-only");
+        std::fs::write(dir.primary(), r#"{"updates":{"auto_check":false}}"#).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(!loaded.recovered_from_backup);
+        assert!(!loaded.settings.updates.auto_check);
+        assert_eq!(loaded.settings.anidb, Settings::default().anidb);
+
+        loaded.settings.save(&dir.primary()).unwrap();
+        let again = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(!again.settings.updates.auto_check);
+
+        let old = custom_json("old-user", false);
+        let mut document: serde_json::Value = serde_json::from_str(&old).unwrap();
+        document.as_object_mut().unwrap().remove("updates");
+        std::fs::write(dir.primary(), document.to_string()).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert_eq!(loaded.settings.anidb.username, "old-user");
+        assert!(loaded.settings.updates.auto_check);
     }
 }
