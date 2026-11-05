@@ -38,9 +38,9 @@ The migration implementation necessarily contains clean-room format knowledge an
 - `docs/feature-parity.md`: mapping from legacy workflows to Animatic equivalents.
 - `docs/aom-forum-audit.md`: source-linked historical research, access limitations, baseline product gaps, and improvement verification.
 - `docs/releases.md`: versioning, changelog, release tool, workflow contracts, maintainer procedure, archive contents, checksum verification and the in-app update contract (asset names, archive layout, limits).
-- `.github/workflows/ci.yml`: reusable (`workflow_call` inputs `ref`, `package`) locked build/lint/test matrix on `ubuntu-22.04` and `windows-latest`, Python release tests and metadata validation.
+- `.github/workflows/ci.yml`: CI for pull requests and `main` only (no release or publish on any push): planner-selected Rust/license jobs, always-on `quality` job, locked `windows-latest`/`ubuntu-22.04` matrix, and the stable aggregate check `Required checks`; reusable (`workflow_call` inputs `ref`, `package`) and full when called. Server-side branch protection is **not** configured (private repository, API returns 403); activation steps are in `docs/development.md`.
 - `.github/workflows/release-prepare.yml` and `release.yml`: manual, `dry_run`-default release preparation (bot branch and PR) and tag-driven draft GitHub Release; see `docs/releases.md`.
-- `scripts/release.py` and `scripts/test_release.py`: Python 3.11+ stdlib release tooling (`prepare`, `validate`, `notes`, `package`, `checksums`) and its unit tests.
+- `scripts/release.py`, `scripts/ci.py` and their `test_*.py` tests: Python 3.11+ stdlib release tooling (`prepare`, `validate`, `notes`, `package`, `checksums`) and CI tooling (`plan` selection, `docs` Markdown validation, `gate` aggregate decision).
 - `CHANGELOG.md`: curated `Unreleased` section plus generated per-release sections.
 
 ## Architectural rules
@@ -112,8 +112,8 @@ Delete all smoke outputs afterward.
 - Core/storage/network changes: targeted behavior test plus full workspace tests and Clippy.
 - UI behavior: launch the native application and exercise the changed path; tests alone are insufficient.
 - Migration changes: use synthetic unit fixtures, then—when privately available—run a smoke import outside the repository and check SQLite integrity.
-- Cross-platform changes: keep CI green on both `windows-latest` and `ubuntu-22.04`.
-- Release tooling or workflow changes: run `python -m unittest discover -s scripts -p "test_release.py"` and `python scripts/release.py validate`; never publish, tag or push a release to verify them. Use synthetic fixtures only.
+- Cross-platform changes: keep the `Required checks` result green on both `windows-latest` and `ubuntu-22.04`.
+- Release tooling, CI or workflow changes: run `python -m unittest discover -s scripts -p "test_*.py"`, `python scripts/release.py validate` and `python scripts/ci.py docs`; never publish, tag or push a release to verify them. Use synthetic fixtures only. CI `cargo-about` installs need `--features cli` (see `docs/development.md`).
 - Updater changes: loopback servers and synthetic archives only; never contact GitHub or AniDB from tests, and keep the asset names, archive layout and `SHA256SUMS` format in lockstep with `scripts/release.py`. Do not claim Linux runtime or production GitHub verification.
 - Never contact AniDB with fabricated or unregistered client credentials during automated tests.
 

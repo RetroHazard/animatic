@@ -15,7 +15,7 @@ Repository-specific engineering rules for coding agents live in
 | Workspace members | `animatic-core`, `animatic-anidb`, `animatic` | [`Cargo.toml`](../Cargo.toml) |
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
-| CI | Locked Clippy, tests and release build, formatting, and the Python release-tool tests on `windows-latest` and `ubuntu-22.04`; runs on every push and pull request and is reusable by the release workflows | [`ci.yml`](../.github/workflows/ci.yml) |
+| CI | Pull requests and `main` only: a planner selects the Rust and license jobs, an always-on quality job covers Python tests, docs and workflow validation, and a stable `Required checks` job gates the result; reusable by the release workflows. No server-side merge requirement is configured while the repository is private (see [Continuous integration](#continuous-integration)) | [`ci.yml`](../.github/workflows/ci.yml) |
 | Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
@@ -178,12 +178,13 @@ Which checks a change needs (from [`AGENTS.md`](../AGENTS.md)):
 | Core, storage or network code | A targeted behavior test, then the full workspace tests and Clippy |
 | UI behavior | Launch the native application and exercise the changed path; tests alone are insufficient |
 | Migration | Synthetic unit fixtures; when a private databank is available, an out-of-tree smoke import and a SQLite integrity check |
-| Cross-platform code | Keep CI green on both `windows-latest` and `ubuntu-22.04`; isolate platform behavior behind an abstraction |
+| Cross-platform code | Keep the `Required checks` result green for both `windows-latest` and `ubuntu-22.04`; isolate platform behavior behind an abstraction |
 | Rename language | Behavior tests in `rename/tests.rs` and a note in [Rename language](rename-language.md) for any deliberate difference |
-| Documentation only | Re-read the cited source; run the format and link review below |
+| Documentation only | Re-read the cited source; run `python scripts/ci.py docs` (Markdown links, anchors, fences, tables) and the format and link review below |
 
-Before handing work off, run the four CI commands in this order and report what you actually
-ran:
+Before handing work off, run the Rust checks below in this order (the full CI set, including
+the Python and documentation checks, is under [Reproducing CI locally](#reproducing-ci-locally))
+and report what you actually ran:
 
 ```sh
 cargo fmt --all -- --check
@@ -332,69 +333,167 @@ Reported by the implementing session; historical evidence, not a substitute for 
 
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml) is the one CI workflow. It checks
+**pull requests and `main` only**. Ordinary pull request, `main` and manual runs only check
+the code and build raw executables (`cargo build --release` is still a compile); a release
+workflow calling it with `package: true` additionally has it package archives. `ci.yml` itself
+never creates a GitHub Release, tag or push, so it cannot cut a release from a pull request or a development branch. A plain push
+to a development branch starts nothing; open a pull request (a draft is enough) or run the
+workflow manually to get CI on it. How releases are made is in [Releases](releases.md).
 
-- **Triggers:** pushes to branches, every `pull_request`, manual `workflow_dispatch`, and
-  `workflow_call` with inputs `ref` (string) and `package` (boolean, default `false`) so the
-  release workflows can run exactly the same checks on a specific commit.
-- **Third-party notices:** before the matrix, a job on `ubuntu-22.04` installs the pinned
-  `cargo-about` (version in `ci.yml`) and generates `THIRD-PARTY-NOTICES.html` from `about.toml`
-  and `about.hbs` for the union of the Windows and Linux dependencies; the matrix jobs download
-  it as the `dependency-notices` artifact. Because generation fails on a license outside the
-  policy and CI fails on any `cargo-about` warning on standard error (for example a changed pinned
-  license file), every CI run is also a license-policy gate. A new
-  dependency license needs a deliberate maintainer review (see
-  [Releases](releases.md#third-party-notices)); the generated notices are not a legal audit, and
-  some crates fall back to canonical SPDX text without copyright lines.
+- **Triggers:** `push` to `main`; every `pull_request`; `merge_group` (only matters if a merge
+  queue is enabled); manual `workflow_dispatch`, which always runs the full checks; and
+  `workflow_call` with inputs `ref` (string, default empty) and `package` (boolean, default
+  `false`), used by the release workflows to check an exact commit. There is no workflow-level
+  path filter: the workflow always starts and its final job reports, so the check can be required
+  without a PR ever waiting for a check that never runs.
+- **Concurrency:** a newer run for the same pull request cancels the older one. Every other run
+  (`main`, merge group, manual, release-called) has its own group and always finishes.
+- **Jobs** (the aggregate check is **`Required checks`**; the job ID is shown first and the
+  name GitHub displays after it where it differs):
 
-To run the policy gate locally (optional; it needs the same pinned `cargo-about`, so use the
-version in `ci.yml`):
+  | Job | Runs | What it does |
+  |---|---|---|
+  | `plan` (*Plan checks*) | always | Runs `scripts/ci.py plan` on the Git diff, outputs whether the Rust jobs and the license-policy job are needed, and writes the selection to the run summary |
+  | `quality` (*Quality*) | **always**, including docs-only changes | Python 3.12: all `scripts/test_*.py` behavior tests, `release.py validate`, `scripts/ci.py docs` (Markdown links, anchors, fences and tables), pinned `actionlint` over the workflows, and `cargo fmt --check` when Rust is selected |
+  | `notices` (*Dependency license notices*) | when the plan selects licenses | Installs the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices` |
+  | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`; locked Clippy with warnings denied, tests, rustdoc with warnings denied, the release build and a `--help` smoke run; uploads the raw executable as `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
+  | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust` and `notices`; wraps their executables and notices with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
+  | `required` (**Required checks**) | always | Fails closed unless every job the plan selected succeeded (see below) |
 
-  ```sh
-  cargo install --locked --version 0.9.3 cargo-about
-  cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/THIRD-PARTY-NOTICES.html"
-  ```
+  `notices` and `rust` run in parallel and do not depend on each other, so one failure does not
+  hide the other's diagnostics. Only `package` waits for both.
+- **Planner (`scripts/ci.py plan`):** reads `git diff --no-renames --name-only` between the pull
+  request base and the merge commit (for `main`, the pushed range) and prints
+  `rust=true|false` and `licenses=false|true`. Documentation-only changes (Markdown and
+  documentation assets) select neither; Rust sources under `crates/` select Rust; `Cargo.toml`,
+  `Cargo.lock` or a crate manifest selects both; `about.toml`, `about.hbs` and `LICENSE` select
+  the license job; `scripts/release.py`, `scripts/test_release.py`, anything under `.github/`,
+  `.cargo/` or a `rust-toolchain*` file select both because they affect packaging or CI itself;
+  other Python under `scripts/` selects only `quality`. **Any path it does not recognize selects
+  both**, so a new kind of file fails safe. A reusable call with a non-empty `ref`, `package: true`,
+  a manual run, a merge-group run and an unusable base commit (missing or all zeros) all
+  run everything. An unreadable base fails the job; it is never treated as "nothing changed".
+- **The gate (`scripts/ci.py gate`):** `quality` and `plan` must always succeed. `rust`,
+  `notices` and `package` must succeed when selected and must be skipped when not selected. A
+  failed, cancelled or unexpectedly skipped job, a missing plan or malformed data all fail
+  `Required checks` with a reason; a skipped job is acceptable **only** when the plan did not
+  select it.
+- **Tests:** `scripts/test_ci.py` covers behavior only (path selection, Markdown validation,
+  the gate's decisions); it does not assert on workflow text.
+- **Pinned inputs and caching:** every third-party action is pinned to a full commit SHA.
+  `actionlint` is downloaded from its GitHub release at a pinned version and verified against a
+  pinned SHA-256, and `cargo-about` is pinned to an exact version (see the workflow). Ordinary
+  runs may restore a cached `cargo-about` binary and Rust dependency cache, but only runs on
+  `main` save them, and release (`package: true`) runs never restore either: they compile the
+  renderer and the application from source. The workflow only reads repository contents.
 
-  ```powershell
-  cargo install --locked --version 0.9.3 cargo-about
-  cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\THIRD-PARTY-NOTICES.html"
-  ```
+### Third-party license gate
 
-  Write the output outside the repository; the generated file is a build output, not a source file.
-  `--fail` alone does not reproduce the whole gate: `cargo-about` only warns about a changed
-  pinned license file, which CI turns into a failure by rejecting any standard-error output, so
-  read the command's warnings yourself.
-- **Matrix:** `windows-latest` (`x86_64-pc-windows-msvc`) and `ubuntu-22.04`
-  (`x86_64-unknown-linux-gnu`), explicit Rust targets, `fail-fast: false`.
-- **Setup:** `actions/checkout`, `actions/setup-python` and `dtolnay/rust-toolchain@stable`
-  (all pinned to commit SHAs) with `clippy` and `rustfmt`; on Linux only,
-  `sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
-  libssl-dev`.
-- **Steps, in order:** the Python release-tool tests, `release.py validate`, the format check,
-  Clippy with warnings denied, tests, `cargo doc` with rustdoc warnings denied, the release
-  build (all but the format check with `--locked`), and a `--help` smoke run of the built
-  executable. With `package: true` it then builds the versioned release archive.
-- **Artifacts (14 days):** with `package: false` the raw executable, `animatic-windows-x86_64`
-  or `animatic-linux-x86_64`; with `package: true` the archive as `release-windows-x86_64` or
-  `release-linux-x86_64`.
+The `notices` job installs `cargo-about` with the `cli` feature and generates
+`THIRD-PARTY-NOTICES.html` from [`about.toml`](../about.toml) and [`about.hbs`](../about.hbs) for
+the union of the Windows and Linux dependencies. Generation fails on a license outside the policy,
+and the job also fails on any `cargo-about` warning on standard error (for example a changed
+pinned license file). A new dependency license needs a deliberate maintainer review (see
+[Releases](releases.md#third-party-notices)); the generated notices are not a legal audit.
 
-A failing step fails the job, so a green run means those commands passed on that runner for that
-commit. That says nothing about runtime behavior on that platform beyond the `--help` smoke run.
-A CI artifact is a build product, not a release: only the draft release created by the release
-workflow carries the distributed archives and checksums.
-
-To reproduce a CI failure locally, install the prerequisites above and run the same commands
-from a clean checkout of the same commit:
+To run it locally, use the version pinned in `ci.yml` (shown here as `0.9.3`). The
+`--features cli` flag is **required**: the crate's executable is built only with that feature, and without it
+`cargo install` finishes but installs no `cargo-about` command.
 
 ```sh
+cargo install --locked --version 0.9.3 --features cli cargo-about
+cargo about --version
+cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/THIRD-PARTY-NOTICES.html"
+```
+
+```powershell
+cargo install --locked --version 0.9.3 --features cli cargo-about
+cargo about --version
+cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\THIRD-PARTY-NOTICES.html"
+```
+
+Write the output outside the repository. `--fail` alone does not reproduce the whole gate:
+`cargo-about` only warns about a changed pinned license file, which CI turns into a failure by
+rejecting standard-error output, so read the command's warnings yourself.
+
+### Reproducing CI locally
+
+Install the prerequisites above and run, from a clean checkout of the same commit:
+
+```sh
+python -m unittest discover -s scripts -p "test_*.py"
+python scripts/release.py validate
+python scripts/ci.py docs
+python scripts/ci.py plan --base BASE_SHA --head HEAD_SHA
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo build --locked --release -p animatic
-python -m unittest discover -s scripts -p test_release.py
-python scripts/release.py validate
 ```
+
+`plan` only reports what CI would select. `actionlint` and `gate` need CI's inputs and are not
+reproduced by hand. A green run means those commands passed on that runner for that commit; it
+says nothing about runtime behavior beyond the `--help` smoke run. A CI artifact is a build
+product, not a release.
+
+### Known failure: `cargo about` "no such command"
+
+The first CI run of this pipeline (run `41999768685`) failed this way, taken from its logs and
+not reproduced since: `cargo install --locked --version 0.9.3 cargo-about` compiled the crate
+but installed no executable, warning that the binary requires the `cli` feature; the next step,
+`cargo about generate`, then failed with ``no such command: `about` ``. The fix is the
+`--features cli` install plus a `cargo about --version` check before generating, as above. The strict
+standard-error guard on `generate` is unchanged: stderr is never suppressed.
+
+**Observed remediation (2026-11-05, Windows only).** The fix was exercised locally, not by
+rerunning the old failure and not on GitHub Actions or Linux: `cargo install --locked --version 0.9.3
+--features cli cargo-about` into a throwaway `--root` and target directory installed a real
+`cargo-about.exe`; `cargo about --version` reported `cargo-about 0.9.3`; and `cargo about generate
+--locked --fail` for the then-current workspace produced `THIRD-PARTY-NOTICES.html`, exited 0 and
+wrote nothing to standard error. Treat it as a dated observation; the workflow's own run remains the
+authoritative gate.
+
+### Pull request gate and branch protection
+
+Requiring these checks is a GitHub setting, not repository content. **The repository is currently
+private, and GitHub answers the branch
+protection and ruleset APIs with HTTP 403 (they need GitHub Pro, or a public repository).
+No server-side enforcement is configured, so nothing currently prevents merging a pull request
+with failing checks, or pushing directly to `main`.** `Required checks` is a signal today. The
+maintainer plans to make the repository public after the development branches are collapsed
+into `main`; this repository's changes never alter visibility.
+
+Activate enforcement once the repository is public (or on a plan that offers it), as a
+branch-protection rule or ruleset targeting `main`:
+
+1. **Require a pull request before merging.** Required approvals are optional: a sole
+   maintainer cannot approve their own pull request.
+2. **Require status checks to pass** and add exactly **`Required checks`** (GitHub Actions). It
+   is the only check to require; GitHub lists a check in the picker only after it has run on the
+   repository. Do not add the individual `rust`, `notices` or `quality` jobs: they are skipped
+   when unselected and a skipped required check is treated as passing, which is exactly what the
+   aggregate encodes explicitly.
+3. **Require branches to be up to date before merging** (strict): recommended, optional.
+4. **Do not allow bypassing** (no bypass list, include administrators) and block force pushes
+   and deletion of `main`: recommended.
+5. **Signed commits:** optional. The bot's release-preparation commit is unsigned (see
+   [Releases](releases.md#workflows)), so requiring signed commits can block that release pull
+   request unless the maintainer re-signs the branch; [INFERENCE] a squash or merge commit made
+   in the GitHub web UI is signed by GitHub, so check this on the first release pull request
+   before relying on it.
+6. **Merge queue:** optional. `ci.yml` already answers `merge_group`.
+
+Pull requests opened by the release-preparation bot do not start `ci.yml`, because events
+created with the workflow token do not trigger other workflows. If `Required checks` is required,
+run CI on that branch manually (see [Releases](releases.md#maintainer-procedure)); the
+manual run reports a check named `Required checks` on the branch commit, which satisfies the
+requirement. The reusable run inside Prepare release is reported under a different, prefixed
+name and does not.
+
+Also available to the maintainer, and equally unconfigured here: a `release` environment and a
+`v*` tag ruleset ([Releases](releases.md#repository-settings-the-maintainer-must-provide)).
 
 ## Release and distribution
 
@@ -405,16 +504,18 @@ required GitHub settings, archive layout and installation/verification instructi
 
 - A maintainer runs **Release prepare** (dry run first) to bump the version in lockstep,
   update the changelog and open a pull request from `release/vVERSION`.
-- After merging, the maintainer pushes the tag `vVERSION` explicitly; **Release** verifies it,
-  reruns CI with packaging on that commit and creates a **draft** GitHub Release with a Windows
-  ZIP, a Linux tar.gz and `SHA256SUMS`.
+- After merging, the maintainer pushes the tag `vVERSION` explicitly (or runs **Release**
+  manually from `main` for an existing tag); **Release** verifies it, reruns CI with packaging
+  on that commit and creates a **draft** GitHub Release with a Windows ZIP, a Linux tar.gz and
+  `SHA256SUMS`. Publishing the draft is a separate manual act.
 - Archives are unsigned. There are no installers, packages or attestations. The app can update
   *itself* from a published release (the in-app updater; see
   [Releases](releases.md#in-app-updates)), so the archive names, the single root folder
   and the `SHA256SUMS` format are a compatibility contract with `update.rs`. A release run is
   not evidence of Linux desktop behavior or production AniDB validation.
-- Nothing tags, bumps or publishes from an ordinary branch push. The workflows do not claim any
-  GitHub environment or branch-protection setting is configured; see
+- Nothing tags, bumps or publishes from a pull request or a development-branch push, and a
+  release is never cut by CI itself; see [Continuous integration](#continuous-integration). The
+  workflows do not claim any GitHub environment or branch-protection setting is configured; see
   [the required settings](releases.md#repository-settings-the-maintainer-must-provide).
 
 Change release tooling together with [Releases](releases.md), [Getting started](getting-started.md),
@@ -437,7 +538,7 @@ This table maps a change to the places you will touch and the documentation to u
 | Updater, archive layout or release asset names | [`update.rs`](../crates/animatic-core/src/update.rs), `scripts/release.py` and `release.yml` together | [Releases](releases.md#in-app-updates), [Storage and network](storage-and-network.md#github-update-transport), [User guide](user-guide.md#updating-animatic) |
 | Rename function, object or property | `rename/` (`parser`, `eval`, `objects`, `plan`); tests in `rename/tests.rs` | [Rename language](rename-language.md); record deliberate differences from AOM |
 | Public API of a library crate | Rust doc comments on the item | The generated `cargo doc` output is the API reference |
-| Version, changelog, packaging or workflow | [`scripts/release.py`](../scripts/release.py), its tests and `.github/workflows/` | [Releases](releases.md) and the README, Getting started and `AGENTS.md` claims about distribution |
+| Version, changelog, packaging, CI or workflow | [`scripts/release.py`](../scripts/release.py), [`scripts/ci.py`](../scripts/ci.py), their tests and `.github/workflows/` | [Releases](releases.md) and the README, Getting started and `AGENTS.md` claims about distribution or CI |
 
 Before changing an exported symbol, find its references (for example with rust-analyzer's
 "find all references") and migrate every caller; this project does not keep compatibility

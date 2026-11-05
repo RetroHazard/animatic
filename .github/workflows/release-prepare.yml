@@ -102,7 +102,7 @@ jobs:
             '' \
             "Windows and Linux checks passed for commit $CHECKED_SHA: $RUN_URL" \
             '' \
-            'This bot-created PR does not trigger another pull_request run. If branch protection requires the standalone CI check, manually dispatch CI on this release branch.' \
+            'This bot-created PR does not trigger a pull_request run. To attach the stable "Required checks" status to the PR head, manually dispatch CI on this release branch (the checks above already passed for the same commit).' \
             '' \
             'After merging, create and push the matching tag from the reviewed main commit. The release workflow creates an unsigned draft release; it does not publish automatically.' \
             > "$RUNNER_TEMP/release-pr.md"

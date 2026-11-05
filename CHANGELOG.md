@@ -40,3 +40,13 @@ added under conventional headings.
   publicly readable, a manual check reports the release feed as unavailable (never "up to date"). On Windows a failed executable swap restores the previous executable
   best-effort from a kept recovery copy; no rollback or power-loss guarantee is made. Bundled
   guides and notices keep the old version until the archive is replaced manually.
+
+### Changed
+
+- CI now runs for pull requests and `main` only and never creates a GitHub Release, tag or
+  push itself (ordinary runs check and build raw executables; only a release workflow calling
+  it packages archives). A planner skips the Rust and license jobs for documentation-only changes, an always-on
+  quality job covers the Python tests, Markdown links, anchors and tables, and workflow
+  validation, and a single stable aggregate check, `Required checks`, reports the result. The
+  `cargo-about` install now uses `--features cli` (without it the install produced no command).
+  Server-side enforcement of the check is not configured while the repository is private.
