@@ -127,6 +127,32 @@ were separately identified in code and reproduced with synthetic inputs.
 All runtime inputs and probes were synthetic and outside the repository. No private
 databank, personal library, credentials, raw forum export, or workstation path was added.
 
+## Backlog v2 priority mapping
+
+Source: the user-supplied backlog_v2 (authoritative for priorities; its external file, paths and forum author handles are deliberately not reproduced). This audit remains partial, not a full crawl. Issue IDs below refer to that backlog; links are the existing ones above.
+
+| Backlog IDs | Status |
+|---|---|
+| A3, A4, A16 | Backup recovery and portable startup diagnostics implemented; historical native crashes, cloud-sync conflicts and Wine behavior were not reproduced |
+| A1, A2, F3, F4 | Improved for public titles only (streamed, validated title dump); legacy full cache, all-account dump, and resume remain unimplemented |
+| A8, F12 | Addressed: specific rename padding and validation cases |
+| A13, A15 | Covered by the earlier reliability tranche |
+| A14 | Safety constraint only; no new delete workflow |
+| A9, F6 | Automatic renaming remains unimplemented and must never be enabled implicitly |
+
+Corrections to v1: the XP SP3 anecdote concerns out-of-memory, not startup; `False.mkv` and blank-name pattern errors are correct rejections, not successes or defects; the 510/ten-minute anecdote is not a retry policy.
+
+### V2 verification (observed only)
+
+- External Rust probes, failing before and passing after: a corrupt primary settings file with a valid backup now recovers offline with all bytes unchanged; the default rename filename no longer changes when the count metadata goes 1 to 100; an XML document with an unrelated title is rejected.
+- A further probe streamed 100,000 synthetic titles from gzip through the real `read_titles_dump` and `Db::import_title_dump`. Bad CRC, truncation and late-invalid XML left library rows and the completion timestamp intact; a second zero-busy-timeout connection wrote during the read closure.
+- Review regressions reproduced before and passed after: duplicate attributes, a late XML declaration and a malformed comment now reject the document. BOM acceptance and fragmented input remain covered by the parser behavior checks.
+- Windows: **151 workspace tests**, formatting check, Clippy with warnings denied and release build passed.
+- Native application: recovery notice and forced offline state; closing without Save preserved both settings files byte-for-byte. A first-run-card dismissal that previously overwrote the recovered primary now also preserves both files. Explicit Save preserved the good backup and persisted the recovered offline settings.
+- Native rename workflow: a saved Unicode custom pattern survived recovery; stable-default reset/restore and live syntax diagnostics worked. An empty-result preview disabled apply; selected-file validation followed by explicit confirmation renamed a synthetic Unicode file and updated its durable library path.
+- Windows superscript device names (`COM¹`–`COM³`, `LPT¹`–`LPT³`, including extensions) were accepted before review fixes and rejected afterwards.
+- Runtime fixtures and throwaway probes were outside the repository and removed after verification. No real AniDB request was made; Linux runtime was not exercised.
+
 ## Remaining research prerequisite
 
 The supplied summary resolves the earlier lack of topic IDs for the selected reports and

@@ -102,6 +102,21 @@ instead of pretending it succeeded.
 This release does not add full-account MyList bootstrap/reconciliation, scheduled folder
 scanning, or automatic renaming.
 
+If the primary settings file is missing or invalid and a valid backup exists, Animatic
+recovers **offline** and shows a notice. Loading changes neither file; closing the recovery
+session does not overwrite the primary until you explicitly **Save options**. Both files
+missing means defaults. An unreadable primary or no usable copy of existing settings
+reports an error rather than silently resetting preferences.
+
+Public title downloads stream through a bounded temporary spool and merge atomically.
+Failures preserve library titles and the completion timestamp. This is not a full-account
+MyList import or resumable download.
+
+The built-in rename pattern uses a fixed two-digit episode minimum, independent of cached
+episode counts. Saved patterns remain unchanged; **Use stable default** is an explicit
+replacement with an undo control. Syntax diagnostics and selected-file validation precede
+the confirm preview; errors and evaluation warnings prevent applying a rename.
+
 ## Managed-folder safety
 
 Automatic missing-file removal requires an explicit matching folder rule, an accessible
@@ -131,6 +146,14 @@ The legacy import smoke scenario can be run against an AOM folder with:
 ```sh
 cargo run -p animatic-core --example import-legacy -- AOM/kowai /tmp/animatic-import.sqlite3
 ```
+
+### v2 verification
+
+Windows: **151 workspace tests**, formatting check, Clippy with warnings denied, and release
+build passed. Native recovery, explicit save, pattern reset/restore, syntax diagnostics,
+blocked empty-result preview and a successful Unicode file rename were exercised.
+The [forum audit](docs/aom-forum-audit.md#v2-verification-observed-only) records the synthetic
+streaming and before/after probes. Production AniDB and Linux runtime were not exercised.
 
 ## License
 

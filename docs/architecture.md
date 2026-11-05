@@ -71,6 +71,8 @@ The application currently exposes overview, MyList, anime, advanced search, hash
 
 Legacy `/database`, `/fullupdate`, `/utf8`, and `/ucs2` arguments are accepted where applicable for handoff compatibility.
 
+Portable overrides do not require the default directory to exist; `--help` creates nothing. Settings load through `load_with_recovery`: the primary is authoritative; the backup is read only when it is missing or invalid, forcing offline mode, opening a recovery window, and skipping autosave until explicit Save. Sources are never modified on load; only a valid-object primary rotates the backup.
+
 ## Principal data flows
 
 ### Local file ingestion
@@ -178,6 +180,12 @@ and the registered client name before deliberately resuming work.
 ### Rename workflow
 
 The rename engine preprocesses patterns, parses the legacy expression language, evaluates database-backed `A`, `E`, `F`, `G`, `H`, and `M` objects, validates path components, and generates a preview. Applying a preview uses safe filesystem operations; an empty/invalid target is an error, not a silent fallback.
+
+Counters use a fixed minimum of 2 digits for new/default/reset patterns, independent of count metadata; counts >=100 and prefixes are preserved and saved custom/old patterns are not rewritten (**Use stable default** is explicit, with **Restore previous** text). Compile and selected-file diagnostics are shown; warnings, empty targets and boolean bad targets block Apply. Invalid-filename checks deliberately differ by platform (POSIX UTF-8 bytes, Windows UTF-16 units, 255). Automatic renaming is not implemented.
+
+### Public title dump import
+
+`read_titles_dump` streams the compressed dump (32 MiB compressed, 128 MiB decoded, 250k anime, 2M titles, 2048 bytes per name, `TitlesLimits`), validating XML and single-member gzip EOF/CRC into a private SQLite spool. No library lock is held during the network phase. `Db::import_title_dump` then merges atomically with the cache timestamp, so bad CRC, truncation or late-invalid XML leave existing rows intact. Not provided: full-MyList bootstrap, resume, external cryptographic checksums; cancellation still occurs between commands with a 60 s timeout.
 
 ## State and concurrency
 

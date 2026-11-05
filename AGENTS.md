@@ -56,6 +56,9 @@ The migration implementation necessarily contains clean-room format knowledge an
 14. Malformed successful API replies are protocol errors, never authoritative absence. Preserve pending local intent when applying remote records.
 15. Permanent failures remain blocked and visible; cooldowns survive queue runs and restarts. Explicit retry must not bypass an active cooldown.
 16. Load library projections and export statistics off the UI thread. Coalesce refreshes and virtualize tables; stale snapshots must not override newer edits or queue status.
+17. Settings load via `load_with_recovery`: read the backup only if the primary is missing/invalid; recovery is offline, shows a recovery window, skips autosave until an explicit Save, and modifies no source on load. Both missing means defaults; both bad/unreadable is an error exposing no JSON values. Only a valid object primary rotates the backup. Portable overrides need no default directory; `--help` creates no files.
+18. Title dump import streams (compressed 32 MiB, decoded 128 MiB, 250k anime, 2M titles, 2048 bytes/name via `TitlesLimits`), validates XML and single-member gzip EOF/CRC, spools into private SQLite with no library lock during network, then merges atomically with the timestamp. No full-MyList bootstrap, resume, or external cryptographic checksum; cancel acts between commands (60 s timeout).
+19. Rename counters use a minimum of 2 digits for new/default/reset patterns; count metadata is independent, values >=100 and prefixes are preserved, saved custom/old patterns are untouched. Compile/selected-file diagnostics are shown; warnings, empty or boolean bad targets block Apply. Invalid-filename policy is deliberately cross-platform: POSIX UTF-8 bytes vs Windows UTF-16 units, 255. Automatic rename stays unimplemented and never implicit.
 
 ## Commands
 
