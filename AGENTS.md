@@ -48,6 +48,7 @@ The migration implementation necessarily contains clean-room format knowledge an
 8. Network code must retain AniDB flood spacing, authentication/session recovery, optional encryption, and offline behavior.
 9. Prefer current AniDB web editors over reviving retired metadata-change protocols.
 10. Avoid platform-specific behavior unless isolated behind a cross-platform abstraction and verified on Windows and Linux.
+11. Automatic local-record removal requires affirmative file absence beneath a reachable, explicitly configured manager root. Unavailable drives and filesystem errors must preserve library records.
 
 ## Commands
 

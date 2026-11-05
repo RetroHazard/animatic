@@ -70,6 +70,14 @@ Import reads the encrypted source files and writes a new SQLite database. It nev
 
 AniDB requires API clients to use a registered client identifier. Configure the identifier and version under **Tools → Options…**. Keep offline mode enabled until this is set. The UDP client enforces AniDB's packet spacing and handles session expiry.
 
+## Managed-folder safety
+
+Automatic missing-file removal requires an explicit matching folder rule, an accessible
+directory root, and a file lookup that reports absence. Unavailable drives, network roots,
+and other filesystem errors preserve local records. A genuinely missing file or nested
+folder under an available root can still be removed from the local inventory. This does
+not delete media or remove entries from AniDB MyList.
+
 ## Verification
 
 ```sh

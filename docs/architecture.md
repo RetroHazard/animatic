@@ -96,6 +96,12 @@ sequenceDiagram
 
 File-manager policy decides extension acceptance, recursive traversal, automatic hashing, AniDB identification, MyList defaults, and removal handling. A local path references a deduplicated hash record.
 
+Missing-file removal requires an explicit matching manager with `auto_remove` enabled,
+affirmative file absence (`NotFound`), and a successful directory-metadata check of the
+manager root after that lookup. Empty/default roots, unavailable roots and other
+filesystem errors preserve local records. This is a conservative planning check, not
+an atomic guarantee against storage disconnecting between planning and execution.
+
 ### AniDB synchronization
 
 ```mermaid

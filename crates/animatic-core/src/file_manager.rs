@@ -60,6 +60,7 @@ pub fn extension_set(csv: &str) -> HashSet<String> {
 }
 
 /// Plan one complete scan. Existing paths are compared by normalized, platform-native paths.
+/// Automatic removals require both a missing file and a reachable configured manager directory.
 pub fn plan_scan(
     db: &Db,
     settings: &FileManagerSettings,
@@ -124,15 +125,24 @@ pub fn plan_scan(
         }
     }
     for f in existing {
-        if !Path::new(&f.path).exists() {
-            let manager = settings.manager_for(Path::new(&f.path));
-            if manager.auto_remove {
-                actions.push(ScanAction::RemoveMissing {
-                    local_id: f.id,
-                    path: PathBuf::from(f.path),
-                });
-            }
+        let path = Path::new(&f.path);
+        let manager = settings.manager_for(path);
+        if !manager.auto_remove || manager.path.is_empty() {
+            continue;
         }
+        if !matches!(
+            fs::metadata(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        ) {
+            continue;
+        }
+        if !matches!(fs::metadata(&manager.path), Ok(metadata) if metadata.is_dir()) {
+            continue;
+        }
+        actions.push(ScanAction::RemoveMissing {
+            local_id: f.id,
+            path: PathBuf::from(f.path),
+        });
     }
     Ok(actions)
 }
@@ -204,6 +214,30 @@ pub fn manager_for_path<'a>(settings: &'a FileManagerSettings, path: &Path) -> &
 mod tests {
     use super::*;
 
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "animatic-file-manager-{name}-{}",
+            std::process::id()
+        ))
+    }
+
+    fn removal_scan(root: &Path, path: &Path, auto_remove: bool) -> (i64, Vec<ScanAction>) {
+        let db = Db::memory().unwrap();
+        let local_id = db
+            .add_local_file(&path.to_string_lossy(), &Hashes::default(), 0)
+            .unwrap();
+        let settings = FileManagerSettings {
+            managers: vec![FileManager {
+                path: root.to_string_lossy().into_owned(),
+                include_subdirs: true,
+                auto_remove,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        (local_id, plan_scan(&db, &settings, "mkv").unwrap())
+    }
+
     #[test]
     fn extension_parser_is_case_insensitive_and_accepts_dots() {
         let set = extension_set(".MKV, avi; mp4");
@@ -233,6 +267,138 @@ mod tests {
         let actions = plan_scan(&db, &settings, "mkv").unwrap();
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], ScanAction::Hash { path, .. } if path.ends_with("one.mkv")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_preserves_missing_records_when_matching_root_is_unavailable() {
+        let root = test_root("unavailable-root");
+        let _ = fs::remove_dir_all(&root);
+
+        let (_, actions) = removal_scan(&root, &root.join("missing.mkv"), true);
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn scan_removes_missing_record_under_available_root() {
+        let root = test_root("available-root");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("missing.mkv");
+
+        let (local_id, actions) = removal_scan(&root, &path, true);
+
+        assert_eq!(
+            actions,
+            vec![ScanAction::RemoveMissing {
+                local_id,
+                path: path.clone(),
+            }]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_removes_missing_record_when_nested_parent_is_absent() {
+        let root = test_root("nested-parent");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("missing-parent").join("missing.mkv");
+
+        let (local_id, actions) = removal_scan(&root, &path, true);
+
+        assert_eq!(
+            actions,
+            vec![ScanAction::RemoveMissing {
+                local_id,
+                path: path.clone(),
+            }]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_preserves_record_when_file_metadata_fails() {
+        let root = test_root("metadata-error");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("invalid\0.mkv");
+        assert_ne!(
+            fs::metadata(&path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        let (_, actions) = removal_scan(&root, &path, true);
+
+        assert!(actions.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scan_preserves_record_when_matching_root_is_not_a_directory() {
+        let root = test_root("file-root");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_file(&root);
+        fs::write(&root, b"not a directory").unwrap();
+
+        let (_, actions) = removal_scan(&root, &root.join("missing.mkv"), true);
+
+        assert!(actions.is_empty());
+        fs::remove_file(root).unwrap();
+    }
+
+    #[test]
+    fn scan_preserves_record_for_empty_default_manager_path() {
+        let path = test_root("empty-default").join("missing.mkv");
+        let db = Db::memory().unwrap();
+        db.add_local_file(&path.to_string_lossy(), &Hashes::default(), 0)
+            .unwrap();
+        let settings = FileManagerSettings {
+            managers: vec![FileManager {
+                auto_remove: true,
+                default: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let actions = plan_scan(&db, &settings, "mkv").unwrap();
+
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn scan_respects_auto_remove_and_manager_precedence() {
+        let root = test_root("manager-precedence");
+        let nested_root = root.join("nested");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&nested_root).unwrap();
+        let path = nested_root.join("missing.mkv");
+        let db = Db::memory().unwrap();
+        db.add_local_file(&path.to_string_lossy(), &Hashes::default(), 0)
+            .unwrap();
+        let settings = FileManagerSettings {
+            managers: vec![
+                FileManager {
+                    path: root.to_string_lossy().into_owned(),
+                    include_subdirs: true,
+                    auto_remove: true,
+                    ..Default::default()
+                },
+                FileManager {
+                    path: nested_root.to_string_lossy().into_owned(),
+                    include_subdirs: true,
+                    auto_remove: false,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let actions = plan_scan(&db, &settings, "mkv").unwrap();
+
+        assert!(actions.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }
