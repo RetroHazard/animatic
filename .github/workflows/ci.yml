@@ -197,6 +197,16 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # `cargo about` resolves full metadata and reads every crate's license files, so
+      # without this it downloads the whole dependency graph. Registry only: no target
+      # directory is built here, and ~/.cargo/bin is left to the renderer cache below.
+      - name: Cache Cargo registry
+        if: ${{ !inputs.package }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Release packaging always compiles the renderer from source; only ordinary
       # checks may reuse the binary cached by a main-branch run.
       - name: Restore cached license renderer

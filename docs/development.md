@@ -418,9 +418,13 @@ are made is in [Releases](releases.md).
 - **Pinned inputs and caching:** every third-party action is pinned to a full commit SHA.
   `actionlint` is downloaded from its GitHub release at a pinned version and verified against a
   pinned SHA-256, and `cargo-about` is pinned to an exact version (see the workflow). Ordinary
-  runs may restore a cached `cargo-about` binary and Rust dependency cache, but only runs on
-  `main` save them, and release (`package: true`) runs never restore either: they compile the
-  renderer and the application from source. The workflow only reads repository contents.
+  runs may restore a cached `cargo-about` binary, the `notices` job's Cargo registry (crate
+  archives and index, no build output) and each Rust job's dependency cache, but only runs on
+  `main` save them, and release (`package: true`) runs never restore any of them: they download
+  dependencies and compile the renderer and the application from source. Pull requests therefore
+  restore whatever the latest `main` run saved; until `main` has completed one run with these
+  caches, pull requests download and build everything. The workflow only reads repository
+  contents.
 
 ### Third-party license gate
 
