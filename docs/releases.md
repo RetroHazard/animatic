@@ -197,8 +197,11 @@ been run against a real GitHub release or on Linux by the project.
   from commit subjects since the previous release, and leaves a fresh empty `Unreleased`.
   Commits come from the history since the latest reachable `vYYYY.M.PATCH` tag (or the whole history
   for the first release); merge commits and release-only bookkeeping commits are excluded.
-  Curated entries are preserved, not rewritten. Commit subjects are escaped when written into the
-  changelog so they cannot inject HTML or Markdown; curated entries are left as written.
+  Curated entries are preserved, not rewritten. `main` takes squash merges, whose subjects GitHub
+  ends with `(#N)`; a curated entry that cites its pull request the same way, as `(#N)`, replaces
+  the bullet that would otherwise be generated from that squash commit, so a change is not listed
+  twice. A bare `#N` without parentheses does not. Commit subjects are escaped when written into
+  the changelog so they cannot inject HTML or Markdown; curated entries are left as written.
   `prepare` refuses a shallow clone (use `git fetch --unshallow` first), because the commit
   range would be incomplete.
 
@@ -333,8 +336,9 @@ other workflows, so no personal access token is involved. A merge queue still pr
 Trigger: `workflow_dispatch` only (from **Auto release**, or manually), with inputs `sha` (default
 the tip of `main`) and `dry_run` (boolean, default `true`; **Auto release** passes `false`).
 It is refused unless it runs from `main` (`github.ref` must be
-`refs/heads/main`). There is no tag-push trigger. Runs never overlap (one `release` concurrency
-group, never cancelled).
+`refs/heads/main`). There is no tag-push trigger. Publishing runs never overlap and are never
+cancelled (one `release-publish` concurrency group); each dry run has its own group, so a
+rehearsal can neither delay nor replace a queued publication.
 
 1. **Validate the commit:** unless `dry_run`, it must be reachable from `origin/main` (a dry run
    may rehearse the head of an unmerged `release/vVERSION` branch); the tag is `v` + the

@@ -22,9 +22,11 @@ on:
 permissions:
   contents: read
 
-# One release at a time; never cancel a half-published release.
+# Publishing runs are serialized and never cancelled. GitHub keeps only one pending run per
+# group and cancels the older pending one, so dry runs get a group of their own: a rehearsal
+# can never queue behind, or replace, the release that merging a release pull request queued.
 concurrency:
-  group: release
+  group: ${{ inputs.dry_run && format('release-dry-run-{0}', github.run_id) || 'release-publish' }}
   cancel-in-progress: false
 
 jobs:

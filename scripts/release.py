@@ -574,6 +574,9 @@ _NOISE_RES = [
     ),
     re.compile(r"^(?:release|prepare(?: for)? release|bump version)\s*(?:to\s+)?v?\d+\.\d+\.\d+", re.I),
 ]
+# GitHub's squash-merge subject ends with "(#N)"; a curated entry cites its pull request the same way.
+_SQUASH_PR_RE = re.compile(r"\(#(\d+)\)\s*$")
+_CURATED_PR_RE = re.compile(r"\(#(\d+)\)")
 
 
 @dataclass(frozen=True)
@@ -647,7 +650,11 @@ def categorize(commit: Commit) -> tuple[str, str, set[str]]:
 def render_release_section(
     version: str, date: str, unreleased: Section | None, commits: list[Commit]
 ) -> list[str]:
-    """Curated Unreleased text first, then generated bullets, under merged headings."""
+    """Curated Unreleased text first, then generated bullets, under merged headings.
+
+    A curated entry that cites a pull request as ``(#N)`` replaces the bullet generated
+    from that pull request's squash commit, whose subject GitHub ends with ``(#N)``.
+    """
     preamble: list[str] = []
     groups: list[list] = []  # [heading, lines]
     if unreleased is not None:
@@ -658,9 +665,15 @@ def render_release_section(
         for line in lines
         if re.match(r"^\s*[-*+]\s+", line)
     }
+    curated_prs = {
+        number for _, lines in groups for line in lines for number in _CURATED_PR_RE.findall(line)
+    }
     seen = set(curated_texts)
     for commit in commits:
         if is_noise(commit):
+            continue
+        squashed = _SQUASH_PR_RE.search(commit.subject)
+        if squashed and squashed.group(1) in curated_prs:
             continue
         heading, bullet, keys = categorize(commit)
         if keys & seen:

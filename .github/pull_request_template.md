@@ -21,4 +21,4 @@ Full list: [Contribution checklist](https://github.com/RetroHazard/animatic/blob
 - [ ] No AOM files, databanks or reverse-engineering artifacts.
 - [ ] Tests assert behavior; none contact AniDB.
 - [ ] Schema changes are idempotent and keep existing databases working.
-- [ ] Affected documentation is updated, and user-visible changes are noted under Unreleased in `CHANGELOG.md`.
+- [ ] Affected documentation is updated, and user-visible changes are noted under Unreleased in `CHANGELOG.md`, citing this pull request as `(#N)` so the release notes do not list it twice.
