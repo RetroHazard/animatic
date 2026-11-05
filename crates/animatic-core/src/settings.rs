@@ -532,29 +532,186 @@ impl Default for Settings {
     }
 }
 
-impl Settings {
-    pub fn load(path: &Path) -> Result<Settings> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                let mut s: Settings = serde_json::from_str(&text)?;
-                s.fixup();
-                Ok(s)
+/// Outcome of [`Settings::load_with_recovery`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsLoad {
+    pub settings: Settings,
+    /// True when the primary file was missing or invalid and the settings come from the backup.
+    /// Recovered settings are forced offline and no file has been modified; callers should keep
+    /// the primary file untouched until the user explicitly saves.
+    pub recovered_from_backup: bool,
+}
+
+/// State of one settings file on disk. Descriptions never contain file contents.
+enum Slot {
+    Missing,
+    Valid(Box<Settings>),
+    Invalid(String),
+    Unreadable(String),
+}
+
+/// Location-only description of a JSON failure: serde messages can quote the offending value,
+/// which may be a credential, so only the failure class and position are reported.
+fn describe_json_error(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let kind = match e.classify() {
+        Category::Io => "read error",
+        Category::Syntax => "invalid JSON syntax",
+        Category::Data => "unexpected field type or value",
+        Category::Eof => "truncated JSON",
+    };
+    format!("{kind} at line {} column {}", e.line(), e.column())
+}
+
+/// Settings document root: only a JSON object is accepted. Derived struct deserializers also
+/// accept sequences (`[]` would silently become all defaults), which must never count as a
+/// valid settings file for loading or for deciding whether a primary may replace the backup.
+struct RootObject(Settings);
+
+impl<'de> Deserialize<'de> for RootObject {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RootObject;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a settings object")
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
-            Err(e) => Err(e.into()),
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> std::result::Result<RootObject, A::Error> {
+                Settings::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(RootObject)
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+fn parse_settings(bytes: &[u8]) -> std::result::Result<Settings, String> {
+    match serde_json::from_slice::<RootObject>(bytes) {
+        Ok(RootObject(mut s)) => {
+            s.fixup();
+            Ok(s)
+        }
+        Err(e) => Err(describe_json_error(&e)),
+    }
+}
+
+fn read_slot(path: &Path) -> Slot {
+    match std::fs::read(path) {
+        Ok(bytes) => match parse_settings(&bytes) {
+            Ok(s) => Slot::Valid(Box::new(s)),
+            Err(d) => Slot::Invalid(d),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Slot::Missing,
+        Err(e) => Slot::Unreadable(e.to_string()),
+    }
+}
+
+impl Settings {
+    /// Location of the backup written by [`Settings::save`] next to the primary file.
+    pub fn backup_path(path: &Path) -> std::path::PathBuf {
+        path.with_extension("json.bak")
+    }
+
+    /// Load the primary file; when it is missing or invalid, fall back to a valid backup.
+    ///
+    /// Nothing on disk is modified. A recovered result is forced offline so a possibly stale
+    /// configuration cannot start talking to AniDB before the user has reviewed it. Unreadable
+    /// files (permissions, directories in the way) are errors, never silent resets. With neither
+    /// file present the defaults are returned. Error messages name both paths but never include
+    /// file contents.
+    pub fn load_with_recovery(path: &Path) -> Result<SettingsLoad> {
+        let primary = match read_slot(path) {
+            Slot::Valid(settings) => {
+                return Ok(SettingsLoad {
+                    settings: *settings,
+                    recovered_from_backup: false,
+                });
+            }
+            Slot::Unreadable(e) => {
+                return Err(Error::Settings(format!(
+                    "cannot read settings file {}: {e}; the file was not modified",
+                    path.display()
+                )));
+            }
+            other => other,
+        };
+        let backup_path = Self::backup_path(path);
+        let backup = read_slot(&backup_path);
+        match (primary, backup) {
+            (_, Slot::Valid(mut settings)) => {
+                settings.anidb.offline = true;
+                Ok(SettingsLoad {
+                    settings: *settings,
+                    recovered_from_backup: true,
+                })
+            }
+            (Slot::Missing, Slot::Missing) => Ok(SettingsLoad {
+                settings: Settings::default(),
+                recovered_from_backup: false,
+            }),
+            (primary, backup) => {
+                let primary_text = match primary {
+                    Slot::Invalid(d) => format!("is not valid ({d})"),
+                    _ => "does not exist".to_string(),
+                };
+                let backup_text = match backup {
+                    Slot::Missing => "does not exist".to_string(),
+                    Slot::Invalid(d) => format!("is not valid ({d})"),
+                    Slot::Unreadable(e) => format!("cannot be read ({e})"),
+                    Slot::Valid(_) => "is valid".to_string(),
+                };
+                Err(Error::Settings(format!(
+                    "settings file {} {primary_text} and backup {} {backup_text}; \
+                     neither file was modified. Repair or remove them to start with default settings",
+                    path.display(),
+                    backup_path.display()
+                )))
+            }
         }
     }
 
+    /// Write the settings atomically (temp file + rename).
+    ///
+    /// An existing primary file that still parses is copied to the backup first; an invalid
+    /// primary never replaces the backup. If writing or renaming fails the original primary stays
+    /// in place.
     pub fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
+        let json = serde_json::to_string_pretty(self)?;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(self)?)?;
-        if path.exists() {
-            let _ = std::fs::copy(path, path.with_extension("json.bak"));
+        let written = std::fs::File::create(&tmp).and_then(|mut f| {
+            f.write_all(json.as_bytes())?;
+            f.sync_all()
+        });
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
         }
-        std::fs::rename(&tmp, path)?;
+        if let Ok(previous) = std::fs::read(path)
+            && parse_settings(&previous).is_ok()
+        {
+            let backup = Self::backup_path(path);
+            let backup_tmp = path.with_extension("json.bak.tmp");
+            let copied = std::fs::write(&backup_tmp, &previous)
+                .and_then(|()| std::fs::rename(&backup_tmp, &backup));
+            if copied.is_err() {
+                let _ = std::fs::remove_file(&backup_tmp);
+            }
+        }
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         Ok(())
     }
 
@@ -993,5 +1150,276 @@ x</renamingPattern>
             "b excludes subdirectories"
         );
         assert_eq!(fm.manager_for(Path::new("/other/y.mkv")).name, "Default");
+    }
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> TestDir {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "animatic-settings-recovery-{}-{}-{label}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TestDir(dir)
+        }
+
+        fn primary(&self) -> std::path::PathBuf {
+            self.0.join("settings.json")
+        }
+
+        fn backup(&self) -> std::path::PathBuf {
+            Settings::backup_path(&self.primary())
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const CUSTOM_PATTERN: &str = "set('x', F.Version)\n'custom ' + x";
+
+    fn custom_json(user: &str, offline: bool) -> String {
+        let mut s = Settings::default();
+        s.anidb.username = user.into();
+        s.anidb.offline = offline;
+        s.renaming_pattern = CUSTOM_PATTERN.into();
+        serde_json::to_string_pretty(&s).unwrap()
+    }
+
+    fn error_text(result: Result<SettingsLoad>) -> String {
+        result.expect_err("load must fail").to_string()
+    }
+
+    #[test]
+    fn valid_primary_loads_without_recovery() {
+        let dir = TestDir::new("valid");
+        std::fs::write(dir.primary(), custom_json("primary-user", false)).unwrap();
+        std::fs::write(dir.backup(), custom_json("backup-user", false)).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(!loaded.recovered_from_backup);
+        assert_eq!(loaded.settings.anidb.username, "primary-user");
+        assert!(!loaded.settings.anidb.offline);
+        assert_eq!(
+            loaded,
+            Settings::load_with_recovery(&dir.primary()).unwrap()
+        );
+    }
+
+    #[test]
+    fn corrupted_primary_recovers_offline_from_backup_without_touching_files() {
+        let dir = TestDir::new("corrupt");
+        let corrupt = "{ this is not json";
+        let backup = custom_json("backup-user", false);
+        std::fs::write(dir.primary(), corrupt).unwrap();
+        std::fs::write(dir.backup(), &backup).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(loaded.recovered_from_backup);
+        assert!(loaded.settings.anidb.offline, "recovery must force offline");
+        assert_eq!(loaded.settings.anidb.username, "backup-user");
+        assert_eq!(loaded.settings.renaming_pattern, CUSTOM_PATTERN);
+        assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), corrupt);
+        assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), backup);
+        assert_eq!(
+            loaded,
+            Settings::load_with_recovery(&dir.primary()).unwrap()
+        );
+    }
+
+    #[test]
+    fn truncated_primary_recovers_from_backup() {
+        let dir = TestDir::new("truncated");
+        let full = custom_json("primary-user", false);
+        let truncated = &full[..full.len() / 2];
+        std::fs::write(dir.primary(), truncated).unwrap();
+        std::fs::write(dir.backup(), custom_json("backup-user", false)).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(loaded.recovered_from_backup);
+        assert_eq!(loaded.settings.anidb.username, "backup-user");
+        assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), truncated);
+    }
+
+    #[test]
+    fn empty_primary_is_not_treated_as_valid() {
+        let dir = TestDir::new("empty");
+        std::fs::write(dir.primary(), "").unwrap();
+        std::fs::write(dir.backup(), custom_json("backup-user", false)).unwrap();
+        assert!(
+            Settings::load_with_recovery(&dir.primary())
+                .unwrap()
+                .recovered_from_backup
+        );
+    }
+
+    #[test]
+    fn missing_primary_recovers_from_valid_backup() {
+        let dir = TestDir::new("missing-primary");
+        std::fs::write(dir.backup(), custom_json("backup-user", false)).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(loaded.recovered_from_backup);
+        assert!(loaded.settings.anidb.offline);
+        assert_eq!(loaded.settings.anidb.username, "backup-user");
+        assert!(
+            !dir.primary().exists(),
+            "load must not create the primary file"
+        );
+    }
+
+    #[test]
+    fn missing_primary_and_backup_yield_defaults_without_creating_files() {
+        let dir = TestDir::new("missing-both");
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(!loaded.recovered_from_backup);
+        assert_eq!(loaded.settings, Settings::default());
+        assert!(!dir.primary().exists());
+        assert!(!dir.backup().exists());
+    }
+
+    #[test]
+    fn corrupted_primary_without_backup_is_an_error() {
+        let dir = TestDir::new("no-backup");
+        std::fs::write(dir.primary(), "{").unwrap();
+        let text = error_text(Settings::load_with_recovery(&dir.primary()));
+        assert!(text.contains(&dir.primary().display().to_string()));
+        assert!(text.contains(&dir.backup().display().to_string()));
+        assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), "{");
+    }
+
+    #[test]
+    fn missing_primary_with_invalid_backup_is_an_error() {
+        let dir = TestDir::new("missing-primary-bad-backup");
+        std::fs::write(dir.backup(), "[]").unwrap();
+        let text = error_text(Settings::load_with_recovery(&dir.primary()));
+        assert!(text.contains(&dir.backup().display().to_string()));
+        assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), "[]");
+    }
+
+    #[test]
+    fn both_files_bad_is_actionable_error_without_contents() {
+        let dir = TestDir::new("both-bad");
+        // Syntax error and field-type error; serde would quote the secret in the latter.
+        let primary = r#"{"anidb":{"password":"secret-primary-value"#;
+        let backup = r#"{"first_launch":"secret-backup-value"}"#;
+        std::fs::write(dir.primary(), primary).unwrap();
+        std::fs::write(dir.backup(), backup).unwrap();
+        let text = error_text(Settings::load_with_recovery(&dir.primary()));
+        assert!(text.contains(&dir.primary().display().to_string()));
+        assert!(text.contains(&dir.backup().display().to_string()));
+        assert!(!text.contains("secret-primary-value"));
+        assert!(!text.contains("secret-backup-value"));
+        assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), primary);
+        assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), backup);
+        // The failure is repeatable instead of resetting to defaults.
+        assert!(Settings::load_with_recovery(&dir.primary()).is_err());
+    }
+
+    #[test]
+    fn unreadable_primary_is_not_silently_reset_or_replaced_by_backup() {
+        let dir = TestDir::new("unreadable");
+        // A directory at the primary path cannot be read as a file.
+        std::fs::create_dir(dir.primary()).unwrap();
+        std::fs::write(dir.backup(), custom_json("backup-user", false)).unwrap();
+        let text = error_text(Settings::load_with_recovery(&dir.primary()));
+        assert!(text.contains(&dir.primary().display().to_string()));
+        assert!(dir.primary().is_dir());
+    }
+
+    #[test]
+    fn save_with_invalid_primary_keeps_good_backup() {
+        let dir = TestDir::new("save-invalid-primary");
+        let backup = custom_json("backup-user", false);
+        std::fs::write(dir.primary(), "{ truncated").unwrap();
+        std::fs::write(dir.backup(), &backup).unwrap();
+        let mut recovered = Settings::load_with_recovery(&dir.primary())
+            .unwrap()
+            .settings;
+        recovered.anidb.username = "edited-user".into();
+        recovered.save(&dir.primary()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.backup()).unwrap(),
+            backup,
+            "invalid primary must not replace the backup"
+        );
+        let reloaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert!(!reloaded.recovered_from_backup);
+        assert_eq!(reloaded.settings.anidb.username, "edited-user");
+        assert_eq!(reloaded.settings.renaming_pattern, CUSTOM_PATTERN);
+        assert!(!dir.primary().with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn save_with_valid_primary_updates_backup() {
+        let dir = TestDir::new("save-valid-primary");
+        let previous = custom_json("old-user", false);
+        std::fs::write(dir.primary(), &previous).unwrap();
+        std::fs::write(dir.backup(), custom_json("stale-user", false)).unwrap();
+        let mut s = Settings::load_with_recovery(&dir.primary())
+            .unwrap()
+            .settings;
+        s.anidb.username = "new-user".into();
+        s.save(&dir.primary()).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), previous);
+        assert_eq!(
+            Settings::load_with_recovery(&dir.primary())
+                .unwrap()
+                .settings
+                .anidb
+                .username,
+            "new-user"
+        );
+    }
+
+    #[test]
+    fn failed_save_preserves_original_primary_and_backup() {
+        let dir = TestDir::new("save-failure");
+        let primary = custom_json("primary-user", false);
+        let backup = custom_json("backup-user", false);
+        std::fs::write(dir.primary(), &primary).unwrap();
+        std::fs::write(dir.backup(), &backup).unwrap();
+        // A directory occupying the temp path makes the write step fail.
+        std::fs::create_dir(dir.primary().with_extension("json.tmp")).unwrap();
+        assert!(Settings::default().save(&dir.primary()).is_err());
+        assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), primary);
+        assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), backup);
+    }
+
+    #[test]
+    fn custom_rename_pattern_survives_recovery_and_save_round_trip() {
+        let dir = TestDir::new("custom-pattern");
+        std::fs::write(dir.primary(), "").unwrap();
+        std::fs::write(dir.backup(), custom_json("backup-user", false)).unwrap();
+        let recovered = Settings::load_with_recovery(&dir.primary())
+            .unwrap()
+            .settings;
+        assert_eq!(recovered.renaming_pattern, CUSTOM_PATTERN);
+        recovered.save(&dir.primary()).unwrap();
+        let reloaded = Settings::load_with_recovery(&dir.primary())
+            .unwrap()
+            .settings;
+        assert_eq!(reloaded.renaming_pattern, CUSTOM_PATTERN);
+        assert_ne!(reloaded.renaming_pattern, DEFAULT_RENAME_PATTERN);
+    }
+
+    #[test]
+    fn non_object_documents_are_invalid_for_load_and_backup_rotation() {
+        for document in ["[]", "[1,2]", "null", "42", "\"text\"", "true"] {
+            let dir = TestDir::new("non-object");
+            let backup = custom_json("backup-user", false);
+            std::fs::write(dir.primary(), document).unwrap();
+            std::fs::write(dir.backup(), &backup).unwrap();
+            let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+            assert!(loaded.recovered_from_backup, "{document}");
+            assert_eq!(loaded.settings.anidb.username, "backup-user", "{document}");
+            Settings::default().save(&dir.primary()).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(dir.backup()).unwrap(),
+                backup,
+                "{document} must not replace the backup"
+            );
+        }
     }
 }

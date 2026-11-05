@@ -7,6 +7,9 @@ use super::{Bindings, DataSource, Object, Value};
 use crate::db::Db;
 use crate::library::{Anime, Episode, FileRec, Group, MylistEntry, crc_status};
 
+/// `A.Name` of an anime whose title has not been fetched yet; a stand-in, never real metadata.
+pub const TITLE_PENDING: &str = "[Title not yet available]";
+
 /// `DataSource` over the application database.
 pub struct DbSource<'a> {
     pub db: &'a Db,
@@ -88,7 +91,7 @@ pub fn anime_object(db: &Db, a: &Anime) -> Object {
         .with(
             "Name",
             ws(if a.name.is_empty() {
-                "[Title not yet available]".to_string()
+                TITLE_PENDING.to_string()
             } else {
                 a.name.clone()
             }),

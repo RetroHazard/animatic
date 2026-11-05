@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use animatic_core::db::Db;
 use animatic_core::format;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
+use animatic_core::rename::plan::{self, PatternKind, Plan};
 use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
@@ -116,6 +117,52 @@ struct Activity {
     fraction: f32,
 }
 
+/// Decides whether the settings file may be rewritten without the user asking for it.
+///
+/// Settings recovered from a backup leave the unreadable original on disk untouched; the
+/// implicit save when the window closes must not replace it, only an explicit save may.
+struct SettingsGuard {
+    recovered: bool,
+    user_saved: bool,
+}
+
+impl SettingsGuard {
+    fn allows_exit_save(&self) -> bool {
+        !self.recovered || self.user_saved
+    }
+}
+
+/// Text of the startup warning shown after settings were recovered from the backup copy.
+fn recovery_notice(settings_path: &Path) -> String {
+    format!(
+        "The settings file could not be used, so Animatic loaded the backup copy ({}) and \
+         switched to offline mode.\n\nThe original file ({}) has not been changed. Animatic \
+         will not write settings when it closes unless you save them yourself in Options; \
+         saving replaces the original file.",
+        Settings::backup_path(settings_path).display(),
+        settings_path.display()
+    )
+}
+
+/// A planned rename of one file, shown for confirmation.
+struct RenamePreview {
+    id: i64,
+    old: PathBuf,
+    plan: Plan,
+}
+
+/// Diagnostics state of the renaming pattern editor in Options.
+#[derive(Default)]
+struct PatternEditor {
+    /// Pattern text the diagnostics below were computed for.
+    checked: Option<String>,
+    syntax_error: Option<String>,
+    /// Text replaced by "Use stable default", kept so the replacement can be undone.
+    replaced: Option<String>,
+    /// Outcome of "Validate on selected file" for the text in `checked`.
+    test: Option<Result<RenamePreview, String>>,
+}
+
 pub struct AnimaticApp {
     db: Db,
     db_path: PathBuf,
@@ -146,7 +193,11 @@ pub struct AnimaticApp {
     settings_open: bool,
     about_open: bool,
     selected_local: Option<i64>,
-    rename_preview: Option<(i64, PathBuf, PathBuf)>,
+    rename_preview: Option<RenamePreview>,
+    pattern_editor: PatternEditor,
+    settings_guard: SettingsGuard,
+    /// Startup warning about recovered settings, shown until dismissed.
+    settings_notice: Option<String>,
     import_source: String,
     imported_settings: Option<Box<Settings>>,
     import_pending: bool,
@@ -170,7 +221,15 @@ impl AnimaticApp {
         // The worker may hold the write lock for long stretches; small UI writes must fail
         // visibly instead of freezing the window for the default 30 seconds.
         db.conn().busy_timeout(UI_DB_BUSY_TIMEOUT)?;
-        let settings = Settings::load(&settings_path)?;
+        let loaded = Settings::load_with_recovery(&settings_path)?;
+        let settings_guard = SettingsGuard {
+            recovered: loaded.recovered_from_backup,
+            user_saved: false,
+        };
+        let settings_notice = settings_guard
+            .recovered
+            .then(|| recovery_notice(&settings_path));
+        let settings = loaded.settings;
         let worker = Worker::spawn(db_path.clone());
         let mut app = Self {
             db,
@@ -200,6 +259,9 @@ impl AnimaticApp {
             selected_aid: None,
             selected_local: None,
             rename_preview: None,
+            pattern_editor: PatternEditor::default(),
+            settings_guard,
+            settings_notice,
             settings_open: false,
             about_open: false,
             import_source: String::new(),
@@ -214,6 +276,12 @@ impl AnimaticApp {
             logs: Vec::new(),
         };
         app.request_library_refresh();
+        if app.settings_notice.is_some() {
+            app.error(
+                "Settings were recovered from a backup copy (offline mode); the original settings \
+                 file was left unchanged",
+            );
+        }
         if full_update {
             app.worker.submit(Job::QueueFullUpdate);
         }
@@ -585,6 +653,7 @@ impl AnimaticApp {
             imported.anidb.offline = true;
             match imported.save(&self.settings_path) {
                 Ok(()) => {
+                    self.settings_guard.user_saved = true;
                     self.settings = imported;
                     self.worker.cancel.store(true, Ordering::Relaxed);
                     self.import_pending = false;
@@ -619,74 +688,238 @@ impl AnimaticApp {
         self.worker.submit(Job::ImportLegacy { source, temp });
     }
 
+    /// Plan the rename of local file `id` with `pattern` without touching the file system.
+    fn preview_rename(&self, id: i64, pattern: &str) -> Result<RenamePreview, String> {
+        let local = self
+            .projection
+            .local
+            .iter()
+            .find(|f| f.id == id)
+            .ok_or("The selected file is no longer in the list")?;
+        let fid = local
+            .fid
+            .ok_or("The selected file is not identified by AniDB")?;
+        let old = PathBuf::from(&local.path);
+        let manager = self.settings.file_managers.manager_for(&old);
+        let plan = match animatic_core::rename::objects::bindings_for_file(
+            &self.db,
+            fid,
+            &local.path,
+            &manager.base_path,
+        ) {
+            Ok(bindings) => plan::plan(
+                pattern,
+                &bindings,
+                &animatic_core::rename::objects::DbSource { db: &self.db },
+                &old,
+            ),
+            Err(e) => Plan {
+                errors: vec![e],
+                ..Plan::default()
+            },
+        };
+        Ok(RenamePreview { id, old, plan })
+    }
+
     fn prepare_rename(&mut self) {
         let Some(id) = self.selected_local else {
             self.error("Select a hashed file first");
             return;
         };
-        let Some(local) = self.projection.local.iter().find(|f| f.id == id).cloned() else {
-            return;
-        };
-        let Some(fid) = local.fid else {
-            self.error("The selected file is not identified by AniDB");
-            return;
-        };
-        let path = PathBuf::from(&local.path);
-        let manager = self.settings.file_managers.manager_for(&path);
-        let result = (|| -> Result<PathBuf, String> {
-            let bindings = animatic_core::rename::objects::bindings_for_file(
-                &self.db,
-                fid,
-                &local.path,
-                &manager.base_path,
-            )?;
-            let pattern = animatic_core::rename::Pattern::compile(&self.settings.renaming_pattern)
-                .map_err(|e| e.to_string())?;
-            let evaluation = animatic_core::rename::evaluate(
-                &pattern,
-                &bindings,
-                &animatic_core::rename::objects::DbSource { db: &self.db },
-            )
-            .map_err(|e| e.to_string())?;
-            animatic_core::rename::target_path(&path, &evaluation.result, &manager.base_path)?
-                .ok_or_else(|| "The pattern produces the current path; no rename is needed".into())
-        })();
-        match result {
-            Ok(target) => self.rename_preview = Some((id, path, target)),
+        match self.preview_rename(id, &self.settings.renaming_pattern) {
+            Ok(preview) => {
+                if let Some(problem) = preview.plan.errors.first() {
+                    let text = format!("Rename not possible: {problem}");
+                    self.error(text);
+                } else if !preview.plan.warnings.is_empty() {
+                    self.error("Rename blocked: the renaming pattern reported warnings");
+                } else if preview.plan.already_named() {
+                    self.log("The file already has the name the pattern produces");
+                }
+                self.rename_preview = Some(preview);
+            }
             Err(e) => self.error(e),
         }
     }
 
     fn rename_window(&mut self, ctx: &egui::Context) {
-        let Some((id, old, new)) = self.rename_preview.clone() else {
+        let Some(preview) = self.rename_preview.as_ref() else {
             return;
         };
+        let (id, old, plan) = (preview.id, preview.old.clone(), preview.plan.clone());
         let mut open = true;
         let mut apply = false;
+        let mut edit_pattern = false;
         egui::Window::new("Confirm rename")
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Current path");
                 ui.monospace(old.display().to_string());
-                ui.add_space(8.0);
-                ui.label("New path");
-                ui.monospace(new.display().to_string());
-                ui.add_space(12.0);
-                if ui.button("Rename file").clicked() {
-                    apply = true;
+                if let Some(new) = &plan.target {
+                    ui.add_space(8.0);
+                    ui.label(if plan.can_apply() {
+                        "New path"
+                    } else {
+                        "Path the pattern would produce (rename blocked)"
+                    });
+                    ui.monospace(new.display().to_string());
+                } else if plan.already_named() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "The file already has the name the pattern produces; nothing to rename.",
+                    );
                 }
+                show_plan(ui, &plan);
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(plan.can_apply(), egui::Button::new("Rename file"))
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                    if (!plan.errors.is_empty() || !plan.warnings.is_empty())
+                        && ui.button("Edit pattern in Options").clicked()
+                    {
+                        edit_pattern = true;
+                    }
+                });
             });
         if apply {
-            match animatic_core::file_manager::move_file(&self.db, id, &old, &new) {
-                Ok(()) => {
-                    self.log(format!("Renamed {} to {}", old.display(), new.display()));
-                    self.request_library_refresh();
+            if let Some(new) = plan.target.as_ref().filter(|_| plan.can_apply()) {
+                match animatic_core::file_manager::move_file(&self.db, id, &old, new) {
+                    Ok(()) => {
+                        self.log(format!("Renamed {} to {}", old.display(), new.display()));
+                        self.request_library_refresh();
+                    }
+                    Err(e) => self.error(format!("Rename failed: {e}")),
                 }
-                Err(e) => self.error(format!("Rename failed: {e}")),
             }
+            self.rename_preview = None;
+        } else if edit_pattern {
+            self.settings_open = true;
             self.rename_preview = None;
         } else if !open {
             self.rename_preview = None;
+        }
+    }
+
+    /// Options section of the renaming pattern: diagnostics, the stable default and a dry run.
+    fn pattern_editor_ui(&mut self, ui: &mut egui::Ui) {
+        let kind = plan::classify(&self.settings.renaming_pattern);
+        match kind {
+            PatternKind::StableDefault => {
+                ui.label(
+                    "Stable built-in default: episode numbers always have at least two digits \
+                     (01, 02, … 100), whatever the cached episode counts.",
+                );
+            }
+            PatternKind::Custom => {
+                ui.label(
+                    "Custom pattern: kept exactly as written. \"Use stable default\" would \
+                     replace it with the built-in pattern, whose episode numbers have a fixed \
+                     two-digit minimum.",
+                );
+            }
+            PatternKind::Empty => {
+                ui.colored_label(
+                    Color32::LIGHT_RED,
+                    "The pattern is empty, so no file can be renamed.",
+                );
+            }
+        }
+        let mut use_stable = false;
+        let mut restore = false;
+        let mut validate = false;
+        ui.horizontal_wrapped(|ui| {
+            use_stable = ui
+                .add_enabled(
+                    kind != PatternKind::StableDefault,
+                    egui::Button::new("Use stable default"),
+                )
+                .on_hover_text(
+                    "Replace the text below with the built-in default. Its episode numbers use a \
+                     fixed two-digit minimum instead of the width of the cached episode total. \
+                     Nothing is stored until you press Save options.",
+                )
+                .clicked();
+            if self.pattern_editor.replaced.is_some() {
+                restore = ui.button("Restore previous text").clicked();
+            }
+            validate = ui
+                .button("Validate on selected file")
+                .on_hover_text("Run the pattern on the file selected on the Hashed files page")
+                .clicked();
+        });
+        if use_stable {
+            let old = std::mem::replace(
+                &mut self.settings.renaming_pattern,
+                animatic_core::settings::DEFAULT_RENAME_PATTERN.to_string(),
+            );
+            self.pattern_editor.replaced = Some(old);
+        } else if restore && let Some(old) = self.pattern_editor.replaced.take() {
+            self.settings.renaming_pattern = old;
+        }
+        ui.add(
+            egui::TextEdit::multiline(&mut self.settings.renaming_pattern)
+                .font(egui::TextStyle::Monospace)
+                .desired_rows(12),
+        );
+        if self.pattern_editor.checked.as_deref() != Some(self.settings.renaming_pattern.as_str()) {
+            self.pattern_editor.syntax_error =
+                plan::check_pattern(&self.settings.renaming_pattern).err();
+            self.pattern_editor.checked = Some(self.settings.renaming_pattern.clone());
+            self.pattern_editor.test = None;
+        }
+        if validate {
+            let test = match self.selected_local {
+                None => Err(
+                    "Select a file identified by AniDB on the Hashed files page, then \
+                             validate again."
+                        .to_string(),
+                ),
+                Some(id) => self.preview_rename(id, &self.settings.renaming_pattern),
+            };
+            self.pattern_editor.test = Some(test);
+        }
+        if let Some(error) = &self.pattern_editor.syntax_error {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+        match &self.pattern_editor.test {
+            Some(Err(e)) => {
+                ui.colored_label(Color32::LIGHT_RED, e);
+            }
+            Some(Ok(preview)) => {
+                if !preview.plan.result.is_empty() {
+                    ui.label("Result for the selected file:");
+                    ui.monospace(&preview.plan.result);
+                }
+                show_plan(ui, &preview.plan);
+                if preview.plan.can_apply() || preview.plan.already_named() {
+                    ui.colored_label(Color32::LIGHT_GREEN, "The pattern is valid for this file.");
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn settings_notice_window(&mut self, ctx: &egui::Context) {
+        let Some(text) = self.settings_notice.as_ref() else {
+            return;
+        };
+        let mut dismissed = false;
+        egui::Window::new("Settings recovered")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.colored_label(Color32::YELLOW, text);
+                ui.add_space(8.0);
+                if ui.button("OK").clicked() {
+                    dismissed = true;
+                }
+            });
+        if dismissed {
+            self.settings_notice = None;
         }
     }
 
@@ -789,8 +1022,24 @@ impl AnimaticApp {
 
     fn save_settings(&mut self) {
         match self.settings.save(&self.settings_path) {
-            Ok(()) => self.log("Settings saved"),
+            Ok(()) => {
+                self.settings_guard.user_saved = true;
+                self.settings_notice = None;
+                self.log("Settings saved");
+            }
             Err(e) => self.error(format!("Could not save settings: {e}")),
+        }
+    }
+
+    /// Store settings after a change the user did not ask to save (for example dismissing the
+    /// first-run card). Recovered settings keep the unreadable original untouched, so the change
+    /// then stays in memory until Options "Save" or an applied import; no save state changes.
+    fn persist_settings_incidentally(&mut self) {
+        if !self.settings_guard.allows_exit_save() {
+            return;
+        }
+        if let Err(e) = self.settings.save(&self.settings_path) {
+            self.error(format!("Could not save settings: {e}"));
         }
     }
 
@@ -1022,7 +1271,10 @@ impl AnimaticApp {
                         }
                     });
                 });
-                if ui.button("Dismiss first-run card").clicked() { self.settings.first_launch = false; self.save_settings(); }
+                if ui.button("Dismiss first-run card").clicked() {
+                    self.settings.first_launch = false;
+                    self.persist_settings_incidentally();
+                }
             });
         }
     }
@@ -1980,11 +2232,7 @@ impl AnimaticApp {
                     field(ui, "AVDump API key", &mut self.settings.avdump.key);
                     ui.separator();
                     ui.heading("Renaming pattern");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.settings.renaming_pattern)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_rows(12),
-                    );
+                    self.pattern_editor_ui(ui);
                     ui.separator();
                     ui.heading("Mylist states");
                     ui.label(MYLIST_STATES.join(" · "));
@@ -2099,6 +2347,7 @@ impl eframe::App for AnimaticApp {
         });
         self.legacy_settings_review_window(&ctx);
         self.settings_window(&ctx);
+        self.settings_notice_window(&ctx);
         self.rename_window(&ctx);
         if self.about_open {
             let mut open = true;
@@ -2127,7 +2376,13 @@ impl eframe::App for AnimaticApp {
     }
 
     fn on_exit(&mut self) {
-        let _ = self.settings.save(&self.settings_path);
+        if self.settings_guard.allows_exit_save() {
+            let _ = self.settings.save(&self.settings_path);
+        } else {
+            log::warn!(
+                "Settings were recovered from a backup and not saved by the user; the original settings file was left unchanged on exit"
+            );
+        }
         if !self.deferred.is_empty() {
             let _ = self.db.conn().busy_timeout(EXIT_FLUSH_TIMEOUT);
             self.flush_deferred();
@@ -2305,6 +2560,23 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     });
 }
 
+/// Warnings and errors of a rename plan; warnings block applying it just like errors do.
+fn show_plan(ui: &mut egui::Ui, plan: &Plan) {
+    for error in &plan.errors {
+        ui.colored_label(Color32::LIGHT_RED, error);
+    }
+    if !plan.warnings.is_empty() {
+        ui.colored_label(
+            Color32::YELLOW,
+            "The pattern reported warnings, so its result cannot be trusted. Renaming stays \
+             disabled until they are fixed:",
+        );
+        for warning in &plan.warnings {
+            ui.colored_label(Color32::YELLOW, format!("• {warning}"));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2404,5 +2676,16 @@ mod tests {
             vec![1]
         }));
         assert_eq!((builds, cache.rows), (2, vec![1]));
+    }
+
+    #[test]
+    fn recovered_settings_are_only_rewritten_after_an_explicit_save() {
+        let guard = |recovered, user_saved| SettingsGuard {
+            recovered,
+            user_saved,
+        };
+        assert!(guard(false, false).allows_exit_save());
+        assert!(!guard(true, false).allows_exit_save());
+        assert!(guard(true, true).allows_exit_save());
     }
 }
