@@ -1,13 +1,18 @@
 name: CI
 
-# Pull requests and pushes to main are the only automatic triggers; a push to any
-# other branch (for example a long-lived dev branch) never starts this workflow,
-# and nothing here publishes anything. Release workflows call it explicitly.
+# Pull requests that target main and pushes to main are the only automatic triggers; a
+# push to any other branch (for example a long-lived dev branch) never starts this
+# workflow, and a pull request into a stacked branch never starts it either. Nothing here
+# publishes anything. Release workflows call it explicitly.
 on:
   push:
     branches: [main]
+  # `edited` is only listened to so that retargeting a pull request onto main (the
+  # stacked-branch workflow) gets checked. Title and description edits carry no
+  # `changes.base` and skip every job (see the jobs below), so they cost no runner time.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -28,15 +33,24 @@ permissions:
 # Only superseded pull request runs are cancelled. Every other run (main pushes,
 # merge groups, manual and release-called runs) gets a unique group and always finishes.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  # A pull request run that is not checked (metadata-only edit, or a base other than main)
+  # gets its own group so it can never cancel a full run in flight.
+  group: ci-${{ github.event_name == 'pull_request' && github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '') && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # Decide which expensive checks the change needs. Anything uncertain, manual,
   # called by a release workflow, or queued for merge runs everything.
+  # The run predicate is true for every event except a pull request that is not into main
+  # or an `edited` event that did not change the base branch. Only plan and required
+  # evaluate it: quality, notices and rust need plan (and quality) with the implicit
+  # success() condition, so they are skipped with it. The base check is redundant for
+  # direct runs (the trigger filters branches) and defends reusable-workflow callers.
   plan:
     name: Plan checks
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '')) }}
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     outputs:
       rust: ${{ steps.plan.outputs.rust }}
       licenses: ${{ steps.plan.outputs.licenses }}
@@ -79,6 +93,7 @@ jobs:
     name: Quality
     needs: plan
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -105,7 +120,10 @@ jobs:
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint/$archive" | sha256sum --check --strict -
           tar -xzf "$RUNNER_TEMP/actionlint/$archive" -C "$RUNNER_TEMP/actionlint" actionlint
       - name: Validate workflows
-        run: '"$RUNNER_TEMP/actionlint/actionlint" -color'
+        run: |
+          # actionlint silently skips shell checks when shellcheck is absent, so require it.
+          shellcheck --version
+          "$RUNNER_TEMP/actionlint/actionlint" -shellcheck "$(command -v shellcheck)" -color
       - name: Install Rust formatter
         if: needs.plan.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -116,11 +134,13 @@ jobs:
         run: cargo fmt --all -- --check
 
   # Dependency license policy and the generated notices bundled into releases.
+  # Starts only after quality passed, so a failed quality run spends no further runners.
   notices:
     name: Dependency license notices
-    needs: plan
+    needs: [plan, quality]
     if: needs.plan.outputs.licenses == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     env:
       CARGO_ABOUT_VERSION: '0.9.3'
     steps:
@@ -173,11 +193,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Independent of notices so one failure never hides the other's diagnostics.
+  # Independent of notices so one failure never hides the other's diagnostics; both wait
+  # for quality but not for each other.
   rust:
     name: Rust (${{ matrix.platform }})
-    needs: plan
+    needs: [plan, quality]
     if: needs.plan.outputs.rust == 'true'
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -233,6 +255,7 @@ jobs:
     name: Package (${{ matrix.platform }})
     needs: [rust, notices]
     if: inputs.package
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -271,13 +294,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # The single stable status to require on main. It always runs and fails closed:
-  # a job may only be skipped when the plan did not select it.
+  # The single stable status to require on main. It fails closed: a job may only be
+  # skipped when the plan did not select it, and a failed or cancelled plan or quality
+  # job fails it. For an unchecked pull request run (metadata-only edit) the job is
+  # skipped under a different name, so it can never report "Required checks" as passing
+  # or skipped and never masks a failure already reported for the same commit.
   required:
-    name: Required checks
-    if: ${{ always() }}
+    name: ${{ (github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != ''))) && 'Required checks' || 'PR metadata (no code checks)' }}
+    if: ${{ always() && (github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base.ref.from != ''))) }}
     needs: [plan, quality, notices, rust, package]
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

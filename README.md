@@ -101,8 +101,8 @@ cargo build --release -p animatic
 cargo doc --workspace --no-deps
 ```
 
-See [development](docs/development.md) for the verification matrix, CI (pull requests and
-`main`, one `Required checks` result; not enforced server-side while the repository is
+See [development](docs/development.md) for the verification matrix, CI (pull requests
+targeting `main` and `main` pushes, one `Required checks` result; not enforced server-side while the repository is
 private) and contribution workflow, and [releases](docs/releases.md) for the maintainer
 release procedure.
 [`AGENTS.md`](AGENTS.md) is the coding-agent handoff.

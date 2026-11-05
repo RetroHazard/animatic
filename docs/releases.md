@@ -253,7 +253,7 @@ personal access token, signing key or other custom secret. The default token per
 
 ### `ci.yml` (CI)
 
-Runs on pushes to `main`, pull requests, merge groups, manual dispatch and `workflow_call`.
+Runs on pushes to `main`, pull requests targeting `main`, merge groups, manual dispatch and `workflow_call`.
 Ordinary runs only check the code and build raw executables; `ci.yml` never creates a GitHub
 Release, tag or push. The release workflows reuse it through
 `workflow_call` with `ref` (string, the exact commit to check out) and `package` (boolean,
@@ -263,11 +263,16 @@ archives with `scripts/release.py package` and uploads them as `release-windows-
 `release-linux-x86_64`; ordinary runs upload the raw executables (`animatic-windows-x86_64`,
 `animatic-linux-x86_64`, 14 days), which are build outputs, not releases. The `notices` job
 generates `THIRD-PARTY-NOTICES.html` (artifact `dependency-notices`) after installing the pinned
-`cargo-about` with `--features cli`, and doubles as the license-policy gate. The stable aggregate
-job **`Required checks`** is the check to require on pull requests.
+`cargo-about` with `--features cli`, and doubles as the license-policy gate. The `quality` job
+must pass before the Rust and license jobs start, and those then run in parallel. The stable aggregate
+job **`Required checks`** is the check to require on pull requests; it fails closed. Pull
+requests whose base is not `main` (stacked children) start no automatic CI until retargeted to
+`main`. Metadata-only (title/body) edits start the workflow but skip all code checks under a
+separately named job, never emitting `Required checks`.
 
 The job-by-job contract, the planner and gate rules, the local reproduction commands (including
-the `cargo about` install) and the history of the `cargo-about` "no such command" failure live
+the `cargo about` install and the required `actionlint` plus `shellcheck` pair) and the history
+of the `cargo-about` "no such command" and ShellCheck SC2129 failures live
 in [Development → Continuous integration](development.md#continuous-integration) and are not
 repeated here.
 

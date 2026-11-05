@@ -15,7 +15,7 @@ Repository-specific engineering rules for coding agents live in
 | Workspace members | `animatic-core`, `animatic-anidb`, `animatic` | [`Cargo.toml`](../Cargo.toml) |
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
-| CI | Pull requests and `main` only: a planner selects the Rust and license jobs, an always-on quality job covers Python tests, docs and workflow validation, and a stable `Required checks` job gates the result; reusable by the release workflows. No server-side merge requirement is configured while the repository is private (see [Continuous integration](#continuous-integration)) | [`ci.yml`](../.github/workflows/ci.yml) |
+| CI | Pull requests **targeting `main`** and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. No server-side merge requirement is configured while the repository is private (see [Continuous integration](#continuous-integration)) | [`ci.yml`](../.github/workflows/ci.yml) |
 | Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
@@ -334,35 +334,57 @@ Reported by the implementing session; historical evidence, not a substitute for 
 ## Continuous integration
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) is the one CI workflow. It checks
-**pull requests and `main` only**. Ordinary pull request, `main` and manual runs only check
+**pull requests targeting `main` and `main` pushes**; any other branch is checked only by an
+explicit manual run. Ordinary pull request, `main` and manual runs only check
 the code and build raw executables (`cargo build --release` is still a compile); a release
 workflow calling it with `package: true` additionally has it package archives. `ci.yml` itself
 never creates a GitHub Release, tag or push, so it cannot cut a release from a pull request or a development branch. A plain push
-to a development branch starts nothing; open a pull request (a draft is enough) or run the
-workflow manually to get CI on it. How releases are made is in [Releases](releases.md).
+to a development branch starts nothing, and neither does a pull request whose base is another
+development branch (for example a stacked child pull request): it gets automatic CI only after it is
+retargeted to `main`. To check a branch earlier, run the workflow manually
+(**Actions → CI → Run workflow**), which always runs the full checks on any branch. How releases
+are made is in [Releases](releases.md).
 
-- **Triggers:** `push` to `main`; every `pull_request`; `merge_group` (only matters if a merge
-  queue is enabled); manual `workflow_dispatch`, which always runs the full checks; and
-  `workflow_call` with inputs `ref` (string, default empty) and `package` (boolean, default
-  `false`), used by the release workflows to check an exact commit. There is no workflow-level
-  path filter: the workflow always starts and its final job reports, so the check can be required
-  without a PR ever waiting for a check that never runs.
-- **Concurrency:** a newer run for the same pull request cancels the older one. Every other run
-  (`main`, merge group, manual, release-called) has its own group and always finishes.
+- **Triggers:** `push` to `main`; `pull_request` with base branch `main` only and the types
+  `opened`, `synchronize`, `reopened`, `ready_for_review` and `edited`; `merge_group` (only
+  matters if a merge queue is enabled); manual `workflow_dispatch`, which always runs the full
+  checks on the chosen branch; and `workflow_call` with inputs `ref` (string, default empty) and
+  `package` (boolean, default `false`), used by the release workflows to check an exact commit.
+  `edited` exists so that retargeting a pull request to `main` (a base change) starts CI for
+  a stacked child pull request. GitHub cannot filter the `edited` subtype at the trigger, so
+  an `edited` event that does not change the base (a title or body edit) **does start the
+  workflow**, but its code-check jobs are intentionally skipped by job conditions. Such a run
+  only reports a separately named job (*PR metadata (no code checks)*; see the workflow for the exact name), which is itself
+  skipped. It **never** emits a `Required checks` result, passing or skipped: GitHub treats a
+  skipped job as success, and a skipped `Required checks` on the same commit could mask an
+  earlier failed one. Only real code-check runs use the exact `Required checks` name, so a
+  failed `Required checks` context on a commit is left untouched by a later metadata edit. There is no
+  workflow-level path filter, so a pull request into `main` never waits for a check that
+  never runs. Branches created before the trigger guards were added keep their older workflow
+  files until the maintainer backports the guards through the stack, so their behavior can differ
+  until then.
+- **Concurrency:** a newer run for the same pull request cancels the older code-check run. A
+  metadata-only run uses an isolated concurrency group, so it never cancels (and is never
+  cancelled by) a real run. Every other run (`main`, merge group, manual, release-called) has
+  its own group and always finishes.
 - **Jobs** (the aggregate check is **`Required checks`**; the job ID is shown first and the
   name GitHub displays after it where it differs):
 
   | Job | Runs | What it does |
   |---|---|---|
-  | `plan` (*Plan checks*) | always | Runs `scripts/ci.py plan` on the Git diff, outputs whether the Rust jobs and the license-policy job are needed, and writes the selection to the run summary |
-  | `quality` (*Quality*) | **always**, including docs-only changes | Python 3.12: all `scripts/test_*.py` behavior tests, `release.py validate`, `scripts/ci.py docs` (Markdown links, anchors, fences and tables), pinned `actionlint` over the workflows, and `cargo fmt --check` when Rust is selected |
-  | `notices` (*Dependency license notices*) | when the plan selects licenses | Installs the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices` |
-  | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`; locked Clippy with warnings denied, tests, rustdoc with warnings denied, the release build and a `--help` smoke run; uploads the raw executable as `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
+  | `plan` (*Plan checks*) | every code-check event (not metadata-only edits) | Runs `scripts/ci.py plan` on the Git diff, outputs whether the Rust jobs and the license-policy job are needed, and writes the selection to the run summary |
+  | `quality` (*Quality*) | every code-check event, including docs-only changes; runs after `plan` | Python 3.12: all `scripts/test_*.py` behavior tests, `release.py validate`, `scripts/ci.py docs` (Markdown links, anchors, fences and tables), pinned `actionlint` over the workflows with its `shellcheck` integration active, and `cargo fmt --check` when Rust is selected |
+  | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Installs the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices` |
+  | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust and `quality` succeeded | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`; locked Clippy with warnings denied, tests, rustdoc with warnings denied, the release build and a `--help` smoke run; uploads the raw executable as `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
   | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust` and `notices`; wraps their executables and notices with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
-  | `required` (**Required checks**) | always | Fails closed unless every job the plan selected succeeded (see below) |
+  | `required` (**Required checks**) | every code-check event, even when upstream jobs failed or were skipped; never on a metadata-only edit, which uses a differently named skipped job | Fails closed unless every job the plan selected succeeded (see below) |
 
-  `notices` and `rust` run in parallel and do not depend on each other, so one failure does not
-  hide the other's diagnostics. Only `package` waits for both.
+  **Quality first.** The expensive jobs need both `plan` and `quality`, so a failing quality
+  check (tests, docs, workflow validation) stops the Windows and Linux Rust runners and the
+  license job before they consume minutes; `required` still reports the failure. After `quality`
+  passes, `notices` and `rust` run in parallel and do not depend on each other, so one failure
+  does not hide the other's diagnostics. Only `package` waits for both. The pull request is
+  not green, and no job claims it is, until the selected jobs have actually run and passed.
 - **Planner (`scripts/ci.py plan`):** reads `git diff --no-renames --name-only` between the pull
   request base and the merge commit (for `main`, the pushed range) and prints
   `rust=true|false` and `licenses=false|true`. Documentation-only changes (Markdown and
@@ -378,7 +400,9 @@ workflow manually to get CI on it. How releases are made is in [Releases](releas
   `notices` and `package` must succeed when selected and must be skipped when not selected. A
   failed, cancelled or unexpectedly skipped job, a missing plan or malformed data all fail
   `Required checks` with a reason; a skipped job is acceptable **only** when the plan did not
-  select it.
+  select it. Because the expensive jobs wait for `quality`, a quality failure leaves selected
+  jobs skipped, which the gate reports as a failure rather than a pass. Draft pull requests and
+  labels are not special inputs: whatever a draft skips that the plan selected still fails closed.
 - **Tests:** `scripts/test_ci.py` covers behavior only (path selection, Markdown validation,
   the gate's decisions); it does not assert on workflow text.
 - **Pinned inputs and caching:** every third-party action is pinned to a full commit SHA.
@@ -433,10 +457,15 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 cargo build --locked --release -p animatic
 ```
 
-`plan` only reports what CI would select. `actionlint` and `gate` need CI's inputs and are not
-reproduced by hand. A green run means those commands passed on that runner for that commit; it
-says nothing about runtime behavior beyond the `--help` smoke run. A CI artifact is a build
-product, not a release.
+`plan` only reports what CI would select. `gate` needs CI's inputs and is not reproduced by
+hand. Workflow validation needs **both** `actionlint` and a real `shellcheck` on your `PATH`:
+`actionlint` runs `shellcheck` over every `run:` block when it finds the executable, and without
+it silently skips that layer. Install `actionlint` at the version pinned in `ci.yml` and a current `shellcheck`, then run
+`actionlint` from the repository root (it finds `.github/workflows/*.yml`) and confirm
+`shellcheck --version` works first. Do not disable `shellcheck` or suppress a warning to make the
+check pass; fix the script. A green run means those commands passed on that runner for that
+commit; it says nothing about runtime behavior beyond the `--help` smoke run. A CI artifact is a
+build product, not a release.
 
 ### Known failure: `cargo about` "no such command"
 
@@ -454,6 +483,21 @@ rerunning the old failure and not on GitHub Actions or Linux: `cargo install --l
 --locked --fail` for the then-current workspace produced `THIRD-PARTY-NOTICES.html`, exited 0 and
 wrote nothing to standard error. Treat it as a dated observation; the workflow's own run remains the
 authoritative gate.
+
+### Known failure: ShellCheck SC2129 in `release.yml`
+
+The `quality` job of run `42011821820` (job `127192562227`) failed in the `actionlint` step with
+ShellCheck **SC2129** ("consider using `{ cmd1; cmd2; } >> file` instead of individual
+redirects") on the `release.yml` `run:` block that appended several outputs to
+`$GITHUB_OUTPUT` with separate redirects. The same run passed the 135 Python tests on Ubuntu,
+`release.py validate` and the docs check (15 files, 508 links); only workflow validation failed.
+The finding was real: the earlier local Windows `actionlint` had no `shellcheck` executable
+available, so it skipped that layer and missed it, while CI's runner had one. The fix groups the
+output lines into one `{ ...; } >> "$GITHUB_OUTPUT"` redirect, preserving the data and the
+conditional prerelease output; no rule was disabled and nothing was suppressed. Local workflow
+validation is therefore **incomplete without both tools** (see
+[Reproducing CI locally](#reproducing-ci-locally)). The fix's own result is only established by
+a later CI run on the fixed commit.
 
 ### Pull request gate and branch protection
 
@@ -491,6 +535,9 @@ run CI on that branch manually (see [Releases](releases.md#maintainer-procedure)
 manual run reports a check named `Required checks` on the branch commit, which satisfies the
 requirement. The reusable run inside Prepare release is reported under a different, prefixed
 name and does not.
+
+Stacked child pull requests (base other than `main`) start no automatic CI. They get it when
+retargeted to `main`; a manual run on the branch gives earlier feedback.
 
 Also available to the maintainer, and equally unconfigured here: a `release` environment and a
 `v*` tag ruleset ([Releases](releases.md#repository-settings-the-maintainer-must-provide)).

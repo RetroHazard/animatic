@@ -43,10 +43,18 @@ added under conventional headings.
 
 ### Changed
 
-- CI now runs for pull requests and `main` only and never creates a GitHub Release, tag or
-  push itself (ordinary runs check and build raw executables; only a release workflow calling
-  it packages archives). A planner skips the Rust and license jobs for documentation-only changes, an always-on
-  quality job covers the Python tests, Markdown links, anchors and tables, and workflow
-  validation, and a single stable aggregate check, `Required checks`, reports the result. The
+- CI now runs for pull requests targeting `main`, `main` pushes and manual runs, and never creates
+  a GitHub Release, tag or push itself (ordinary runs check and build raw executables; only a
+  release workflow calling it packages archives). Stacked child pull requests whose base is
+  another branch start no automatic CI until they are retargeted to `main`. Title and body
+  edits start the workflow but skip every code check and report under a separate metadata job
+  name, never as `Required checks`, so they cannot mask an earlier failure; any branch can be
+  checked with a manual full run. A planner skips the Rust
+  and license jobs for documentation-only changes. A quality job covers the Python tests,
+  Markdown links, anchors and tables, and workflow validation (`actionlint` with `shellcheck`),
+  and must pass before the expensive Rust and license jobs start; those then run in parallel.
+  A single stable aggregate check, `Required checks`, fails closed and reports the result. The
   `cargo-about` install now uses `--features cli` (without it the install produced no command).
+  A ShellCheck SC2129 finding in `release.yml`, missed locally because no `shellcheck` was
+  installed next to `actionlint`, is fixed by grouping the `$GITHUB_OUTPUT` redirects.
   Server-side enforcement of the check is not configured while the repository is private.
