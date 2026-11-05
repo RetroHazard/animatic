@@ -385,7 +385,8 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 ## Build and release automation
 
 Release automation is outside the runtime: it never changes application code. `ci.yml`
-(reusable through `workflow_call`) builds, lints and tests the workspace with `--locked` on
+(pull requests targeting `main`, `main` pushes and manual runs; reusable through `workflow_call`) runs a quality job first, plans which checks a change needs,
+then builds, lints and tests the workspace with `--locked` on
 `ubuntu-22.04` and `windows-latest`. `scripts/release.py` (Python 3.11+, standard library only)
 keeps the workspace version, the internal dependency pins, `Cargo.lock`'s local crate entries
 and `CHANGELOG.md` consistent, extracts release notes, builds the Windows ZIP and Linux tar.gz

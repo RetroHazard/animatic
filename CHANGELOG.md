@@ -40,3 +40,24 @@ added under conventional headings.
   publicly readable, a manual check reports the release feed as unavailable (never "up to date"). On Windows a failed executable swap restores the previous executable
   best-effort from a kept recovery copy; no rollback or power-loss guarantee is made. Bundled
   guides and notices keep the old version until the archive is replaced manually.
+
+### Changed
+
+- CI now runs for pull requests targeting `main`, `main` pushes and manual runs, and never creates
+  a GitHub Release, tag or push itself (ordinary runs check and build raw executables; only a
+  release workflow calling it packages archives). A cheap `scope` job queries the
+  pull request's actual base through the REST API (the `main` branch filter stays only as an
+  optimization); stacked children with another base defer all code and expensive jobs under a
+  separate *Stacked PR (deferred)* name, never `Required checks`, and an API error fails closed.
+  Full checks run after `scope` allows, then `plan` and a passing `quality`. Title and body
+  edits start the workflow but skip every code check and report under a separate metadata job
+  name, never as `Required checks`, so they cannot mask an earlier failure; any branch can be
+  checked with a manual full run. A planner skips the Rust
+  and license jobs for documentation-only changes. A quality job covers the Python tests,
+  Markdown links, anchors and tables, and workflow validation (`actionlint` with `shellcheck`),
+  and must pass before the expensive Rust and license jobs start; those then run in parallel.
+  A single stable aggregate check, `Required checks`, fails closed and reports the result. The
+  `cargo-about` install now uses `--features cli` (without it the install produced no command).
+  A ShellCheck SC2129 finding in `release.yml`, missed locally because no `shellcheck` was
+  installed next to `actionlint`, is fixed by grouping the `$GITHUB_OUTPUT` redirects.
+  Server-side enforcement of the check is not configured while the repository is private.

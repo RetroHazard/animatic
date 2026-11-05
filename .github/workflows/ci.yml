@@ -1,11 +1,22 @@
 name: CI
 
+# The `branches` filters below are only an optimization: GitHub has been observed running
+# this workflow for a pull request whose real target is a stacked branch, with a
+# synthetic merge context whose `base_ref` says main. The `scope` job therefore asks the
+# REST API for the pull request's actual base and defers everything unless it is main.
+# A push to any other branch never starts this workflow. Nothing here publishes
+# anything. Release workflows call it explicitly.
 on:
   push:
     branches: [main]
+  # `edited` is only listened to so that retargeting a pull request onto main (the
+  # stacked-branch workflow) gets checked. Title and description edits carry no
+  # `changes.base` and skip every job (see the jobs below), so they cost no runner time.
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, edited]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -14,20 +25,31 @@ on:
         type: string
         default: ''
       package:
-        description: Upload versioned release archives instead of raw executables
+        description: Also package versioned release archives from the checked executables
         type: boolean
         default: false
 
 permissions:
   contents: read
 
-# Query the actual PR target before allocating build runners. Metadata-only edits
-# cannot cancel a real validation run.
+# Only superseded pull request runs are cancelled. Every other run (main pushes,
+# merge groups, manual and release-called runs) gets a unique group and always finishes.
 concurrency:
+  # Any pull request run that checks code (everything except a metadata-only edit) shares
+  # the pull request's group, so a new push cancels the older run. The real base is only
+  # known from the REST lookup inside the run, so a base is not used here: retargeting
+  # away from main cancels the older main run of the same pull request, which is intended.
+  # A metadata-only edit gets its own group so it can never cancel a full run in flight.
   group: ci-${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '') && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Branch filters and merge-context guards did not prevent observed stacked-PR
+  # integration runs. Read the actual target from the API instead of relying on the
+  # synthetic merge context. A main target runs checks; every other base is deferred.
+  # Deferred PRs run no planner, Quality, Rust, notices, or merge-gate job. A failed
+  # lookup leaves `mode` empty and fails the merge gate closed. Non-PR events proceed
+  # normally. Metadata-only edits skip this job. No checkout or secrets are printed.
   scope:
     name: Resolve pull request scope
     if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
@@ -67,10 +89,57 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  quality:
-    name: ${{ (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '') && 'Quality' || 'PR metadata (no code checks)' }}
+  # Decide which expensive checks the change needs. Anything uncertain, manual,
+  # called by a release workflow, or queued for merge runs everything.
+  # Runs only when scope resolved to `run`. Quality, notices and rust need plan (and
+  # quality) with the implicit success() condition, so they are skipped with it.
+  plan:
+    name: Plan checks
     needs: scope
-    if: needs.scope.outputs.mode == 'run'
+    if: ${{ needs.scope.outputs.mode == 'run' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.plan.outputs.rust }}
+      licenses: ${{ steps.plan.outputs.licenses }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Select the checks this change needs
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CALLER_REF: ${{ inputs.ref }}
+          PACKAGE: ${{ inputs.package }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ inputs.ref || github.sha }}
+        run: |
+          args=(plan --head "$HEAD_SHA" --github-output "$GITHUB_OUTPUT")
+          if [ -n "$BASE_SHA" ]; then args+=(--base "$BASE_SHA"); fi
+          force=0
+          case "$EVENT_NAME" in
+            workflow_dispatch | merge_group) force=1 ;;
+          esac
+          if [ -z "$BASE_SHA" ] || [ -n "$CALLER_REF" ] || [ "$PACKAGE" = true ]; then force=1; fi
+          if [ "$force" = 1 ]; then args+=(--force); fi
+          python scripts/ci.py "${args[@]}" > "$RUNNER_TEMP/ci-plan.json"
+          cat "$RUNNER_TEMP/ci-plan.json"
+          {
+            printf '### Selected checks\n\n```json\n'
+            cat "$RUNNER_TEMP/ci-plan.json"
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Always runs, including documentation-only changes.
+  quality:
+    name: Quality
+    needs: plan
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
@@ -82,14 +151,12 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          components: rustfmt
-      - name: Release tooling behavior tests
-        run: python -m unittest discover -s scripts -p test_release.py -v
+      - name: Script behavior tests
+        run: python -m unittest discover -s scripts -p 'test_*.py' -v
       - name: Validate version consistency
         run: python scripts/release.py validate
-      - run: cargo fmt --all -- --check
+      - name: Validate Markdown links, anchors, fences, and tables
+        run: python scripts/ci.py docs
       - name: Install pinned actionlint
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,24 +169,60 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint/$archive" -C "$RUNNER_TEMP/actionlint" actionlint
       - name: Validate workflows
         run: |
+          # actionlint silently skips shell checks when shellcheck is absent, so require it.
           shellcheck --version
           "$RUNNER_TEMP/actionlint/actionlint" -shellcheck "$(command -v shellcheck)" -color
+      - name: Install Rust formatter
+        if: needs.plan.outputs.rust == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt
+      - name: Check Rust formatting
+        if: needs.plan.outputs.rust == 'true'
+        run: cargo fmt --all -- --check
 
+  # Dependency license policy and the generated notices bundled into releases.
+  # Starts only after quality passed, so a failed quality run spends no further runners.
   notices:
     name: Dependency license notices
-    needs: quality
-    timeout-minutes: 15
+    needs: [plan, quality]
+    if: needs.plan.outputs.licenses == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      CARGO_ABOUT_VERSION: '0.9.3'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # Release packaging always compiles the renderer from source; only ordinary
+      # checks may reuse the binary cached by a main-branch run.
+      - name: Restore cached license renderer
+        id: renderer-cache
+        if: ${{ !inputs.package }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-about
+          key: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-cli-ubuntu-22.04
       - name: Install pinned license renderer
-        run: cargo install --locked --version 0.9.3 --features cli cargo-about
-      - name: Verify the installed CLI
-        run: test "$(cargo about --version)" = 'cargo-about 0.9.3'
+        if: steps.renderer-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version "$CARGO_ABOUT_VERSION" --features cli cargo-about
+      - name: Verify the renderer CLI
+        run: |
+          version="$(cargo about --version)"
+          echo "$version"
+          case "$version" in
+            *"$CARGO_ABOUT_VERSION"*) ;;
+            *) echo "::error::expected cargo-about $CARGO_ABOUT_VERSION"; exit 1 ;;
+          esac
+      - name: Save license renderer cache
+        if: ${{ !inputs.package && github.ref == 'refs/heads/main' && steps.renderer-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-about
+          key: cargo-about-${{ env.CARGO_ABOUT_VERSION }}-cli-ubuntu-22.04
       - name: Generate notices for both supported targets
         run: |
           log="$RUNNER_TEMP/cargo-about.stderr"
@@ -138,9 +241,12 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  test:
-    name: Check (${{ matrix.platform }})
-    needs: [quality, notices]
+  # Independent of notices so one failure never hides the other's diagnostics; both wait
+  # for quality but not for each other.
+  rust:
+    name: Rust (${{ matrix.platform }})
+    needs: [plan, quality]
+    if: needs.plan.outputs.rust == 'true'
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -165,6 +271,13 @@ jobs:
         with:
           components: clippy
           targets: ${{ matrix.target }}
+      # Release builds never restore a cache; only main saves one for pull requests.
+      - name: Cache Rust dependencies
+        if: ${{ !inputs.package }}
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libssl-dev
@@ -174,36 +287,89 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
       - run: cargo build --locked --release -p animatic --target ${{ matrix.target }}
-      - name: Smoke the packaged CLI entry point
+      - name: Smoke the release executable
         shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.binary }} --help
-      - name: Install Python for packaging
-        if: inputs.package
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: '3.12'
-      - name: Download dependency notices
-        if: inputs.package
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: dependency-notices
-          path: ${{ runner.temp }}/animatic-notices
-      - name: Package release archive
-        if: inputs.package
-        run: python scripts/release.py package --platform ${{ matrix.platform }} --binary target/${{ matrix.target }}/release/${{ matrix.binary }} --notices "${{ runner.temp }}/animatic-notices/THIRD-PARTY-NOTICES.html" --output dist
-      - name: Upload release archive
-        if: inputs.package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-${{ matrix.platform }}-x86_64
-          path: dist/animatic-*
-          if-no-files-found: error
-          retention-days: 14
+
       - name: Upload CI executable
-        if: ${{ !inputs.package }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: animatic-${{ matrix.platform }}-x86_64
           path: target/${{ matrix.target }}/release/${{ matrix.binary }}
           if-no-files-found: error
           retention-days: 14
+
+  # Release callers only: wrap the checked executables and notices into archives.
+  package:
+    name: Package (${{ matrix.platform }})
+    needs: [rust, notices]
+    if: inputs.package
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            binary: animatic.exe
+          - platform: linux
+            binary: animatic
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: animatic-${{ matrix.platform }}-x86_64
+          path: ${{ runner.temp }}/animatic-executable
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dependency-notices
+          path: ${{ runner.temp }}/animatic-notices
+      - name: Package release archive
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          BINARY: ${{ matrix.binary }}
+        run: python scripts/release.py package --platform "$PLATFORM" --binary "$RUNNER_TEMP/animatic-executable/$BINARY" --notices "$RUNNER_TEMP/animatic-notices/THIRD-PARTY-NOTICES.html" --output dist
+      - name: Upload release archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.platform }}-x86_64
+          path: dist/animatic-*
+          if-no-files-found: error
+          retention-days: 14
+
+  # The single stable status to require on main. It fails closed: a job may only be
+  # skipped when the plan did not select it, and a failed or cancelled scope, plan or
+  # quality job fails it (a failed scope leaves its mode empty, which is not `defer`, so
+  # this job still runs and reports the failure). Two cases never report "Required checks":
+  # a metadata-only pull request edit is skipped under its own name, and a pull request
+  # whose actual base (looked up by the scope job) is not main reports the intentionally
+  # non-passing "Stacked PR (deferred)" name and is skipped, so neither can ever show
+  # "Required checks" as passing or skipped or mask a failure reported for the same commit.
+  required:
+    name: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'PR metadata (no code checks)' || (needs.scope.outputs.mode == 'defer' && 'Stacked PR (deferred)' || 'Required checks') }}
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '') && needs.scope.outputs.mode != 'defer' }}
+    needs: [scope, plan, quality, notices, rust, package]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Verify every selected check passed
+        env:
+          CI_NEEDS_JSON: ${{ toJSON(needs) }}
+          CI_RUST: ${{ needs.plan.outputs.rust }}
+          CI_LICENSES: ${{ needs.plan.outputs.licenses }}
+          CI_PACKAGE: ${{ inputs.package && 'true' || 'false' }}
+        run: python scripts/ci.py gate

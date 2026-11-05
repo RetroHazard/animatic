@@ -27,7 +27,9 @@ GitHub Release holding exactly three assets:
 | `SHA256SUMS` | SHA-256 of the two archives |
 
 The release is a draft: a maintainer reviews the notes and assets and publishes it by hand.
-Nothing is published, tagged or version-bumped automatically from an ordinary branch push.
+Nothing is published, tagged or version-bumped automatically, and no pull request, development
+branch or `main` CI run can create a release: only a maintainer's explicit `v*` tag push or a
+manual **Release** run from `main` can (see [Workflows](#workflows)).
 Publishing matters beyond the page itself: installed copies of Animatic offer **published**
 releases only (see [In-app updates](#in-app-updates)), so publishing a draft is what makes it
 an update candidate.
@@ -251,33 +253,29 @@ personal access token, signing key or other custom secret. The default token per
 
 ### `ci.yml` (CI)
 
-- **Triggers:** pushes to branches, pull requests, manual `workflow_dispatch`, and
-  `workflow_call` so the release workflows can reuse it. `workflow_call` inputs: `ref` (string,
-  exact commit to check out instead of the triggering one) and `package` (boolean, default
-  `false`).
-- **Notices job:** before the matrix, one job on `ubuntu-22.04` installs `cargo-about` at the
-  exact pinned version (`cargo install --locked --version 0.9.3 cargo-about`) and runs
-  `cargo about generate --locked --fail about.hbs --output-file THIRD-PARTY-NOTICES.html` (written to the
-  runner's temporary directory) using [`about.toml`](../about.toml) and
-  [`about.hbs`](../about.hbs). The result covers the union of the Windows and Linux dependencies
-  and is uploaded as the artifact `dependency-notices`, which the matrix jobs download when
-  packaging. Generation fails when a dependency license is outside the policy in `about.toml`.
-  `cargo-about` only **warns** (and still succeeds) when a checksum-pinned license file has
-  changed, so the job captures the tool's standard error and fails on **any** output there. A
-  changed license file therefore also fails CI, and any warning needs maintainer review. So
-  **every CI run applies the license policy gate**. The workflow file is the source of truth for
-  the pinned version and the exact guard.
-- **Matrix:** `ubuntu-22.04` (`x86_64-unknown-linux-gnu`) and `windows-latest`
-  (`x86_64-pc-windows-msvc`) with explicit Rust targets, `fail-fast: false`.
-- **Steps:** the Python release-tool tests; `release.py validate`; `cargo fmt --check`;
-  Clippy with warnings denied, tests, `cargo doc` with rustdoc warnings denied and the release
-  build, each with `--locked` (except formatting) so a stale `Cargo.lock` fails instead of being
-  silently rewritten; and a `--help` smoke run of the built executable.
-- **Artifacts (14 days):** with `package: false` (ordinary runs) the raw executable is uploaded as
-  `animatic-windows-x86_64` or `animatic-linux-x86_64`. These are build outputs for inspection, not
-  releases. With `package: true` the job builds the versioned archive with
-  `scripts/release.py package` and uploads it as `release-windows-x86_64` or
-  `release-linux-x86_64` instead.
+Runs on pushes to `main`, pull requests targeting `main`, merge groups, manual dispatch and `workflow_call`.
+Ordinary runs only check the code and build raw executables; `ci.yml` never creates a GitHub
+Release, tag or push. The release workflows reuse it through
+`workflow_call` with `ref` (string, the exact commit to check out) and `package` (boolean,
+default `false`). A call with a non-empty `ref` or with `package: true` always runs every check,
+never the planner's reduced selection. With `package: true` it also builds the versioned
+archives with `scripts/release.py package` and uploads them as `release-windows-x86_64` or
+`release-linux-x86_64`; ordinary runs upload the raw executables (`animatic-windows-x86_64`,
+`animatic-linux-x86_64`, 14 days), which are build outputs, not releases. The `notices` job
+generates `THIRD-PARTY-NOTICES.html` (artifact `dependency-notices`) after installing the pinned
+`cargo-about` with `--features cli`, and doubles as the license-policy gate. The `quality` job
+must pass before the Rust and license jobs start, and those then run in parallel. The stable aggregate
+job **`Required checks`** is the check to require on pull requests; it fails closed. Pull
+requests whose base is not `main` (stacked children) may start the workflow, but a cheap `scope` job checks
+the actual base through the REST API and defers all code and expensive jobs under a separately named
+*Stacked PR (deferred)* job until retargeted to `main`; a `scope` API error fails closed. Metadata-only (title/body) edits start the workflow but skip all code checks under a
+separately named job, never emitting `Required checks`.
+
+The job-by-job contract, the planner and gate rules, the local reproduction commands (including
+the `cargo about` install and the required `actionlint` plus `shellcheck` pair) and the history
+of the `cargo-about` "no such command" and ShellCheck SC2129 failures live
+in [Development → Continuous integration](development.md#continuous-integration) and are not
+repeated here.
 
 ### `release-prepare.yml` (Prepare release)
 
@@ -300,10 +298,12 @@ Manual (`workflow_dispatch`) with inputs `version` (string, no `v` prefix) and `
 
 Because the branch is pushed with the workflow token, GitHub does not start the ordinary
 pull-request workflows for the bot's pull request. The reusable CI run against the exact SHA
-before the PR is opened is what proves the branch. If branch protection also requires the
-standalone `CI` check on the PR, a maintainer must run CI manually on the branch (**Actions → CI →
-Run workflow**, or `gh workflow run ci.yml --ref release/vVERSION`). The workflow does not approve its own pull
-request; a maintainer reviews and merges it.
+before the PR is opened is what proves the branch, but its jobs are reported under the caller's
+prefixed names, so it does **not** provide the `Required checks` result that branch protection
+would look for. If that check is required, a maintainer must run CI manually on the branch
+(**Actions → CI → Run workflow**, or `gh workflow run ci.yml --ref release/vVERSION`); the
+manual run reports `Required checks` on the branch commit. The workflow does not approve its own
+pull request; a maintainer reviews and merges it.
 
 Token permissions: `contents: write` only in the preparation job that pushes the branch,
 `pull-requests: write` only in the job that opens the PR.
@@ -319,8 +319,9 @@ release); a tag push runs from the tag.
    tag push, the checked-out commit), and `release.py validate --tag` must pass: the tag equals the
    workspace version (with all pins and the lock file in agreement) and the changelog has a
    non-empty section for it.
-2. **Build:** call `ci.yml` with `package: true` on exactly that commit, which tests both platforms
-   and uploads `release-windows-x86_64` and `release-linux-x86_64`.
+2. **Build:** call `ci.yml` with `package: true` on exactly that commit, which runs every check
+   (no planner skipping) on both platforms and uploads `release-windows-x86_64` and
+   `release-linux-x86_64`.
 3. **Bundle:** download both archives, run `release.py checksums` and upload the artifact
    `release-bundle-vVERSION` (14 days): the two archives and `SHA256SUMS`. This happens **even for a
    dry run**, so you can inspect the exact assets.
@@ -349,14 +350,24 @@ The workflows need these; nothing here asserts they are already configured.
   no other ref can reach the publishing job. Reviewer approval, the deployment-ref restriction
   and tag immutability are configured on GitHub by a maintainer; this repository does not
   configure or prove them.
-- **Branch protection / rulesets** for `main` are the maintainer's call. If they require the
-  `CI` check on the release PR, see the manual-dispatch note above.
+- **Branch protection / rulesets for `main`:** not configured, and **currently not available**:
+  while the repository is private, GitHub's branch-protection and ruleset APIs return HTTP 403
+  (they need GitHub Pro or a public repository), so no server-side merge requirement can be
+  active and the `CI` workflow's result does not block anything. The maintainer plans to make the
+  repository public after the development branches are collapsed into `main`; nothing in this
+  repository changes visibility. Activation (require a pull request, require the single status
+  check **`Required checks`**, optionally up-to-date branches, no bypass) is spelled out in
+  [Development → Pull request gate and branch protection](development.md#pull-request-gate-and-branch-protection).
+  That page also covers signed commits: the preparation bot's commit is unsigned.
+  Publishing remains manual regardless: only a maintainer's `v*` tag push or a manual **Release**
+  run from `main` can produce a draft, and no pull request or development-branch CI can.
 - **Tag pushes** are made explicitly by a maintainer. There is no automatic tagging.
 - **Tag protection (recommended):** add a ruleset for `v*` tags that restricts creation to
   maintainers and blocks updates and deletion, so a published version cannot be moved or
   recreated. No such ruleset is configured by this repository.
-- **Bootstrap:** `release-prepare.yml` and `release.yml` must already exist on `main` before
-  `workflow_dispatch` can be used. Merge the workflow change first, then dispatch.
+- **Bootstrap:** `ci.yml`, `release-prepare.yml` and `release.yml` must already exist on `main`
+  before `workflow_dispatch` can be used for any of them, so merge the workflow changes through a
+  pull request first, then dispatch.
 
 ## Maintainer procedure
 
@@ -371,7 +382,8 @@ All commands run from your local clone; Git uses the SSH remote.
 3. **Review the release notes** in that pull request before merging
    ([privacy review is mandatory](#release-notes-and-privacy)). Edit the changelog on the branch
    if needed; run `python scripts/release.py validate` and the CI commands again after editing.
-   Run `CI` manually on the branch if branch protection requires it.
+   Run `CI` manually on the branch (**Actions → CI → Run workflow**, branch `release/vVERSION`) so
+   the pull request gets a `Required checks` result: the bot's pull request starts no CI by itself.
 4. **Merge** the pull request into `main`.
 5. **Tag** the merged commit and push the tag explicitly:
 
@@ -469,7 +481,7 @@ it as a disclosure: pull the release and rewrite or remove the text before repub
 |---|---|
 | `prepare` rejects the version | Not `YYYY.M.PATCH` CalVer (with an optional Cargo-style prerelease such as `-rc.N`), has zero padding or build metadata, is not the current UTC year and month, is not an increase over the latest released version, or the section or tag exists. It also refuses a shallow clone: run `git fetch --unshallow`. Nothing is written. |
 | Preparation CI fails on the new branch | No PR is opened. Fix `release/vVERSION`, run CI on the new commit, then open the PR manually; retrying the failed job still checks its original SHA. Alternatively, deliberately delete the failed branch and run preparation again. A new preparation run never moves an existing release branch. |
-| Bot PR shows no checks | Expected; run `CI` manually on the branch (see [`release-prepare.yml`](#release-prepareyml-prepare-release) above). |
+| Bot PR shows no checks | Expected: events created with the workflow token do not start `ci.yml` on the pull request. Run `CI` manually on the branch (see [`release-prepare.yml`](#release-prepareyml-prepare-release) above); if `Required checks` is required, that manual run is what satisfies it. |
 | Release run rejects the tag | The tag does not equal the workspace version, the changelog section is missing or empty, the commit is not reachable from `origin/main`, a manual dispatch was not run from `main`, or the remote tag no longer points at the validated commit. Fix on `main`, then create a correct tag. |
 | A release for the tag already exists | The workflow refuses to overwrite. If it is an empty or failed **draft**, inspect it, delete it by hand and re-run. Never delete a published release without a deliberate decision. |
 | Checksum mismatch after download | Do not run the archive. Download again; report it if it persists. |
