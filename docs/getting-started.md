@@ -24,8 +24,8 @@ Contents: [Status and limits](#status-and-limits) ·
   [v2 verification record](aom-forum-audit.md#v2-verification-observed-only)). Treat
   Linux desktop launch and any real AniDB exchange as unverified.
 - There is no installer or code signing. Releases are published as GitHub
-  Releases only after a maintainer reviews a draft; see [Releases](releases.md). A CI build
-  artifact is not a release.
+  Releases when a maintainer merges a reviewed release pull request; see
+  [Releases](releases.md). A CI build artifact is not a release.
 - Animatic never contacts AniDB at startup. Network traffic to AniDB happens only when you start
   **Tools → Run command queue** or **Queue → Synchronize now** (see
   [Synchronization](user-guide.md#synchronization)). The default settings still have

@@ -1,0 +1,44 @@
+name: Accessibility barrier
+description: Something prevents or hinders use with assistive technology, keyboard-only input or display settings.
+labels: [accessibility]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public: use placeholders instead of real user names, paths, titles or library data.
+  - type: input
+    id: version
+    attributes:
+      label: Animatic version
+      description: As shown in **Help → About Animatic**.
+      placeholder: 2026.11.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: assistive
+    attributes:
+      label: Assistive technology or setting
+      description: Screen reader, magnifier, keyboard-only input, high contrast, display scaling, ... with versions.
+    validations:
+      required: true
+  - type: textarea
+    id: barrier
+    attributes:
+      label: Barrier
+      description: The window or control, what you tried to do, and what happened.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What would work for you

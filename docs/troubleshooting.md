@@ -727,10 +727,12 @@ For syntax and functions see [Rename language](rename-language.md).
 
 ### Databank import
 
-**File → Import AOM databank…** opens a folder picker titled **Choose AOM kowai folder**. The
-folder you choose must itself contain `mylist.data`, `local_files.data` or `animes.data`.
-Choosing the AOM install folder that merely contains `kowai` is rejected with `No AOM
-databank found in <path>`; choose the `kowai` folder.
+**File → Import AOM databank…** and the first-run card's **Browse…** open a folder picker titled
+**Choose the AOM folder or its kowai folder (files are not listed)**. Folder pickers never show
+files, so an empty-looking `kowai` folder is normal: select it and confirm. Either the `kowai`
+folder (containing `mylist.data`, `local_files.data` or `animes.data`) or the AOM folder directly
+above it is accepted; anything else is rejected with `No AOM databank found in <path> (choose
+the AOM folder or its kowai folder)`.
 
 The import reads the source files only (they are never modified), decrypts each collection
 into `import-temp/`, imports it in **one transaction per collection**, and tries to remove the
@@ -835,6 +837,9 @@ Result: Log "<time>  ERROR  <command>: authentication: login failed: wrong usern
         then "Command blocked: 3 queued commands blocked: authentication: ..."
 Status bar: "3 blocked". Retry failed + Synchronize now repeats the same error.
 ```
+
+The repository's bug report form asks for these fields and requires you to confirm that the
+report is sanitized. Issues are public.
 
 This guide defines no security-reporting process, and the repository contains none. If you
 believe you found a vulnerability, share sanitized details through your normal channel with the

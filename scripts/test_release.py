@@ -319,6 +319,25 @@ class PrepareTests(GitCase):
         self.assertEqual(run_cli(self.root, "validate", "--tag", f"v{V0}")[0], 0)
         self.assertRejected(V0, NOV, "already has a section")
 
+    def test_curated_entry_citing_a_pull_request_replaces_its_squash_bullet(self) -> None:
+        write(self.root, "CHANGELOG.md", CHANGELOG.replace(
+            "- Curated automation note\n",
+            "- Curated automation note\n\n### Changed\n\n- Hand-written pipeline summary\n  (#7)\n",
+        ))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "docs: curate changelog")
+        self.commit("ci: split checks and cache refresh (#7)")
+        self.commit("fix: keep the importer folder (#11)")
+        self.commit("feat: mention #7 only in passing (#70)")
+
+        self.prepare(V0, NOV)
+        body = section(self.changelog(), V0)
+        self.assertIn("- Hand-written pipeline summary\n  (#7)", body)
+        self.assertNotIn("split checks and cache refresh", body)
+        # other pull requests keep their generated bullets, including a longer number
+        self.assertRegex(body, r"- keep the importer folder \\\(\\#11\\\) \([0-9a-f]{7}\)")
+        self.assertIn("mention \\#7 only in passing", body)
+
     def test_old_semver_tags_are_not_release_boundaries(self) -> None:
         git(self.root, "tag", "v1.0.0")
         self.commit("feat: after the old tag")
