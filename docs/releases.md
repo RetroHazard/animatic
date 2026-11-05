@@ -254,13 +254,17 @@ personal access token, signing key or other custom secret. The default token per
 ### `ci.yml` (CI)
 
 Runs on pushes to `main`, pull requests targeting `main`, merge groups, manual dispatch and `workflow_call`.
-Ordinary runs only check the code and build raw executables; `ci.yml` never creates a GitHub
-Release, tag or push. The release workflows reuse it through
+Pull requests, merge groups and manual runs check the code (Clippy, tests, rustdoc); a `main`
+push only refreshes the dependency caches that pull requests restore. `ci.yml` never creates a
+GitHub Release, tag or push. The release workflows reuse it through
 `workflow_call` with `ref` (string, the exact commit to check out) and `package` (boolean,
-default `false`). A call with a non-empty `ref` or with `package: true` always runs every check,
-never the planner's reduced selection. With `package: true` it also builds the versioned
-archives with `scripts/release.py package` and uploads them as `release-windows-x86_64` or
-`release-linux-x86_64`; ordinary runs upload the raw executables (`animatic-windows-x86_64`,
+default `false`). A call with a non-empty `ref` runs every check, never the planner's reduced
+selection; release preparation uses this for its bot branch. A call with `package: true`
+(Release) runs no Clippy, tests or rustdoc, because the tag must be on `main` history that was
+checked through pull requests: it builds clean, uncached release executables and notices,
+smoke-runs `--help`, packages the versioned archives with `scripts/release.py package` and
+uploads them as `release-windows-x86_64` or `release-linux-x86_64`. A manual CI run with
+**executables** ticked uploads the raw executables (`animatic-windows-x86_64`,
 `animatic-linux-x86_64`, 14 days), which are build outputs, not releases. The `notices` job
 generates `THIRD-PARTY-NOTICES.html` (artifact `dependency-notices`) after installing the pinned
 `cargo-about` with `--features cli`, and doubles as the license-policy gate. The `quality` job
