@@ -242,6 +242,7 @@ jobs:
       - name: Smoke the release executable
         shell: bash
         run: target/${{ matrix.target }}/release/${{ matrix.binary }} --help
+
       - name: Upload CI executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
