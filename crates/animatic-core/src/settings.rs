@@ -38,7 +38,7 @@ pub struct AnidbSettings {
     pub password: String,
     /// UDP API key (Profile → Settings → Account on anidb.net). Enables encrypted sessions.
     pub api_key: String,
-    /// Registered client name (https://anidb.net/software/add); both APIs refuse unregistered clients.
+    /// Registered client name (<https://anidb.net/software/add>); both APIs refuse unregistered clients.
     pub client_name: String,
     pub client_version: u32,
     pub udp_server: String,
