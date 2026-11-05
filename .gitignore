@@ -1,0 +1,30 @@
+# Rust build output
+/target/
+
+# IDE and operating-system state
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Animatic runtime state and personal library data
+settings.json
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.log
+*.xml
+*.ini
+
+# Legacy AOM material and reverse-engineering workspaces
+/AOM/
+/re/
+/kowai/
+*.data
+local_settings.xml
+
+# Locally exported statistics and hash lists
+animatic-hashes.txt
+animatic-statistics.*

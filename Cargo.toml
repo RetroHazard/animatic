@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["crates/animatic-core", "crates/animatic-anidb", "crates/animatic"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/RetroHazard/animatic"
+authors = ["RetroHazard"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

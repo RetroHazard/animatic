@@ -1,0 +1,29 @@
+# Feature parity audit
+
+This audit maps the reverse-engineered AOM behavior to Animatic. “Equivalent” means the workflow is available with a modern implementation; it does not require preserving Delphi control layout or bugs.
+
+| Legacy area | Animatic equivalent |
+|---|---|
+| Startup databank loading | Transactional encrypted `kowai` import into SQLite, with cancellable progress |
+| Hash queue | Background ED2K-red, CRC32, MD5, and SHA-1 hashing with pause/cancel and one disk pass |
+| Batch/file manager | Recursive managed-folder scans, extension filters, rehash/remove-missing plans, and per-folder mylist policy |
+| Hashed files | Known/unknown local-file inventory, AniDB identification queue, local paths and hash metadata |
+| Anime/mylist trees | Searchable Anime and My list tables, watched/state editing, details, episodes, genres, relations, reviews, and AniDB links |
+| Advanced search | Title, year, type, mylist-only, and watched-only filters over the local cache |
+| Groups and genres | Searchable group and genre views with library counts |
+| Add/edit mylist | Durable add/edit/delete/refresh commands, local optimistic edits, and explicit synchronization |
+| AniDB session | UDP authentication, optional encryption, compression, flood spacing, re-authentication, typed replies, and offline mode |
+| Full update/statistics | HTTP anime/title/image support, queued title and mylist-stat updates, XML/INI statistics export |
+| Rename files | Compatible expression parser/evaluator, user functions, database-backed objects, preview, and safe apply |
+| Hash export | Original sequential `%token%` expansion and configurable export template |
+| Players/AVDump | Configurable external process launchers with parsed arguments |
+| Settings | JSON settings plus UTF-16 AOM settings migration; account, UI, hashing, managers, players, AVDump, exports, and rename configuration |
+| Add anime/episode/file change requests | Opens AniDB’s maintained web editors; AOM’s retired TCP `ADDANIMEDATA`/`ADDEP` route is not used |
+| Command line/shell handoff | Media paths, `--database`, `--full-update`, and legacy `/database`/`/fullupdate` arguments |
+| Status/progress/log | Persistent queue view, activity log, job progress, pause, and cancel |
+
+## Deliberate non-ports
+
+The object inspector was a developer RTTI viewer. The header setup and anime-genre editor were unreachable resource-only/dead UI in AOM. The Add File dialog could not submit because its OK button was permanently disabled. Splash screens, MDI tab duplication, custom painted tree controls, exact colors, and Delphi-specific registry/COM shell-extension behavior are presentation or platform artifacts rather than library workflows.
+
+Animatic uses native file pickers, platform application-data directories, external HTTPS links for current AniDB metadata editing, and a fixed modern table layout. These choices avoid reviving discontinued protocols and Windows-only COM dependencies.

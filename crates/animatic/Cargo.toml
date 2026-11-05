@@ -1,0 +1,25 @@
+[package]
+name = "animatic"
+description = "Animatic - a modern AniDB client and anime library manager (successor of AniDB O'Matic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+animatic-anidb = { version = "1.0.0", path = "../animatic-anidb" }
+animatic-core = { version = "1.0.0", path = "../animatic-core" }
+anyhow = "1.0.104"
+chrono = "0.4.45"
+crossbeam-channel = "0.5.17"
+directories = "6.0.0"
+eframe = "0.37.0"
+egui = "0.37.0"
+egui_extras = "0.37.0"
+image = "0.25.10"
+log = "0.4.35"
+open = "5.4.5"
+parking_lot = "0.13.0"
+rfd = "0.17.2"
+serde = "1.0.229"
+serde_json = "1.0.154"
+trash = "5.2.9"
