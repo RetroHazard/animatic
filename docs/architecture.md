@@ -25,10 +25,10 @@ flowchart LR
 
 | Module | Responsibility |
 |---|---|
-| `db` | Connection setup and version-1 schema creation |
-| `store` | Mutating persistence operations and imported/API record application |
-| `library` | Read models and library projections consumed by the UI |
-| `sync` | Serializable durable command types, queue ordering, and local MyList edits |
+| `db` | Connection setup, schema creation, idempotent outbox upgrades, and persisted cooldown state |
+| `store` | Transactional API record application with pending-intent overlays |
+| `library` | Consistent background snapshots, derived summaries, and reusable search keys |
+| `sync` | Serializable commands, latest-intent outbox generations, blocked work, and atomic local edits |
 | `hash` | Single-pass ED2K-red, CRC32, MD5, and SHA-1 hashing; legacy export expansion |
 | `legacy` | Databank discovery, page decryption, record decoding, and transactional import |
 | `rename` | AOM-compatible parser, evaluator, values, database-backed objects, and path planning |
@@ -53,7 +53,7 @@ Both AniDB APIs require a registered client identifier. Automated tests use loca
 
 - `main.rs`: platform data/config paths, environment overrides, CLI compatibility, and native window creation.
 - `app.rs`: egui state, navigation, cached read models, menus/dialogs, detail views, settings, and user actions.
-- `worker.rs`: long-running jobs and progress/result events.
+- `worker.rs`: long-running jobs, bounded queue execution, a separate projection/export thread, and typed result events.
 
 The application currently exposes overview, MyList, anime, advanced search, hashed files, groups, genres, queue, and activity views.
 
@@ -70,6 +70,8 @@ The application currently exposes overview, MyList, anime, advanced search, hash
 - Other file arguments enter the hashing workflow.
 
 Legacy `/database`, `/fullupdate`, `/utf8`, and `/ucs2` arguments are accepted where applicable for handoff compatibility.
+
+Portable overrides do not require the default directory to exist; `--help` creates nothing. Settings load through `load_with_recovery`: the primary is authoritative; the backup is read only when it is missing or invalid, forcing offline mode, opening a recovery window, and skipping autosave until explicit Save. Sources are never modified on load; only a valid-object primary rotates the backup.
 
 ## Principal data flows
 
@@ -96,6 +98,13 @@ sequenceDiagram
 
 File-manager policy decides extension acceptance, recursive traversal, automatic hashing, AniDB identification, MyList defaults, and removal handling. A local path references a deduplicated hash record.
 
+Missing-file removal requires an explicit matching manager with `auto_remove` enabled,
+affirmative file absence (`NotFound`), and a successful directory-metadata check of the
+manager root after that lookup. Selection reuses the normal path/recursion matcher but
+does not fall back to the default rule for an unmatched path. Empty roots, unavailable
+roots and other filesystem errors preserve local records. This is a conservative planning
+check, not an atomic guarantee against storage disconnecting between planning and execution.
+
 ### AniDB synchronization
 
 ```mermaid
@@ -109,14 +118,38 @@ sequenceDiagram
     User->>UI: Edit MyList / identify file
     UI->>DB: Persist command
     UI->>Worker: Process queue
-    Worker->>DB: Claim next priority command
+    Worker->>DB: Read next eligible command
     Worker->>UDP: Typed API request
     UDP-->>Worker: Typed reply/error
     Worker->>DB: Apply reply and complete/retry command
     Worker-->>UI: Log/result event
 ```
 
-Offline work remains in `command_queue`. Queue processing must be restart-safe and duplicate-aware. The UDP client owns authentication and flood control; callers must not bypass it with raw sockets.
+Offline work remains in `command_queue`. MyList edits merge their changed fields in one
+immediate transaction, update local state, and receive a fresh never-reused AUTOINCREMENT
+ID. Superseded in-flight acknowledgements cannot remove a newer generation. API writes
+hold a write transaction while overlaying pending intent; stale missing/delete replies
+are checked against their queue generation before mutating local state.
+
+The outbox migration preserves existing rows, attempts and errors, and adds `blocked`
+and target-`lid` fields. Unreadable commands remain blocked and visible. Permanent
+failures block the affected command; authentication/client-version failures block the
+queue pending correction. Counted transient command failures are bounded at five attempts.
+Connectivity failures and server deferrals do not consume that budget.
+
+The `sync_cooldown` metadata stores an expiry and reason before a run stops. The worker
+checks it before constructing transports, including after restart and explicit retry.
+Explicit server durations take precedence; otherwise bans pause for 30 minutes and
+connectivity failures for 60 seconds. Transport packet spacing, authentication and
+session recovery remain centralized in `animatic-anidb`.
+
+MYLIST 221/310 and FILE replies validate required identifiers and distinguish malformed
+payloads from explicit absence. Multi-table FILE application and MyList reply overlays
+are atomic, including when nested inside an existing transaction.
+
+Per-folder MyList storage/source/other checkboxes distinguish an omitted field (`None`,
+leave unchanged) from an explicit empty string (`Some("")`, clear). Both states survive
+durable command serialization.
 
 ### Legacy migration
 
@@ -130,9 +163,29 @@ Offline work remains in `command_queue`. Queue processing must be restart-safe a
 
 The source databank is read-only. Import cancellation and errors must leave source files untouched. Private migration inputs and outputs never belong in Git.
 
+### Legacy settings migration
+
+**File → Import AOM settings…** submits `Job::ImportLegacySettings`; the worker reads
+and parses the XML and returns typed success/failure events. The importer requires at
+least one supported setting or collection, without assuming a particular wrapper tag.
+The UI retains a pending candidate and shows counts and a generic credential warning,
+never credential values. Worker submissions are gated from selection through review;
+prior work is cancelled before parsing. Cancel or parse failure preserves current settings.
+
+Apply forces offline mode and saves the candidate before replacing live settings.
+Save failure keeps both the old active configuration and the review candidate.
+The original XML remains read-only. Review folder rules, external processes, credentials
+and the registered client name before deliberately resuming work.
+
 ### Rename workflow
 
 The rename engine preprocesses patterns, parses the legacy expression language, evaluates database-backed `A`, `E`, `F`, `G`, `H`, and `M` objects, validates path components, and generates a preview. Applying a preview uses safe filesystem operations; an empty/invalid target is an error, not a silent fallback.
+
+Counters use a fixed minimum of 2 digits for new/default/reset patterns, independent of count metadata; counts >=100 and prefixes are preserved and saved custom/old patterns are not rewritten (**Use stable default** is explicit, with **Restore previous** text). Compile and selected-file diagnostics are shown; warnings, empty targets and boolean bad targets block Apply. Invalid-filename checks deliberately differ by platform (POSIX UTF-8 bytes, Windows UTF-16 units, 255). Automatic renaming is not implemented.
+
+### Public title dump import
+
+`read_titles_dump` streams the compressed dump (32 MiB compressed, 128 MiB decoded, 250k anime, 2M titles, 2048 bytes per name, `TitlesLimits`), validating XML and single-member gzip EOF/CRC into a private SQLite spool. No library lock is held during the network phase. `Db::import_title_dump` then merges atomically with the cache timestamp, so bad CRC, truncation or late-invalid XML leave existing rows intact. Not provided: full-MyList bootstrap, resume, external cryptographic checksums; cancellation still occurs between commands with a 60 s timeout.
 
 ## State and concurrency
 
@@ -140,6 +193,16 @@ The rename engine preprocesses patterns, parses the legacy expression language, 
 - Worker commands and events cross `crossbeam-channel` boundaries.
 - Pause and cancellation are cooperative for long-running hash/import work.
 - UI caches are disposable; persisted SQLite state remains authoritative.
+- A dedicated projection thread loads `LibraryProjection` in a consistent SQLite read
+  snapshot and performs automatic/manual statistics exports. Accepted explicit exports
+  are drained on graceful shutdown.
+- The UI permits one projection request in flight, coalesces dirty signals, and rejects
+  stale generations for optimistic edits. Newer blocked/cooldown events cannot be
+  overwritten by an older snapshot.
+- Library tables render visible rows only, with cached filtered indices and horizontal
+  scrolling when columns exceed the available width.
+- Small UI outbox writes use a bounded busy wait. Deferred lookup requests are explicitly
+  marked unsaved; MyList edits either commit atomically or report that nothing changed.
 - Settings are explicit serializable data, not hidden globals.
 - External processes receive parsed argument vectors rather than shell command strings.
 
@@ -185,3 +248,8 @@ See `feature-parity.md` for the workflow-level mapping.
 Settings contain AniDB credentials and API keys. They are runtime data and must never be logged, embedded in diagnostics, copied into tests, or committed. Statistics and library databases also reveal personal viewing and filesystem information. Preserve `.gitignore` protections and use temporary paths for all local verification.
 
 The migration crypto constants are format interoperability material, not user credentials. Do not replace them with data copied from a user installation.
+
+Legacy tests build record fields and SQLite pages from explicit synthetic values, then
+encrypt those pages for codec detection/decryption checks. Encoded record dumps and
+encrypted header samples from a real databank are private artifacts, not format constants,
+and must not be used as fixtures.

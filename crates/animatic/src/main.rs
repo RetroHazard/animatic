@@ -3,17 +3,11 @@ mod worker;
 
 use std::path::PathBuf;
 
+use anyhow::Context;
+
 fn main() -> anyhow::Result<()> {
-    let dirs = directories::ProjectDirs::from("net", "AniDB", "Animatic")
-        .ok_or_else(|| anyhow::anyhow!("unable to determine application data directory"))?;
-    let data = dirs.data_dir();
-    std::fs::create_dir_all(data)?;
-    let mut db_path = std::env::var_os("ANIMATIC_DB")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| data.join("animatic.sqlite3"));
-    let settings_path = std::env::var_os("ANIMATIC_SETTINGS")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs.config_dir().join("settings.json"));
+    let mut db_override = std::env::var_os("ANIMATIC_DB").map(PathBuf::from);
+    let settings_override = std::env::var_os("ANIMATIC_SETTINGS").map(PathBuf::from);
     let mut files = Vec::new();
     let mut full_update = false;
     let mut args = std::env::args_os().skip(1);
@@ -21,10 +15,10 @@ fn main() -> anyhow::Result<()> {
         let text = arg.to_string_lossy();
         match text.as_ref() {
             "--database" | "-d" | "/database" => {
-                db_path = PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| anyhow::anyhow!("--database requires a file name"))?,
-                );
+                db_override =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--database requires a file name")
+                    })?));
             }
             "--full-update" | "/fullupdate" => full_update = true,
             "--help" | "-h" | "/?" => {
@@ -37,7 +31,28 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    let app = app::AnimaticApp::new(db_path, settings_path, files, full_update)?;
+    // The default per-user directories are only consulted (never created here) when no
+    // override names the location; the database and settings writers create their own parents.
+    let default_dirs = || {
+        directories::ProjectDirs::from("net", "AniDB", "Animatic")
+            .ok_or_else(|| anyhow::anyhow!("unable to determine the default application directory; use --database and ANIMATIC_SETTINGS"))
+    };
+    let db_path = match db_override {
+        Some(path) => path,
+        None => default_dirs()?.data_dir().join("animatic.sqlite3"),
+    };
+    let settings_path = match settings_override {
+        Some(path) => path,
+        None => default_dirs()?.config_dir().join("settings.json"),
+    };
+    let app = app::AnimaticApp::new(db_path.clone(), settings_path.clone(), files, full_update)
+        .with_context(|| {
+            format!(
+                "Animatic could not start (database: {}, settings: {})",
+                db_path.display(),
+                settings_path.display()
+            )
+        })?;
     let native = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Animatic — AniDB library manager")
@@ -53,5 +68,5 @@ fn main() -> anyhow::Result<()> {
             Ok(Box::new(app))
         }),
     )
-    .map_err(|e| anyhow::anyhow!(e.to_string()))
+    .map_err(|e| anyhow::anyhow!("the window system failed: {e}"))
 }

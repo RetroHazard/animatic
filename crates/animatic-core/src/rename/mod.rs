@@ -8,6 +8,7 @@
 pub mod eval;
 pub mod objects;
 pub mod parser;
+pub mod plan;
 pub mod value;
 
 use std::path::{Path, PathBuf};
@@ -72,6 +73,9 @@ pub struct Bindings {
 #[derive(Debug, Clone)]
 pub struct Evaluation {
     pub result: String,
+    /// The script's final value was a boolean rather than text (for example a trailing `if`
+    /// whose condition was false); `result` then holds the literal word `True`/`False`.
+    pub boolean_result: bool,
     /// Variables after evaluation (for "Test auto rename").
     pub variables: Vec<(String, String)>,
     /// Soft errors (wrong argument counts, unconvertible values).
@@ -94,9 +98,11 @@ pub fn evaluate(
     ev.set_object("H", b.hash.clone());
     ev.set_object("M", b.mylist.clone());
     let v = ev.run(pattern.tree.as_ref())?;
+    let boolean_result = matches!(v, Value::Bool(_));
     let result = v.to_text().replace(['\r', '\n'], "").replace("\\\\", "\\");
     Ok(Evaluation {
         result,
+        boolean_result,
         variables: ev
             .variables()
             .iter()
@@ -109,10 +115,15 @@ pub fn evaluate(
 
 /// Turn an evaluation result into the new path of `old` (legacy file-manager rules):
 /// base path join, plain names stay in the current folder, every component is trimmed of
-/// trailing dots/spaces and must not be empty. Returns `Ok(None)` when there is nothing to do.
+/// trailing dots/spaces and must be a usable file name. Returns `Ok(None)` when the result
+/// is already the current path; an empty result is an error, never a silent no-op.
 pub fn target_path(old: &Path, result: &str, base_path: &str) -> Result<Option<PathBuf>, String> {
-    if result.is_empty() {
-        return Ok(None);
+    if result.trim().is_empty() {
+        return Err(
+            "The pattern produced an empty file name; nothing would be renamed. Its last \
+             expression must evaluate to the new name."
+                .into(),
+        );
     }
     let is_sep = |c: char| c == '\\' || c == '/';
     let mut name = result.to_string();
@@ -128,9 +139,9 @@ pub fn target_path(old: &Path, result: &str, base_path: &str) -> Result<Option<P
             )
         };
     }
-    let invalid = || {
+    let invalid = |why: String| {
         format!(
-            "Renaming \"{}\" to \"{}\" would result in an invalid file name, rename skipped!",
+            "Renaming \"{}\" to \"{}\" would result in an invalid file name ({why}); rename skipped!",
             old.display(),
             name
         )
@@ -147,8 +158,8 @@ pub fn target_path(old: &Path, result: &str, base_path: &str) -> Result<Option<P
         let c = comp
             .trim_end_matches(['.', ' '])
             .trim_matches(|ch: char| ch <= ' ');
-        if c.is_empty() {
-            return Err(invalid());
+        if let Some(why) = component_problem(c) {
+            return Err(invalid(why));
         }
         out.push(c);
     }
@@ -156,6 +167,61 @@ pub fn target_path(old: &Path, result: &str, base_path: &str) -> Result<Option<P
         return Ok(None);
     }
     Ok(Some(out))
+}
+
+/// Names that cannot be created on common file systems (the strictest rules apply on every
+/// platform so a library stays portable). `None` when `c` is usable.
+fn component_problem(c: &str) -> Option<String> {
+    if c.is_empty() {
+        return Some("it contains an empty folder or file name".into());
+    }
+    if let Some(bad) = c
+        .chars()
+        .find(|ch| matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*') || *ch < ' ')
+    {
+        return Some(if bad < ' ' {
+            "it contains a control character".into()
+        } else {
+            format!("\"{bad}\" is not allowed in a name")
+        });
+    }
+    if component_length(c) > 255 {
+        return Some(if cfg!(windows) {
+            "a name is longer than 255 UTF-16 units".into()
+        } else {
+            "a name is longer than 255 bytes".into()
+        });
+    }
+    let stem = c.split('.').next().unwrap_or(c).trim_end();
+    let reserved = ["CON", "PRN", "AUX", "NUL"];
+    if reserved.iter().any(|r| stem.eq_ignore_ascii_case(r))
+        || is_numbered_device(stem, "COM")
+        || is_numbered_device(stem, "LPT")
+    {
+        return Some(format!("\"{stem}\" is a reserved device name"));
+    }
+    None
+}
+
+/// Length of one path component as the file system counts it: UTF-16 code units on Windows,
+/// UTF-8 bytes elsewhere (`NAME_MAX`).
+fn component_length(c: &str) -> usize {
+    if cfg!(windows) {
+        c.encode_utf16().count()
+    } else {
+        c.len()
+    }
+}
+
+/// `COM1`-`COM9` / `LPT1`-`LPT9`, where Windows also reserves the superscript digits
+/// `¹ ² ³` as the number. Works on characters, so no byte slicing of multi-byte names.
+fn is_numbered_device(stem: &str, prefix: &str) -> bool {
+    let mut chars = stem.chars();
+    prefix
+        .chars()
+        .all(|p| chars.next().is_some_and(|c| c.eq_ignore_ascii_case(&p)))
+        && matches!(chars.next(), Some('1'..='9' | '¹' | '²' | '³'))
+        && chars.next().is_none()
 }
 
 /// Split an absolute name into its root (drive, UNC share or `/`) and the remainder.

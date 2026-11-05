@@ -264,11 +264,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS local_file_path ON local_file(path);
 CREATE INDEX IF NOT EXISTS local_file_hash ON local_file(hash_id);
 
 -- Pending AniDB commands (mylist edits etc.), persisted so offline work survives restarts.
+-- AUTOINCREMENT: ids are never reused, so an acknowledgement for a command that was
+-- superseded (or cleared) while in flight can never delete a newer command.
+-- blocked: permanent failure or exhausted attempts; kept (and shown) until the user retries.
+-- lid: mylist entry an add/edit/delete command targets, for pending-intent lookups.
+-- Existing databases are rebuilt into this shape by `Db::migrate` before this script runs.
 CREATE TABLE IF NOT EXISTS command_queue (
-    id        INTEGER PRIMARY KEY,
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
     created   INTEGER NOT NULL,
     priority  INTEGER NOT NULL DEFAULT 1,
     payload   TEXT    NOT NULL,  -- JSON encoded command
     tries     INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT
+    last_error TEXT,
+    blocked   INTEGER NOT NULL DEFAULT 0,
+    lid       INTEGER
 );
+CREATE INDEX IF NOT EXISTS command_queue_order ON command_queue(blocked, priority, id);
+CREATE INDEX IF NOT EXISTS command_queue_lid ON command_queue(lid);
+CREATE INDEX IF NOT EXISTS command_queue_payload ON command_queue(payload);

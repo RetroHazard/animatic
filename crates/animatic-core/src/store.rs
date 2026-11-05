@@ -4,13 +4,25 @@ use animatic_anidb::commands::{
     AnimeInfo, EpisodeInfo, FileInfo, GroupInfo, MylistEntry as ApiMylistEntry,
 };
 use animatic_anidb::http::{AnimeXml, DumpTitle};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::db::Db;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::format;
 use crate::hash::Hashes;
 use crate::library::{MylistEntry, anime_type_id, relation_id, title_kind_id};
+
+/// Metadata key holding the completion time of the last successful titles dump import.
+pub const TITLES_DUMP_DATE_KEY: &str = "titles_dump_date";
+
+/// What a titles dump import read and what it newly stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TitleImport {
+    /// Titles in the dump.
+    pub titles: usize,
+    /// Titles that were not stored yet.
+    pub added: usize,
+}
 
 impl Db {
     fn category_or_insert(&self, kind: &str, name: &str) -> Result<i64> {
@@ -85,8 +97,13 @@ impl Db {
         Ok(())
     }
 
-    /// Store everything a FILE reply carries.
+    /// Store everything a FILE reply carries, atomically (write lock up front; joins a caller's
+    /// transaction through a savepoint).
     pub fn store_file_info(&self, i: &FileInfo) -> Result<()> {
+        self.write_tx(|| self.store_file_info_rows(i))
+    }
+
+    fn store_file_info_rows(&self, i: &FileInfo) -> Result<()> {
         let now = format::now();
         let c = self.conn();
         let quality = self.category_or_insert("qual", i.quality.as_deref().unwrap_or(""))?;
@@ -97,8 +114,11 @@ impl Db {
                 dub_langs, sub_langs, description, released, updated)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
                 ?24, ?25, ?26)
-             ON CONFLICT(fid) DO UPDATE SET aid = excluded.aid, eid = excluded.eid, gid = excluded.gid, size = excluded.size,
-                ed2k = COALESCE(excluded.ed2k, ed2k), md5 = COALESCE(excluded.md5, md5), sha1 = COALESCE(excluded.sha1, sha1),
+             ON CONFLICT(fid) DO UPDATE SET aid = CASE WHEN excluded.aid > 0 THEN excluded.aid ELSE aid END,
+               eid = CASE WHEN excluded.eid > 0 THEN excluded.eid ELSE eid END,
+               gid = CASE WHEN excluded.gid > 0 THEN excluded.gid ELSE gid END,
+               size = CASE WHEN excluded.size > 0 THEN excluded.size ELSE size END,
+               ed2k = COALESCE(excluded.ed2k, ed2k), md5 = COALESCE(excluded.md5, md5), sha1 = COALESCE(excluded.sha1, sha1),
                 crc32 = COALESCE(excluded.crc32, crc32), filetype = COALESCE(excluded.filetype, filetype),
                 quality_id = excluded.quality_id, source_id = excluded.source_id, state = excluded.state,
                 length = excluded.length, deprecated = excluded.deprecated, anidb_filename = excluded.anidb_filename,
@@ -209,15 +229,32 @@ impl Db {
         }
         match &i.mylist {
             Some(m) => self.store_api_mylist(m)?,
-            None => {
-                // AniDB says the file is not in mylist: drop stale local entries.
-                c.execute("DELETE FROM mylist WHERE fid = ?1", [i.fid])?;
+            None if i.mylist_absent => {
+                // AniDB explicitly reported "not in mylist" (lid 0): drop stale local entries, but
+                // never one with queued local intent. An omitted lid column is not this case.
+                let lids: Vec<i64> = {
+                    let mut st = c.prepare("SELECT lid FROM mylist WHERE fid = ?1")?;
+                    st.query_map([i.fid], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?
+                };
+                for lid in lids {
+                    if !self.mylist_has_pending_intent(lid)? {
+                        c.execute("DELETE FROM mylist WHERE lid = ?1", [lid])?;
+                    }
+                }
             }
+            None => {}
         }
         Ok(())
     }
 
+    /// Persist an authoritative API mylist entry. The latest queued local intent for the lid is
+    /// re-applied on top, so a stale in-flight reply cannot revert a newer pending edit.
     pub fn store_api_mylist(&self, m: &ApiMylistEntry) -> Result<()> {
+        self.write_tx(|| self.store_api_mylist_rows(m))
+    }
+
+    fn store_api_mylist_rows(&self, m: &ApiMylistEntry) -> Result<()> {
         let fid_gid: Option<(i64, i64, i64)> = self
             .conn()
             .query_row(
@@ -234,7 +271,7 @@ impl Db {
             ),
             None => (m.eid, m.aid, m.gid),
         };
-        self.upsert_mylist(&MylistEntry {
+        let mut entry = MylistEntry {
             lid: m.lid,
             fid: m.fid,
             eid,
@@ -248,7 +285,9 @@ impl Db {
             source: m.source.clone(),
             other: m.other.clone(),
             filestate: m.filestate,
-        })
+        };
+        self.overlay_pending_mylist(&mut entry)?;
+        self.upsert_mylist(&entry)
     }
 
     pub fn upsert_mylist(&self, e: &MylistEntry) -> Result<()> {
@@ -485,41 +524,122 @@ impl Db {
         Ok(())
     }
 
-    /// Insert anime titles from the daily dump (anime rows are created for unknown aids).
-    pub fn store_title_dump(&self, titles: &[DumpTitle]) -> Result<usize> {
-        let tx = self.conn().unchecked_transaction()?;
-        let mut current = 0;
-        let mut n = 0;
-        for t in titles {
-            if t.aid != current {
-                current = t.aid;
-                self.ensure_anime_row(t.aid)?;
-                // Only replace titles of anime without a full HTTP record.
-                let fetched: i64 = self.conn().query_row(
-                    "SELECT fetched FROM anime WHERE aid = ?1",
-                    [t.aid],
-                    |r| r.get(0),
-                )?;
-                if fetched == 0 {
-                    self.conn()
-                        .execute("DELETE FROM anime_title WHERE aid = ?1", [t.aid])?;
+    /// Import the daily titles dump (anime rows are created for unknown aids; only anime without
+    /// a full HTTP record get their titles replaced) and record the completion time.
+    ///
+    /// `read` streams the dump into the sink it is given and returns `Ok` only for a complete,
+    /// validated document (see `animatic_anidb::http::read_titles_dump`). Nothing touches the
+    /// library database while `read` runs, however long the download takes: rows are spooled
+    /// into a private temporary SQLite database (deleted when its connection closes, also on
+    /// errors and panics) and merged in one short write transaction afterwards. A failure of
+    /// `read` or of the merge therefore leaves titles and completion time untouched. Memory
+    /// stays bounded: the spool is read back row by row.
+    pub fn import_title_dump<E: From<Error>>(
+        &self,
+        read: impl FnOnce(
+            &mut dyn FnMut(DumpTitle) -> std::result::Result<(), E>,
+        ) -> std::result::Result<usize, E>,
+    ) -> std::result::Result<TitleImport, E> {
+        fn db_err<E: From<Error>>(e: rusqlite::Error) -> E {
+            E::from(Error::from(e))
+        }
+
+        // An empty file name is SQLite's private temporary on-disk database.
+        let spool = Connection::open("").map_err(db_err::<E>)?;
+        spool
+            .pragma_update(None, "journal_mode", "OFF")
+            .map_err(db_err::<E>)?;
+        spool
+            .pragma_update(None, "synchronous", "OFF")
+            .map_err(db_err::<E>)?;
+        spool
+            .pragma_update(None, "cache_size", -8192)
+            .map_err(db_err::<E>)?;
+        spool
+            .execute_batch(
+                "CREATE TABLE spool(
+                     seq  INTEGER PRIMARY KEY,
+                     aid  INTEGER NOT NULL,
+                     kind INTEGER NOT NULL,
+                     lang TEXT    NOT NULL,
+                     name TEXT    NOT NULL
+                 );
+                 BEGIN",
+            )
+            .map_err(db_err::<E>)?;
+        let titles = {
+            let mut insert = spool
+                .prepare("INSERT INTO spool(aid, kind, lang, name) VALUES (?1, ?2, ?3, ?4)")
+                .map_err(db_err::<E>)?;
+            let mut sink = |t: DumpTitle| -> std::result::Result<(), E> {
+                insert
+                    .execute(params![t.aid, title_kind_id(&t.kind), t.lang, t.name])
+                    .map_err(db_err::<E>)?;
+                Ok(())
+            };
+            read(&mut sink)?
+        };
+
+        // The dump is complete and valid: merge it atomically.
+        let conn = self.conn();
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+            .map_err(db_err::<E>)?;
+        let mut added = 0;
+        {
+            let mut ensure = conn
+                .prepare("INSERT OR IGNORE INTO anime(aid) VALUES (?1)")
+                .map_err(db_err::<E>)?;
+            let mut fetched = conn
+                .prepare("SELECT fetched FROM anime WHERE aid = ?1")
+                .map_err(db_err::<E>)?;
+            let mut clear = conn
+                .prepare("DELETE FROM anime_title WHERE aid = ?1")
+                .map_err(db_err::<E>)?;
+            let mut exists = conn
+                .prepare(
+                    "SELECT EXISTS(SELECT 1 FROM anime_title WHERE aid = ?1 AND name = ?2 AND lang = ?3)",
+                )
+                .map_err(db_err::<E>)?;
+            let mut insert = conn
+                .prepare("INSERT INTO anime_title(aid, name, type, lang) VALUES (?1, ?2, ?3, ?4)")
+                .map_err(db_err::<E>)?;
+            let mut spooled = spool
+                .prepare("SELECT aid, kind, lang, name FROM spool ORDER BY seq")
+                .map_err(db_err::<E>)?;
+            let mut rows = spooled.query([]).map_err(db_err::<E>)?;
+            let mut current = None;
+            while let Some(row) = rows.next().map_err(db_err::<E>)? {
+                let (aid, kind, lang, name): (i64, i64, String, String) = (
+                    row.get(0).map_err(db_err::<E>)?,
+                    row.get(1).map_err(db_err::<E>)?,
+                    row.get(2).map_err(db_err::<E>)?,
+                    row.get(3).map_err(db_err::<E>)?,
+                );
+                if current != Some(aid) {
+                    current = Some(aid);
+                    ensure.execute([aid]).map_err(db_err::<E>)?;
+                    // Only replace titles of anime without a full HTTP record.
+                    let fetched: i64 = fetched
+                        .query_row([aid], |r| r.get(0))
+                        .map_err(db_err::<E>)?;
+                    if fetched == 0 {
+                        clear.execute([aid]).map_err(db_err::<E>)?;
+                    }
+                }
+                let present: bool = exists
+                    .query_row(params![aid, name, lang], |r| r.get(0))
+                    .map_err(db_err::<E>)?;
+                if !present {
+                    insert
+                        .execute(params![aid, name, kind, lang])
+                        .map_err(db_err::<E>)?;
+                    added += 1;
                 }
             }
-            let exists: i64 = self.conn().query_row(
-                "SELECT count(*) FROM anime_title WHERE aid = ?1 AND name = ?2 AND lang = ?3",
-                params![t.aid, t.name, t.lang],
-                |r| r.get(0),
-            )?;
-            if exists == 0 {
-                self.conn().execute(
-                    "INSERT INTO anime_title(aid, name, type, lang) VALUES (?1, ?2, ?3, ?4)",
-                    params![t.aid, t.name, title_kind_id(&t.kind), t.lang],
-                )?;
-                n += 1;
-            }
         }
-        tx.commit()?;
-        Ok(n)
+        self.set_meta(TITLES_DUMP_DATE_KEY, &format::now().to_string())?;
+        tx.commit().map_err(db_err::<E>)?;
+        Ok(TitleImport { titles, added })
     }
 
     /// Record a hashed file. Returns the local_file id.
@@ -634,13 +754,115 @@ mod tests {
         assert_eq!((m.aid, m.eid, m.gid, m.viewed), (2, 20, 3, true));
         assert_eq!(db.episode(20).unwrap().unwrap().name, "Third");
 
-        // A later reply without mylist data removes the stale entry.
+        // An explicit "lid 0" reply (AniDB says not in mylist) removes the stale entry.
         db.store_file_info(&FileInfo {
             mylist: None,
+            mylist_absent: true,
             ..info
         })
         .unwrap();
         assert!(db.mylist_entry(77).unwrap().is_none());
+    }
+
+    fn synthetic_file(fid: i64) -> FileInfo {
+        FileInfo {
+            fid,
+            aid: 2,
+            eid: 20,
+            gid: 3,
+            size: 1234,
+            ed2k: Some("abc".into()),
+            anime_romaji: Some("Romaji".into()),
+            epno: EpNo { kind: 1, number: 3 },
+            ep_name: Some("Third".into()),
+            mylist: Some(ApiMylistEntry {
+                lid: 77,
+                fid,
+                state: 1,
+                ..Default::default()
+            }),
+            ..FileInfo::default()
+        }
+    }
+
+    fn count(db: &Db, sql: &str) -> i64 {
+        db.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn reply_without_mylist_information_preserves_existing_rows() {
+        let db = Db::memory().unwrap();
+        db.store_file_info(&synthetic_file(5)).unwrap();
+        assert!(db.mylist_entry(77).unwrap().is_some());
+        // Partial reply: no lid information and most identifiers omitted.
+        db.store_file_info(&FileInfo {
+            fid: 5,
+            ..FileInfo::default()
+        })
+        .unwrap();
+        assert!(db.mylist_entry(77).unwrap().is_some(), "mylist survives");
+        let f = db.file_by_hash("ABC", 1234).unwrap().unwrap();
+        assert_eq!((f.fid, f.aid, f.eid, f.gid), (5, 2, 20, 3));
+        assert_eq!(count(&db, "SELECT count(*) FROM episode WHERE eid = 20"), 1);
+    }
+
+    #[test]
+    fn file_info_write_is_atomic() {
+        let db = Db::memory().unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER synthetic_fail BEFORE INSERT ON episode
+                 BEGIN SELECT RAISE(ABORT, 'synthetic child failure'); END;",
+            )
+            .unwrap();
+        assert!(db.store_file_info(&synthetic_file(5)).is_err());
+        assert_eq!(count(&db, "SELECT count(*) FROM file"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM anime"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM mylist"), 0);
+
+        // Inside a caller's transaction only this write rolls back; the caller's work survives.
+        db.conn().execute_batch("BEGIN").unwrap();
+        db.set_meta("synthetic", "kept").unwrap();
+        assert!(db.store_file_info(&synthetic_file(5)).is_err());
+        db.conn()
+            .execute_batch("DROP TRIGGER synthetic_fail")
+            .unwrap();
+        db.store_file_info(&synthetic_file(6)).unwrap();
+        db.conn().execute_batch("COMMIT").unwrap();
+        assert_eq!(db.meta("synthetic").unwrap().as_deref(), Some("kept"));
+        assert_eq!(count(&db, "SELECT count(*) FROM file WHERE fid = 5"), 0);
+        assert_eq!(count(&db, "SELECT count(*) FROM file WHERE fid = 6"), 1);
+    }
+
+    #[test]
+    fn api_writes_keep_the_latest_pending_local_intent() {
+        let db = Db::memory().unwrap();
+        db.store_file_info(&synthetic_file(5)).unwrap();
+        db.queue_edit_mylist(
+            77,
+            &animatic_anidb::commands::MylistEdit {
+                state: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A stale authoritative reply (state 1) must not undo the queued intent.
+        db.store_api_mylist(&ApiMylistEntry {
+            lid: 77,
+            fid: 5,
+            state: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(db.mylist_entry(77).unwrap().unwrap().state, 2);
+        // Nor may an explicit "not in mylist" FILE reply delete an entry with outstanding intent.
+        db.store_file_info(&FileInfo {
+            mylist: None,
+            mylist_absent: true,
+            ..synthetic_file(5)
+        })
+        .unwrap();
+        assert!(db.mylist_entry(77).unwrap().is_some());
     }
 
     #[test]
@@ -664,5 +886,216 @@ mod tests {
             .query_row("SELECT count(*) FROM local_hash", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "orphaned hashes are dropped");
+    }
+
+    const DUMP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<animetitles>
+<anime aid="1"><title type="main" xml:lang="x-jat">New One</title>
+<title type="official" xml:lang="en">New One EN</title></anime>
+<anime aid="2"><title type="main" xml:lang="x-jat">Dump Two</title></anime>
+<anime aid="3"><title type="main" xml:lang="x-jat">Dump Three</title></anime>
+</animetitles>
+"#;
+
+    /// A valid gzip file made of stored (uncompressed) deflate blocks.
+    fn gzip_stored(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        let mut chunks = data.chunks(65535).peekable();
+        while let Some(chunk) = chunks.next() {
+            let len = chunk.len() as u16;
+            out.push(u8::from(chunks.peek().is_none()));
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&(!len).to_le_bytes());
+            out.extend_from_slice(chunk);
+        }
+        out.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out
+    }
+
+    fn import_bytes(
+        db: &Db,
+        bytes: &[u8],
+    ) -> std::result::Result<TitleImport, crate::sync::CommandError> {
+        db.import_title_dump(|sink| {
+            animatic_anidb::http::read_titles_dump(
+                bytes,
+                &animatic_anidb::http::TitlesLimits::default(),
+                sink,
+            )
+        })
+    }
+
+    fn title_rows(db: &Db) -> Vec<(i64, String, i64, String)> {
+        db.conn()
+            .prepare("SELECT aid, name, type, lang FROM anime_title ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn anime_count(db: &Db) -> i64 {
+        db.conn()
+            .query_row("SELECT count(*) FROM anime", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Anime 1 has only dump titles, anime 2 a full HTTP record, and a dump ran before.
+    fn seed_titles(db: &Db) {
+        db.conn()
+            .execute_batch(
+                "INSERT INTO anime(aid, fetched) VALUES (1, 0), (2, 500);
+                 INSERT INTO anime_title(aid, name, type, lang) VALUES
+                   (1, 'Old One', 1, 'x-jat'), (2, 'Kept Two', 1, 'x-jat');",
+            )
+            .unwrap();
+        db.set_meta(TITLES_DUMP_DATE_KEY, "111").unwrap();
+    }
+
+    fn assert_untouched(db: &Db, rows: &[(i64, String, i64, String)]) {
+        assert_eq!(title_rows(db), rows);
+        assert_eq!(anime_count(db), 2);
+        assert_eq!(
+            db.meta(TITLES_DUMP_DATE_KEY).unwrap().as_deref(),
+            Some("111")
+        );
+    }
+
+    #[test]
+    fn title_dump_import_merges_and_records_completion() {
+        let db = Db::memory().unwrap();
+        seed_titles(&db);
+        let import = import_bytes(&db, &gzip_stored(DUMP_XML.as_bytes())).unwrap();
+        assert_eq!(
+            import,
+            TitleImport {
+                titles: 4,
+                added: 4
+            }
+        );
+
+        let names = |aid: i64| -> Vec<(String, i64)> {
+            title_rows(&db)
+                .into_iter()
+                .filter(|r| r.0 == aid)
+                .map(|r| (r.1, r.2))
+                .collect()
+        };
+        // Without a full record the dump replaces the titles; with one it only adds.
+        assert_eq!(
+            names(1),
+            [("New One".to_string(), 1), ("New One EN".to_string(), 4)]
+        );
+        assert_eq!(
+            names(2),
+            [("Kept Two".to_string(), 1), ("Dump Two".to_string(), 1)]
+        );
+        assert_eq!(names(3), [("Dump Three".to_string(), 1)]);
+        assert_eq!(anime_count(&db), 3);
+        let stamp: i64 = db
+            .meta(TITLES_DUMP_DATE_KEY)
+            .unwrap()
+            .and_then(|v| v.parse().ok())
+            .unwrap();
+        assert!(stamp > 111);
+        // Plain XML is accepted as well.
+        import_bytes(&db, DUMP_XML.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn failed_title_dumps_leave_titles_and_timestamp_untouched() {
+        let db = Db::memory().unwrap();
+        seed_titles(&db);
+        let before = title_rows(&db);
+        let good = gzip_stored(DUMP_XML.as_bytes());
+
+        // Everything is valid and delivered, but the gzip trailer is wrong.
+        let mut bad_crc = good.clone();
+        let crc = bad_crc.len() - 8;
+        bad_crc[crc] ^= 0xff;
+        assert!(import_bytes(&db, &bad_crc).is_err());
+        assert_untouched(&db, &before);
+
+        assert!(import_bytes(&db, &good[..good.len() - 5]).is_err());
+        assert_untouched(&db, &before);
+
+        // Valid rows first, a broken anime at the very end.
+        let late = DUMP_XML.replace("</animetitles>", r#"<anime aid="4"></anime></animetitles>"#);
+        assert!(import_bytes(&db, late.as_bytes()).is_err());
+        assert!(import_bytes(&db, &gzip_stored(late.as_bytes())).is_err());
+        assert_untouched(&db, &before);
+
+        // The download itself dies after every title was accepted.
+        let interrupted = db.import_title_dump::<crate::sync::CommandError>(|sink| {
+            animatic_anidb::http::read_titles_dump(
+                &good[..],
+                &animatic_anidb::http::TitlesLimits::default(),
+                sink,
+            )?;
+            Err(animatic_anidb::AnidbError::Network("synthetic".into()).into())
+        });
+        assert!(interrupted.is_err());
+        assert_untouched(&db, &before);
+
+        // A storage failure halfway through the merge rolls back what was already merged.
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER poison BEFORE INSERT ON anime_title WHEN NEW.name = 'Dump Three'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic'); END;",
+            )
+            .unwrap();
+        assert!(import_bytes(&db, &good).is_err());
+        assert_untouched(&db, &before);
+        db.conn().execute_batch("DROP TRIGGER poison").unwrap();
+
+        // Nothing is left in a bad state: the next good dump commits.
+        assert_eq!(import_bytes(&db, &good).unwrap().titles, 4);
+        assert_eq!(anime_count(&db), 3);
+    }
+
+    #[test]
+    fn title_dump_download_does_not_lock_the_library() {
+        let path = std::env::temp_dir().join(format!(
+            "animatic-titles-lock-{}.sqlite",
+            std::process::id()
+        ));
+        let remove = || {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            }
+        };
+        remove();
+        let db = Db::open(&path).unwrap();
+        let other = Db::open(&path).unwrap();
+        other
+            .conn()
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
+        seed_titles(&db);
+        let good = gzip_stored(DUMP_XML.as_bytes());
+        let mut delivered = 0;
+        let result = db.import_title_dump::<crate::sync::CommandError>(|sink| {
+            animatic_anidb::http::read_titles_dump(
+                &good[..],
+                &animatic_anidb::http::TitlesLimits::default(),
+                |title| {
+                    delivered += 1;
+                    if delivered == 2 {
+                        // Mid download another connection (the UI) writes without any wait.
+                        other.set_meta("probe", "written during download").unwrap();
+                    }
+                    sink(title)
+                },
+            )
+        });
+        assert_eq!(result.unwrap().titles, 4);
+        assert_eq!(
+            db.meta("probe").unwrap().as_deref(),
+            Some("written during download")
+        );
+        drop((db, other));
+        remove();
     }
 }

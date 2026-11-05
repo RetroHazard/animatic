@@ -163,6 +163,31 @@ fn num<T: std::str::FromStr + Default>(s: &str) -> T {
     s.trim().parse().unwrap_or_default()
 }
 
+/// A mandatory identifier: must be a positive integer.
+fn required_id(what: &str, s: &str) -> Result<i64> {
+    match s.trim().parse::<i64>() {
+        Ok(v) if v > 0 => Ok(v),
+        _ => Err(AnidbError::Protocol(format!(
+            "{what} is not a positive integer: {:?}",
+            s.trim()
+        ))),
+    }
+}
+
+/// A numeric column: non-negative integer, with an empty column meaning 0.
+fn count_field(what: &str, s: &str) -> Result<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(0);
+    }
+    match s.parse::<i64>() {
+        Ok(v) if v >= 0 => Ok(v),
+        _ => Err(AnidbError::Protocol(format!(
+            "{what} is not a non-negative integer: {s:?}"
+        ))),
+    }
+}
+
 fn opt(s: &str) -> Option<String> {
     let s = s.trim();
     (!s.is_empty()).then(|| s.to_string())
@@ -233,23 +258,29 @@ pub struct MylistEntry {
 }
 
 impl MylistEntry {
-    fn from_fields(f: &[String]) -> Option<MylistEntry> {
+    /// Parse a MYLIST/MYLISTADD entry record. A record that is truncated, or whose lid is not a
+    /// positive integer, or whose numeric columns are not numbers, is a protocol error: callers
+    /// must never persist a default (lid 0) entry. Free-text columns may legitimately be empty.
+    fn from_fields(f: &[String]) -> Result<MylistEntry> {
         if f.len() < 12 {
-            return None;
+            return Err(AnidbError::Protocol(format!(
+                "mylist entry has {} fields, expected 12",
+                f.len()
+            )));
         }
-        Some(MylistEntry {
-            lid: num(&f[0]),
-            fid: num(&f[1]),
-            eid: num(&f[2]),
-            aid: num(&f[3]),
-            gid: num(&f[4]),
-            date: num(&f[5]),
-            state: num(&f[6]),
-            viewdate: num(&f[7]),
+        Ok(MylistEntry {
+            lid: required_id("mylist lid", &f[0])?,
+            fid: count_field("mylist fid", &f[1])?,
+            eid: required_id("mylist eid", &f[2])?,
+            aid: required_id("mylist aid", &f[3])?,
+            gid: count_field("mylist gid", &f[4])?,
+            date: count_field("mylist date", &f[5])?,
+            state: count_field("mylist state", &f[6])?,
+            viewdate: count_field("mylist viewdate", &f[7])?,
             storage: opt(&f[8]),
             source: opt(&f[9]),
             other: opt(&f[10]),
-            filestate: num(&f[11]),
+            filestate: count_field("mylist filestate", &f[11])?,
         })
     }
 
@@ -290,6 +321,9 @@ pub struct FileInfo {
     pub aired: i64,
     pub anidb_filename: Option<String>,
     pub mylist: Option<MylistEntry>,
+    /// True only when AniDB explicitly reported lid 0 (the file is not in mylist). A reply that
+    /// omits the lid column leaves this false, and must never be read as "not in mylist".
+    pub mylist_absent: bool,
     pub anime_episodes: i64,
     pub anime_highest_ep: i64,
     pub anime_year: Option<String>,
@@ -327,14 +361,22 @@ impl FileInfo {
         }
         let mut i = FileInfo::default();
         let mut ml = MylistEntry::default();
+        let mut lid_column_is_zero = false;
         for (name, v) in names.iter().zip(f.iter()) {
             let v = v.as_str();
             match *name {
-                "fid" => i.fid = num(v),
-                "aid" => i.aid = num(v),
-                "eid" => i.eid = num(v),
-                "gid" => i.gid = num(v),
-                "lid" => i.lid = num(v),
+                "fid" => i.fid = required_id("FILE fid", v)?,
+                "aid" => i.aid = required_id("FILE aid", v)?,
+                "eid" => i.eid = required_id("FILE eid", v)?,
+                "gid" => i.gid = count_field("FILE gid", v)?,
+                "lid" => {
+                    let t = v.trim();
+                    if t == "0" {
+                        lid_column_is_zero = true;
+                    } else if !t.is_empty() {
+                        i.lid = required_id("FILE lid", t)?;
+                    }
+                }
                 "other_eps" => {
                     i.other_episodes = list(v)
                         .iter()
@@ -394,13 +436,16 @@ impl FileInfo {
                 _ => {}
             }
         }
-        if i.lid != 0 {
+        if i.lid > 0 {
             ml.lid = i.lid;
             ml.fid = i.fid;
             ml.eid = i.eid;
             ml.aid = i.aid;
             ml.gid = i.gid;
             i.mylist = Some(ml);
+        } else {
+            // Only an explicit lid of 0 says "not in mylist"; an empty column is "unknown".
+            i.mylist_absent = lid_column_is_zero;
         }
         Ok(i)
     }
@@ -733,15 +778,29 @@ pub fn mylist_add(
         p.push(("edit", "1".into()));
     }
     let resp = c.request("MYLISTADD", &p)?;
+    mylist_add_reply(resp)
+}
+
+fn mylist_add_reply(resp: Response) -> Result<MylistAddResult> {
     match resp.code {
         210 => Ok(MylistAddResult::Added {
-            lid: resp.lines.first().map(|l| num(l)).unwrap_or(0),
+            lid: required_id(
+                "MYLISTADD lid",
+                resp.lines.first().map(String::as_str).unwrap_or(""),
+            )?,
         }),
-        310 => Ok(MylistEntry::from_fields(&resp.fields(0))
-            .map(MylistAddResult::AlreadyInMylist)
-            .unwrap_or(MylistAddResult::AlreadyInMylist(MylistEntry::default()))),
+        310 => MylistEntry::from_fields(&resp.fields(0)).map(MylistAddResult::AlreadyInMylist),
+        // A single-entry edit may carry no count line; when present it must be a positive count.
         311 => Ok(MylistAddResult::Edited {
-            count: resp.lines.first().map(|l| num(l)).unwrap_or(1),
+            count: match resp
+                .lines
+                .first()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+            {
+                None => 1,
+                Some(l) => required_id("MYLISTADD edited count", l)?,
+            },
         }),
         320 => Ok(MylistAddResult::NoSuchFile),
         411 => Ok(MylistAddResult::NoSuchEntry),
@@ -761,8 +820,13 @@ pub fn mylist_del(c: &mut UdpClient, file: &FileRef) -> Result<i64> {
 
 pub fn mylist(c: &mut UdpClient, file: &FileRef) -> Result<Option<MylistEntry>> {
     let resp = c.request("MYLIST", &file.params())?;
+    mylist_reply(resp)
+}
+
+/// 221 must carry a well-formed entry; only an explicit 321 means "no such entry".
+fn mylist_reply(resp: Response) -> Result<Option<MylistEntry>> {
     match resp.code {
-        221 => Ok(MylistEntry::from_fields(&resp.fields(0))),
+        221 => MylistEntry::from_fields(&resp.fields(0)).map(Some),
         321 => Ok(None),
         code => Err(AnidbError::Unexpected(code, resp.message)),
     }
@@ -860,5 +924,179 @@ mod tests {
         assert_eq!(fi.epno, EpNo { kind: 2, number: 2 });
         assert_eq!(fi.group_short.as_deref(), Some("V-A"));
         assert!(fi.mylist.is_none());
+        assert!(fi.mylist_absent, "explicit lid 0 means not in mylist");
+    }
+
+    fn file_resp(fid: &str, aid: &str, eid: &str, lid: &str) -> Response {
+        let fields: Vec<String> = std::iter::once(fid.to_string())
+            .chain(named(&FILE_FMASK_FIELDS).map(|n| match n {
+                "aid" => aid.into(),
+                "eid" => eid.into(),
+                "lid" => lid.into(),
+                _ => String::new(),
+            }))
+            .chain(named(&FILE_AMASK_FIELDS).map(|_| String::new()))
+            .collect();
+        Response {
+            code: 220,
+            message: "FILE".into(),
+            lines: vec![fields.join("|")],
+        }
+    }
+
+    #[test]
+    fn file_reply_distinguishes_absent_lid_from_unknown() {
+        let ok = |lid: &str| FileInfo::from_response(&file_resp("7", "4896", "113", lid));
+        let absent = ok("0").unwrap();
+        assert!(absent.mylist.is_none() && absent.mylist_absent);
+        let unknown = ok("").unwrap();
+        assert!(unknown.mylist.is_none() && !unknown.mylist_absent);
+        let present = ok("99").unwrap();
+        assert_eq!(
+            present.mylist.as_ref().map(|m| (m.lid, m.fid)),
+            Some((99, 7))
+        );
+        assert!(!present.mylist_absent);
+        for bad in ["abc", "-4"] {
+            assert!(matches!(ok(bad), Err(AnidbError::Protocol(_))));
+        }
+    }
+
+    #[test]
+    fn file_reply_requires_concrete_identifiers() {
+        for (fid, aid, eid) in [
+            ("", "4896", "113"),
+            ("0", "4896", "113"),
+            ("x", "4896", "113"),
+            ("7", "", "113"),
+            ("7", "0", "113"),
+            ("7", "abc", "113"),
+            ("7", "4896", ""),
+            ("7", "4896", "0"),
+            ("7", "4896", "-2"),
+        ] {
+            assert!(
+                matches!(
+                    FileInfo::from_response(&file_resp(fid, aid, eid, "0")),
+                    Err(AnidbError::Protocol(_))
+                ),
+                "{fid:?} {aid:?} {eid:?}"
+            );
+        }
+    }
+
+    fn reply(code: u16, lines: &[&str]) -> Response {
+        Response {
+            code,
+            message: "SYNTHETIC".into(),
+            lines: lines.iter().map(|l| l.to_string()).collect(),
+        }
+    }
+
+    const ENTRY: &str = "1001|2002|30|4|5|1700000000|1|0|shelf||note|0";
+
+    #[test]
+    fn mylist_221_requires_a_complete_entry() {
+        let e = mylist_reply(reply(221, &[ENTRY])).unwrap().unwrap();
+        assert_eq!((e.lid, e.fid, e.eid, e.aid, e.gid), (1001, 2002, 30, 4, 5));
+        assert_eq!(e.storage.as_deref(), Some("shelf"));
+        assert_eq!(e.source, None);
+        assert_eq!(e.other.as_deref(), Some("note"));
+        assert!(mylist_reply(reply(321, &[])).unwrap().is_none());
+        // Truncated, missing or non-numeric/zero lid, junk numeric column.
+        for bad in [
+            "1001|2002|30|4",
+            "",
+            "abc|2002|30|4|5|1700000000|1|0|||0|0",
+            "0|2002|30|4|5|1700000000|1|0|||0|0",
+            "-3|2002|30|4|5|1700000000|1|0|||0|0",
+            "1001|2002|30|4|5|1700000000|zz|0|||0|0",
+            "1001|2002||4|5|1700000000|1|0|||0|0",
+            "1001|2002|0|4|5|1700000000|1|0|||0|0",
+            "1001|2002|x|4|5|1700000000|1|0|||0|0",
+            "1001|2002|30||5|1700000000|1|0|||0|0",
+            "1001|2002|30|0|5|1700000000|1|0|||0|0",
+            "1001|2002|30|y|5|1700000000|1|0|||0|0",
+            "1001|2002|30|4|g|1700000000|1|0|||0|0",
+        ] {
+            let lines: Vec<&str> = if bad.is_empty() { vec![] } else { vec![bad] };
+            assert!(
+                matches!(
+                    mylist_reply(reply(221, &lines)),
+                    Err(AnidbError::Protocol(_))
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mylist_accepts_generic_and_groupless_entries_but_not_detached_ones() {
+        // Generic entry (fid 0) of a group-less release (gid 0) is legitimate.
+        let e = mylist_reply(reply(221, &["1001|0|30|4|0|1700000000|1|0||||0"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!((e.lid, e.fid, e.eid, e.aid, e.gid), (1001, 0, 30, 4, 0));
+        match mylist_add_reply(reply(310, &["1001|0|30|4|0|1700000000|1|0||||0"])).unwrap() {
+            MylistAddResult::AlreadyInMylist(e) => assert_eq!((e.fid, e.gid), (0, 0)),
+            other => panic!("{other:?}"),
+        }
+        // Unsupported codes are errors, never defaulted successes.
+        assert!(matches!(
+            mylist_reply(reply(312, &[ENTRY])),
+            Err(AnidbError::Unexpected(312, _))
+        ));
+        assert!(matches!(
+            mylist_add_reply(reply(312, &[ENTRY])),
+            Err(AnidbError::Unexpected(312, _))
+        ));
+    }
+
+    #[test]
+    fn mylistadd_replies_are_validated() {
+        match mylist_add_reply(reply(210, &["1001"])).unwrap() {
+            MylistAddResult::Added { lid } => assert_eq!(lid, 1001),
+            other => panic!("{other:?}"),
+        }
+        match mylist_add_reply(reply(310, &[ENTRY])).unwrap() {
+            MylistAddResult::AlreadyInMylist(e) => assert_eq!(e.lid, 1001),
+            other => panic!("{other:?}"),
+        }
+        match mylist_add_reply(reply(311, &["2"])).unwrap() {
+            MylistAddResult::Edited { count } => assert_eq!(count, 2),
+            other => panic!("{other:?}"),
+        }
+        match mylist_add_reply(reply(311, &[])).unwrap() {
+            MylistAddResult::Edited { count } => assert_eq!(count, 1),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            mylist_add_reply(reply(320, &[])),
+            Ok(MylistAddResult::NoSuchFile)
+        ));
+        assert!(matches!(
+            mylist_add_reply(reply(411, &[])),
+            Ok(MylistAddResult::NoSuchEntry)
+        ));
+        for (code, lines) in [
+            (210, vec![]),
+            (210, vec!["0"]),
+            (210, vec!["not-a-number"]),
+            (310, vec![]),
+            (310, vec!["1001|2002|30"]),
+            (310, vec!["0|2002|30|4|5|1700000000|1|0|||0|0"]),
+            (310, vec!["1001|2002||4|5|1700000000|1|0|||0|0"]),
+            (310, vec!["1001|2002|30||5|1700000000|1|0|||0|0"]),
+            (311, vec!["0"]),
+            (311, vec!["x"]),
+        ] {
+            assert!(
+                matches!(
+                    mylist_add_reply(reply(code, &lines)),
+                    Err(AnidbError::Protocol(_))
+                ),
+                "{code} {lines:?}"
+            );
+        }
     }
 }
