@@ -56,14 +56,16 @@ jobs:
           git merge-base --is-ancestor "$sha" refs/remotes/origin/main
           git checkout --detach "$sha"
           python scripts/release.py validate --tag "$RELEASE_TAG"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
-          fi
+          {
+            echo "sha=$sha"
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              echo 'prerelease=true'
+            else
+              echo 'prerelease=false'
+            fi
+          } >> "$GITHUB_OUTPUT"
 
   build:
     needs: validate
