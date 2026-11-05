@@ -40,7 +40,7 @@ the command line see [getting started](getting-started.md); for every stored opt
 - **Status bar** (bottom): current activity or last message, connection state and warnings.
 - **Floating windows**: [Anime detail](#anime-detail-window), [Options](#options-window),
   "Confirm rename", "Review imported AOM settings", "Settings recovered" and "About
-  Animatic" (version taken from the build, `1.0.0` for this tree, plus an AniDB link).
+  Animatic" (the build's version from `Cargo.toml`, plus an AniDB link).
 
 All data on screen comes from a **snapshot** of the local database that a background thread
 loads and swaps in whole. Changes appear after the next snapshot (requests are coalesced, at

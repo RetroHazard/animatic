@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Animatic third-party notices</title>
+<style>
+body { font-family: sans-serif; line-height: 1.45; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; }
+h1, h2, h3 { line-height: 1.2; }
+pre { background: #f4f4f4; border: 1px solid #ccc; overflow-x: auto; padding: 0.75rem; white-space: pre-wrap; word-wrap: break-word; }
+.note { font-style: italic; }
+.crates { columns: 2; list-style: none; padding-left: 0; }
+.crates li { break-inside: avoid; }
+</style>
+</head>
+<body>
+<h1>Animatic third-party notices</h1>
+<p>Animatic itself is distributed under the MIT License; see the <code>LICENSE</code> file shipped next to this document.</p>
+<p>This binary is built from open-source crates and bundled font data. Each license below is reproduced in full, followed by the crates (name and version) that are redistributed under it. The list covers the dependency graph for the Windows (x86_64-pc-windows-msvc) and Linux (x86_64-unknown-linux-gnu) release builds.</p>
+
+<h2>Licenses at a glance</h2>
+<ul>
+{{#each overview}}
+<li>{{name}} (<code>{{id}}</code>), {{count}} crate(s):{{#each indices}} <a href="#license-{{this}}">text {{this}}</a>{{/each}}</li>
+{{/each}}
+</ul>
+
+{{!--
+  MAINTAINERS: the supplement below is hand-maintained. cargo-about 0.9.3 cannot fetch license files that
+  crates fail to package, so these upstream copyright lines are copied verbatim from the upstream
+  license files cited here. Re-check it whenever Cargo.lock changes any crate listed below (new upstream
+  holders or years, a crate that starts packaging its own license file, or a crate leaving the graph) and
+  update or delete the matching entry. Sources (GitHub, files verified at the cited commits):
+    egui, ecolor, emath, epaint, egui-wgpu, egui-winit 0.37.0, egui_extras 0.37.0, eframe 0.37.0,
+    egui_system_font_provider 0.37.0: https://github.com/emilk/egui/blob/3c6eb8261c3293ad9c7ea1ed58487e038860ebef/LICENSE-MIT
+      and https://github.com/emilk/egui/blob/9d317be94fc96df23bd5d9316f357efa2d3631d8/LICENSE-MIT
+      (the commit named in the egui, ecolor, emath, epaint, egui-wgpu and egui-winit packages,
+      7c0b40402271e8d40cda69f87cf3c2617c2e4382, could not be fetched; the two commits above carry the same notice)
+    profiling, profiling-procmacros 1.0.18: https://github.com/aclysma/profiling/blob/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT
+    pulp-wasm-simd-flag 0.1.1: https://github.com/sarah-quinones/pulp/blob/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE
+--}}
+<h2 id="upstream-notices">Upstream copyright notices not packaged with their crates</h2>
+<p>The crates below are distributed under the MIT License (the standard text of which is reproduced further down) but do not package the upstream license file that carries their copyright line. These lines are copied verbatim from the upstream license files named in each entry.</p>
+<ul>
+<li>egui 0.37.0, ecolor 0.37.0, emath 0.37.0, epaint 0.37.0, egui-wgpu 0.37.0, egui-winit 0.37.0, egui_extras 0.37.0, eframe 0.37.0, egui_system_font_provider 0.37.0: <code>Copyright (c) 2018-2021 Emil Ernerfeldt &lt;emil.ernerfeldt@gmail.com&gt;</code> (<code>LICENSE-MIT</code> in https://github.com/emilk/egui, commits 3c6eb8261c3293ad9c7ea1ed58487e038860ebef and 9d317be94fc96df23bd5d9316f357efa2d3631d8)</li>
+<li>profiling 1.0.18, profiling-procmacros 1.0.18: <code>Copyright (c) 2020 Philip Degarmo and other contributors</code> (<code>LICENSE-MIT</code> in https://github.com/aclysma/profiling, commit 8271551172eb6fa4cba47369aedd93790c623df9)</li>
+<li>pulp-wasm-simd-flag 0.1.1: <code>Copyright (c) 2021 sarah</code> (<code>LICENSE</code> in https://github.com/sarah-quinones/pulp, commit 5eb07fd7b68edf0a5e19f71737d315f72a510295)</li>
+</ul>
+
+{{#each licenses}}
+<h2 id="license-{{@index}}">{{name}} (<code>{{id}}</code>) &mdash; text {{@index}}</h2>
+<h3>Used by</h3>
+<ul class="crates">
+{{#each used_by}}
+{{#if crate.source}}
+<li>{{crate.name}} {{crate.version}}{{#if crate.repository}} &mdash; {{crate.repository}}{{/if}}</li>
+{{/if}}
+{{/each}}
+</ul>
+{{#unless source_path}}
+<p class="note">These crates do not package a license file that cargo-about could identify, so the standard text of the license is reproduced below. That standard text names no copyright holder, and this notice compiler cannot retrieve the upstream copyright notices. The authors listed here are copied from each crate's Cargo.toml metadata; they are not upstream copyright notices. Consult the repository of each crate for its own copyright statement.</p>
+<ul class="crates">
+{{#each used_by}}
+{{#if crate.source}}
+<li>{{crate.name}} {{crate.version}}: {{#each crate.authors}}{{this}}{{#unless @last}}; {{/unless}}{{else}}no authors listed{{/each}}</li>
+{{/if}}
+{{/each}}
+</ul>
+{{/unless}}
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

@@ -1,0 +1,109 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'CalVer YYYY.M.PATCH in the current UTC month, optionally -rc.N (no v prefix)'
+        required: true
+        type: string
+      dry_run:
+        description: Preview changes only; do not push a branch or open a PR
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-preparation
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Require the main branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: test "$DISPATCH_REF" = refs/heads/main
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Exercise release tooling
+        run: python -m unittest discover -s scripts -p test_release.py -v
+      - name: Prepare versions and changelog
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          python scripts/release.py prepare --version "$VERSION"
+          python scripts/release.py validate --tag "v$VERSION"
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/release-metadata.json"
+          python scripts/release.py notes --version "$VERSION" --output "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload reviewable preparation preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-preview-v${{ inputs.version }}
+          path: |
+            CHANGELOG.md
+            Cargo.toml
+            Cargo.lock
+            crates/*/Cargo.toml
+          if-no-files-found: error
+          retention-days: 14
+      - name: Commit and push a release branch
+        id: commit
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock crates/*/Cargo.toml CHANGELOG.md
+          git -c commit.gpgsign=false commit -m "chore(release): v$VERSION"
+          git push --force-with-lease="refs/heads/$branch:" origin "HEAD:refs/heads/$branch"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  verify:
+    if: ${{ !inputs.dry_run }}
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.prepare.outputs.sha }}
+
+  open-pr:
+    needs: [prepare, verify]
+    runs-on: ubuntu-22.04
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Open the checked release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          CHECKED_SHA: ${{ needs.prepare.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf '%s\n' \
+            "Prepared version v$VERSION and its changelog. Review the generated notes for accuracy and privacy before merging." \
+            '' \
+            "Windows and Linux checks passed for commit $CHECKED_SHA: $RUN_URL" \
+            '' \
+            'This bot-created PR does not trigger another pull_request run. If branch protection requires the standalone CI check, manually dispatch CI on this release branch.' \
+            '' \
+            'After merging, create and push the matching tag from the reviewed main commit. The release workflow creates an unsigned draft release; it does not publish automatically.' \
+            > "$RUNNER_TEMP/release-pr.md"
+          gh pr create --base main --head "release/v$VERSION" --title "chore(release): v$VERSION" --body-file "$RUNNER_TEMP/release-pr.md"

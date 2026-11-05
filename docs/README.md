@@ -8,7 +8,7 @@ explicitly; the historical forum audit is evidence, not a product specification.
 
 | Guide | Read it for |
 |---|---|
-| [Getting started](getting-started.md) | Build or obtain an executable, first run, data locations, portable setup and CLI reference |
+| [Getting started](getting-started.md) | Download a release or build, first run, data locations, portable setup and CLI reference |
 | [User guide](user-guide.md) | Library views, hashing, identification, MyList edits, scans, migration, exports and external tools |
 | [Settings reference](settings-reference.md) | JSON fields, defaults, UI controls, active versus stored-only options and recovery rules |
 | [Rename language](rename-language.md) | Expressions, functions, object properties, working patterns, validation and safe application |
@@ -24,7 +24,8 @@ review imported settings and use a registered AniDB client identifier.
 |---|---|
 | [Architecture](architecture.md) | Crate dependencies, threads, data flows, invariants and extension points |
 | [Storage and network contracts](storage-and-network.md) | Schema, queue ordering and failure states, protocol handling and Rust API entry points |
-| [Development](development.md) | Toolchain, checks, native smoke verification, CI artifacts and contribution/privacy rules |
+| [Development](development.md) | Toolchain, checks, native smoke verification, CI and contribution/privacy rules |
+| [Releases](releases.md) | Versioning and changelog, release tool, workflows, maintainer procedure, archive contents and checksum verification |
 | [Feature parity](feature-parity.md) | Desktop workflows versus core-only capabilities, compatibility differences and open gaps |
 
 Generate API documentation with `cargo doc --workspace --no-deps`; the local entry points
@@ -38,5 +39,6 @@ verification records and limits of the available research. It is not a completed
 a promise that every reported AOM failure has been reproduced in Animatic.
 
 Windows and Linux are supported targets. Local runtime verification and CI build/test
-coverage are different evidence; neither implies production AniDB validation. Never put
+coverage are different evidence, and a successful release run is not runtime evidence either;
+neither implies production AniDB validation. Never put
 real settings, credentials, library records or AOM artifacts into documentation examples.

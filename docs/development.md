@@ -1,8 +1,8 @@
 # Development
 
 This guide covers building, checking, testing and changing Animatic. It describes what the
-repository does today; where something is absent (a release workflow, an installer, signing)
-it says so. Repository-specific engineering rules for coding agents live in
+repository does today; where something is absent (an installer, signing) it says so.
+Repository-specific engineering rules for coding agents live in
 [`AGENTS.md`](../AGENTS.md); design and invariants are in [Architecture](architecture.md) and
 [Storage and network contracts](storage-and-network.md).
 
@@ -13,10 +13,10 @@ it says so. Repository-specific engineering rules for coding agents live in
 | Language / edition | Rust, edition 2024, Cargo resolver 3 | [`Cargo.toml`](../Cargo.toml) |
 | Toolchain | Current stable Rust. There is no `rust-toolchain` file and no `rust-version` field; CI uses the `stable` channel with `clippy` and `rustfmt` | [`ci.yml`](../.github/workflows/ci.yml) |
 | Workspace members | `animatic-core`, `animatic-anidb`, `animatic` | [`Cargo.toml`](../Cargo.toml) |
-| Version | `1.0.0` for all three crates (shared through `[workspace.package]`) | [`Cargo.toml`](../Cargo.toml) |
-| Targets | Windows and Linux (x86_64 builds in CI) | [`ci.yml`](../.github/workflows/ci.yml) |
-| CI | Format, Clippy, tests and a release build on every push and pull request | [`ci.yml`](../.github/workflows/ci.yml) |
-| Distribution | CI artifacts only. No release workflow, tags, installer, package or signature | see [Release and distribution status](#release-and-distribution-status) |
+| Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
+| Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
+| CI | Locked Clippy, tests and release build, formatting, and the Python release-tool tests on `windows-latest` and `ubuntu-22.04`; runs on every push and pull request and is reusable by the release workflows | [`ci.yml`](../.github/workflows/ci.yml) |
+| Distribution | Tag-driven draft GitHub Releases with an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package, signing or auto-update | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
 Local runtime verification and CI coverage are different evidence. Linux runtime behavior and
@@ -60,7 +60,7 @@ sudo apt-get update
 sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev libssl-dev
 ```
 
-`ubuntu-latest` runners already carry a C compiler and `pkg-config`; on a minimal system also
+`ubuntu-22.04` runners already carry a C compiler and `pkg-config`; on a minimal system also
 install them (for example `build-essential pkg-config`). Other distributions need the
 equivalent development packages. A build failure that mentions a missing GTK, xkbcommon,
 Wayland or OpenSSL library or a `pkg-config` lookup almost always means one of those
@@ -78,7 +78,8 @@ crates/animatic-anidb/        AniDB UDP and HTTP transports, typed commands and 
 crates/animatic-core/         storage, schema, queue, hashing, import, rename, settings, ...
 crates/animatic/              native egui/eframe app, worker thread, CLI entry point
 docs/                         this documentation set
-.github/workflows/ci.yml      the only workflow
+.github/workflows/            CI, release preparation and release workflows
+scripts/                      release tooling (release.py) and its tests
 ```
 
 Dependency direction: `animatic` depends on both libraries; `animatic-core` depends on
@@ -93,8 +94,8 @@ Build profiles ([`Cargo.toml`](../Cargo.toml)):
   rendering are usable without a release build, at the cost of a slower first dependency
   build).
 
-`Cargo.lock` is tracked. CI does not pass `--locked`, so commit lockfile changes together
-with any dependency change.
+`Cargo.lock` is tracked. CI builds, tests and lints with `--locked`, so commit lockfile
+changes together with any dependency change or the run fails.
 
 ## Everyday commands
 
@@ -177,7 +178,7 @@ Which checks a change needs (from [`AGENTS.md`](../AGENTS.md)):
 | Core, storage or network code | A targeted behavior test, then the full workspace tests and Clippy |
 | UI behavior | Launch the native application and exercise the changed path; tests alone are insufficient |
 | Migration | Synthetic unit fixtures; when a private databank is available, an out-of-tree smoke import and a SQLite integrity check |
-| Cross-platform code | Keep CI green on both `windows-latest` and `ubuntu-latest`; isolate platform behavior behind an abstraction |
+| Cross-platform code | Keep CI green on both `windows-latest` and `ubuntu-22.04`; isolate platform behavior behind an abstraction |
 | Rename language | Behavior tests in `rename/tests.rs` and a note in [Rename language](rename-language.md) for any deliberate difference |
 | Documentation only | Re-read the cited source; run the format and link review below |
 
@@ -283,41 +284,89 @@ client credentials against it. The existing tests show the pattern:
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
 
-- **Triggers:** every `push` and every `pull_request`.
-- **Matrix:** `windows-latest` and `ubuntu-latest`, `fail-fast: false`.
-- **Setup:** `actions/checkout@v4`; `dtolnay/rust-toolchain@stable` with `clippy` and
-  `rustfmt`; on Linux only, `sudo apt-get update && sudo apt-get install -y libgtk-3-dev
-  libxkbcommon-dev libwayland-dev libssl-dev`.
-- **Steps, in order:** `cargo fmt --all -- --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
-  `cargo build --release -p animatic`.
-- **Artifacts** (`actions/upload-artifact@v4`, one per run and operating system):
+- **Triggers:** pushes to branches, every `pull_request`, manual `workflow_dispatch`, and
+  `workflow_call` with inputs `ref` (string) and `package` (boolean, default `false`) so the
+  release workflows can run exactly the same checks on a specific commit.
+- **Third-party notices:** before the matrix, a job on `ubuntu-22.04` installs the pinned
+  `cargo-about` (version in `ci.yml`) and generates `THIRD-PARTY-NOTICES.html` from `about.toml`
+  and `about.hbs` for the union of the Windows and Linux dependencies; the matrix jobs download
+  it as the `dependency-notices` artifact. Because generation fails on a license outside the
+  policy and CI fails on any `cargo-about` warning on standard error (for example a changed pinned
+  license file), every CI run is also a license-policy gate. A new
+  dependency license needs a deliberate maintainer review (see
+  [Releases](releases.md#third-party-notices)); the generated notices are not a legal audit, and
+  some crates fall back to canonical SPDX text without copyright lines.
 
-  | Artifact name | Path in the job | Produced on |
-  |---|---|---|
-  | `animatic-windows-x86_64` | `target/release/animatic.exe` | `windows-latest` |
-  | `animatic-linux-x86_64` | `target/release/animatic` | `ubuntu-latest` |
+To run the policy gate locally (optional; it needs the same pinned `cargo-about`, so use the
+version in `ci.yml`):
 
-Each artifact contains only the single executable. A failing step stops the job before the
-upload, so a downloadable artifact means all four commands passed on that runner for that
-commit. That says nothing about runtime behavior on that platform.
+  ```sh
+  cargo install --locked --version 0.9.3 cargo-about
+  cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/THIRD-PARTY-NOTICES.html"
+  ```
 
-To reproduce a CI failure locally, install the prerequisites above and run the same four
-commands from a clean checkout of the same commit.
+  ```powershell
+  cargo install --locked --version 0.9.3 cargo-about
+  cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\THIRD-PARTY-NOTICES.html"
+  ```
 
-## Release and distribution status
+  Write the output outside the repository; the generated file is a build output, not a source file.
+  `--fail` alone does not reproduce the whole gate: `cargo-about` only warns about a changed
+  pinned license file, which CI turns into a failure by rejecting any standard-error output, so
+  read the command's warnings yourself.
+- **Matrix:** `windows-latest` (`x86_64-pc-windows-msvc`) and `ubuntu-22.04`
+  (`x86_64-unknown-linux-gnu`), explicit Rust targets, `fail-fast: false`.
+- **Setup:** `actions/checkout`, `actions/setup-python` and `dtolnay/rust-toolchain@stable`
+  (all pinned to commit SHAs) with `clippy` and `rustfmt`; on Linux only,
+  `sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev
+  libssl-dev`.
+- **Steps, in order:** the Python release-tool tests, `release.py validate`, the format check,
+  Clippy with warnings denied, tests, `cargo doc` with rustdoc warnings denied, the release
+  build (all but the format check with `--locked`), and a `--help` smoke run of the built
+  executable. With `package: true` it then builds the versioned release archive.
+- **Artifacts (14 days):** with `package: false` the raw executable, `animatic-windows-x86_64`
+  or `animatic-linux-x86_64`; with `package: true` the archive as `release-windows-x86_64` or
+  `release-linux-x86_64`.
 
-There is currently **no release process** in the repository:
+A failing step fails the job, so a green run means those commands passed on that runner for that
+commit. That says nothing about runtime behavior on that platform beyond the `--help` smoke run.
+A CI artifact is a build product, not a release: only the draft release created by the release
+workflow carries the distributed archives and checksums.
 
-- no release or tag workflow, no Git tags, no changelog, no GitHub Release publishing;
-- no installer, package (MSI, deb, rpm, Flatpak, AppImage and so on) or auto-update;
-- no code signing, no notarization and no published checksums. The CI executables are
-  unsigned and unverified beyond the CI steps above.
+To reproduce a CI failure locally, install the prerequisites above and run the same commands
+from a clean checkout of the same commit:
 
-Binaries are CI artifacts or local `cargo build --release` output. Do not describe either as
-a "release", "signed build" or "installer" in documentation. If a release process is added
-later, update this section, [Getting started](getting-started.md) and the README in the same
-change.
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+cargo build --locked --release -p animatic
+python -m unittest discover -s scripts -p test_release.py
+python scripts/release.py validate
+```
+
+## Release and distribution
+
+Releases are produced by the `release-prepare.yml` and `release.yml` workflows and the
+[`scripts/release.py`](../scripts/release.py) tool. The full contract, maintainer procedure,
+required GitHub settings, archive layout and installation/verification instructions are in
+[Releases](releases.md). In short:
+
+- A maintainer runs **Release prepare** (dry run first) to bump the version in lockstep,
+  update the changelog and open a pull request from `release/vVERSION`.
+- After merging, the maintainer pushes the tag `vVERSION` explicitly; **Release** verifies it,
+  reruns CI with packaging on that commit and creates a **draft** GitHub Release with a Windows
+  ZIP, a Linux tar.gz and `SHA256SUMS`.
+- Archives are unsigned. There are no installers, packages, attestations or auto-update, and a
+  release run is not evidence of Linux desktop behavior or production AniDB validation.
+- Nothing tags, bumps or publishes from an ordinary branch push. The workflows do not claim any
+  GitHub environment or branch-protection setting is configured; see
+  [the required settings](releases.md#repository-settings-the-maintainer-must-provide).
+
+Change release tooling together with [Releases](releases.md), [Getting started](getting-started.md),
+the README and [`AGENTS.md`](../AGENTS.md). Keep commit subjects free of private text: they become
+changelog entries.
 
 ## Extending the system
 
@@ -334,6 +383,7 @@ This table maps a change to the places you will touch and the documentation to u
 | New page, menu item or dialog | `app.rs`; consume only projections and events | [User guide](user-guide.md) |
 | Rename function, object or property | `rename/` (`parser`, `eval`, `objects`, `plan`); tests in `rename/tests.rs` | [Rename language](rename-language.md); record deliberate differences from AOM |
 | Public API of a library crate | Rust doc comments on the item | The generated `cargo doc` output is the API reference |
+| Version, changelog, packaging or workflow | [`scripts/release.py`](../scripts/release.py), its tests and `.github/workflows/` | [Releases](releases.md) and the README, Getting started and `AGENTS.md` claims about distribution |
 
 Before changing an exported symbol, find its references (for example with rust-analyzer's
 "find all references") and migrate every caller; this project does not keep compatibility

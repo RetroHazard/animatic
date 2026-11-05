@@ -23,7 +23,20 @@ renaming, cover-art UI, or media-deletion UI**. See the
 [feature-parity matrix](docs/feature-parity.md) and
 [settings reference](docs/settings-reference.md) before relying on an imported option.
 
-## Build and run
+## Install or build
+
+### Download a release
+
+Published [GitHub Releases](https://github.com/RetroHazard/animatic/releases) carry an
+unsigned `animatic-vVERSION-windows-x86_64.zip`, an unsigned
+`animatic-vVERSION-linux-x86_64.tar.gz` and a `SHA256SUMS` file. Each archive contains the
+executable plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the Markdown guides from `docs/`
+(Rust API documentation is not included). There is no installer, code signing or auto-update.
+Verify the checksum before unpacking; the Windows PowerShell and Linux `sha256sum` commands
+are in [Releases](docs/releases.md#install-a-release). Linux runtime behavior has not been
+exercised by the project, and the Linux build is made on Ubuntu 22.04.
+
+### Build from source
 
 Install current stable Rust. Windows builds require the MSVC C++ build tools and Windows
 SDK. On Debian/Ubuntu, install the desktop dependencies:
@@ -39,12 +52,11 @@ cargo run -p animatic
 ```
 
 The executable is `target/release/animatic.exe` on Windows or
-`target/release/animatic` on Linux. CI uploads standalone executables for both platforms;
-it does not publish an installer or a GitHub Release.
+`target/release/animatic` on Linux.
 
 Start **offline**. Before synchronizing, configure your AniDB credentials and a registered
 client identifier. Do not test production AniDB with invented client credentials.
-The [getting-started guide](docs/getting-started.md) covers artifacts, first run,
+The [getting-started guide](docs/getting-started.md) covers downloads, first run,
 portable paths and the complete CLI.
 
 ## Documentation
@@ -54,6 +66,8 @@ portable paths and the complete CLI.
   which compatibility fields actually affect runtime behavior.
 - [Troubleshooting and recovery](docs/troubleshooting.md): backups, startup failures,
   queue/network problems, renaming and privacy-safe diagnostics.
+- [Releases](docs/releases.md): versioning, changelog, release workflows, archive contents and
+  checksum verification.
 - [Complete documentation index](docs/README.md): rename language, architecture,
   storage/network contracts, development and historical research.
 
@@ -68,7 +82,8 @@ cargo doc --workspace --no-deps
 ```
 
 See [development](docs/development.md) for the verification matrix, CI and contribution
-workflow. [`AGENTS.md`](AGENTS.md) is the coding-agent handoff.
+workflow, and [releases](docs/releases.md) for the maintainer release procedure.
+[`AGENTS.md`](AGENTS.md) is the coding-agent handoff.
 The [forum audit](docs/aom-forum-audit.md) records historical verification evidence and
 research limits; it is not a claim of complete AOM parity or exhaustive forum coverage.
 

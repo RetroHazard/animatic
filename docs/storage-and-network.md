@@ -448,7 +448,7 @@ bootstrap. MyList rows come only from legacy import, FILE replies for identified
 
 ## Public API map
 
-Both crates are workspace libraries (`version = "1.0.0"`, MIT) with `pub mod` layouts below. Rust
+Both crates are workspace libraries (version inherited from the workspace, MIT) with `pub mod` layouts below. Rust
 API stability across releases is not promised; the persisted JSON shapes and the schema are the
 durable contracts.
 
