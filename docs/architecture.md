@@ -302,6 +302,19 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
   `new.exists()` is true for the same file.
 - Only the local file and its `local_file` row change; AniDB MyList `storage` text is not touched.
 
+## Build and release automation
+
+Release automation is outside the runtime: it never changes application code. `ci.yml`
+(reusable through `workflow_call`) builds, lints and tests the workspace with `--locked` on
+`ubuntu-22.04` and `windows-latest`. `scripts/release.py` (Python 3.11+, standard library only)
+keeps the workspace version, the internal dependency pins, `Cargo.lock`'s local crate entries
+and `CHANGELOG.md` consistent, extracts release notes, builds the Windows ZIP and Linux tar.gz
+archives from an explicit binary plus the licence, a generated `THIRD-PARTY-NOTICES.html` (`cargo-about`), README, changelog and `docs/*.md`, and writes
+`SHA256SUMS`. `release-prepare.yml` and `release.yml` orchestrate it: preparation opens a
+reviewed pull request, and a maintainer-pushed `vVERSION` tag produces a draft GitHub Release.
+Archives carry no database, settings, media or credentials. Contracts, permissions and
+procedure: [Releases](releases.md).
+
 ## State rules
 
 - egui state lives on the UI thread; caches are disposable, SQLite is authoritative.

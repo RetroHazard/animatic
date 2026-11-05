@@ -28,3 +28,9 @@ local_settings.xml
 # Locally exported statistics and hash lists
 animatic-hashes.txt
 animatic-statistics.*
+
+# Release tooling output and Python bytecode
+/dist/
+/THIRD-PARTY-NOTICES.html
+__pycache__/
+*.py[cod]

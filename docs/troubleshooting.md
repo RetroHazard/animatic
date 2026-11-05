@@ -405,8 +405,8 @@ pauses for 60 seconds (see [Cooldowns and bans](#cooldowns-and-bans)).
 Both AniDB APIs require a registered **client name**; the project ships none and its tests use
 only synthetic local fixtures. Credentials and the client name live in **Tools → Options… →
 AniDB account**. The Options window has no client-version field; `anidb.client_version`
-defaults to `1` and can be changed only in the JSON file or by AOM settings import (see the
-[Settings reference](settings-reference.md)). For registration rules see
+defaults to `1` and can be changed only by editing the JSON file; AOM settings import does not
+set it (see the [Settings reference](settings-reference.md)). For registration rules see
 [Getting started](getting-started.md#anidb-client-registration).
 
 The queue never runs on its own. **Tools → Run command queue** and **Queue → Synchronize now**
@@ -784,7 +784,7 @@ before going online (see the [Settings reference](settings-reference.md)).
 3. Never post settings files or databases. If a settings detail matters, describe the field
    and value type (for example "`anidb.offline` is true"), not the file.
 4. Include: the version shown in **Help → About Animatic**, the operating system, whether you
-   ran a CI artifact or a local build, and whether the settings were recovered.
+   ran a release archive, a CI artifact or a local build, and whether the settings were recovered.
 5. To reproduce, build a **synthetic** case instead of sharing yours: temporary database and
    settings paths (see [Getting started](getting-started.md#portable-and-rehearsal-setups)),
    **Work offline** ticked, small generated files under a fictitious root such as
@@ -795,7 +795,7 @@ before going online (see the [Settings reference](settings-reference.md)).
 Example of a sanitized report:
 
 ```text
-Animatic 1.0.0, Windows (local build). Settings loaded normally.
+Animatic X.Y.Z, Windows (local build). Settings loaded normally.
 Steps: Tools -> Run command queue, offline unticked.
 Result: Log "<time>  ERROR  <command>: authentication: login failed: wrong username or password"
         then "Command blocked: 3 queued commands blocked: authentication: ..."

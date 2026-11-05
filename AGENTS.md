@@ -37,7 +37,11 @@ The migration implementation necessarily contains clean-room format knowledge an
 - `docs/architecture.md`: architecture, data flow, invariants, and extension points.
 - `docs/feature-parity.md`: mapping from legacy workflows to Animatic equivalents.
 - `docs/aom-forum-audit.md`: source-linked historical research, access limitations, baseline product gaps, and improvement verification.
-- `.github/workflows/ci.yml`: Windows and Ubuntu formatting, lint, tests, release builds, and artifacts.
+- `docs/releases.md`: versioning, changelog, release tool, workflow contracts, maintainer procedure, archive contents and checksum verification.
+- `.github/workflows/ci.yml`: reusable (`workflow_call` inputs `ref`, `package`) locked build/lint/test matrix on `ubuntu-22.04` and `windows-latest`, Python release tests and metadata validation.
+- `.github/workflows/release-prepare.yml` and `release.yml`: manual, `dry_run`-default release preparation (bot branch and PR) and tag-driven draft GitHub Release; see `docs/releases.md`.
+- `scripts/release.py` and `scripts/test_release.py`: Python 3.11+ stdlib release tooling (`prepare`, `validate`, `notes`, `package`, `checksums`) and its unit tests.
+- `CHANGELOG.md`: curated `Unreleased` section plus generated per-release sections.
 
 ## Architectural rules
 
@@ -107,7 +111,8 @@ Delete all smoke outputs afterward.
 - Core/storage/network changes: targeted behavior test plus full workspace tests and Clippy.
 - UI behavior: launch the native application and exercise the changed path; tests alone are insufficient.
 - Migration changes: use synthetic unit fixtures, then—when privately available—run a smoke import outside the repository and check SQLite integrity.
-- Cross-platform changes: keep CI green on both `windows-latest` and `ubuntu-latest`.
+- Cross-platform changes: keep CI green on both `windows-latest` and `ubuntu-22.04`.
+- Release tooling or workflow changes: run `python -m unittest discover -s scripts -p "test_release.py"` and `python scripts/release.py validate`; never publish, tag or push a release to verify them. Use synthetic fixtures only.
 - Never contact AniDB with fabricated or unregistered client credentials during automated tests.
 
 ## Current validated baseline
@@ -127,6 +132,7 @@ Treat this as historical evidence, not a substitute for rerunning checks after c
 - Update `README.md`, this file, and `docs/architecture.md` when commands, boundaries, modules, or user-visible workflows change.
 - Keep `docs/README.md` navigation and the settings/feature references aligned with implementation. Label desktop workflows, Rust-only APIs and stored-only compatibility fields separately; do not turn historical verification or forum reports into current capability claims.
 - Add schema changes idempotently and preserve existing user databases.
-- Do not commit `target/`; release artifacts come from CI.
+- Do not commit `target/` or archives. Releases come only from the tag-driven release workflow as unsigned draft GitHub Releases (Windows ZIP, Linux tar.gz, `SHA256SUMS`); do not bump versions by hand, tag, push release branches or publish without an explicit maintainer instruction. Versions are CalVer `YYYY.M.PATCH` (optional `-rc.N`, tag `vYYYY.M.PATCH`; the numbers are Cargo-compatible SemVer syntax only); use `python scripts/release.py prepare --version VERSION` for bumps and keep internal dependency pins, `Cargo.lock` and `CHANGELOG.md` consistent. A release version bump never changes the registered AniDB `client_version` or the database schema version. Archives must include `LICENSE` and the generated `THIRD-PARTY-NOTICES.html` (`about.toml`, `about.hbs`, pinned `cargo-about`); a dependency license outside the policy needs a deliberate maintainer review, not a policy edit to pass CI. Commit subjects become changelog text: keep them free of private data.
+- Update `docs/releases.md`, `docs/development.md`, `docs/getting-started.md` and `README.md` together when release, packaging or distribution behavior changes. Do not claim signing, installers, attestations, Linux runtime verification or configured GitHub settings that the repository does not demonstrate.
 - Do not weaken `.gitignore` privacy exclusions without an explicit reason.
 - Keep the repository URL and remote on `RetroHazard/animatic`; Git operations use the SSH remote.

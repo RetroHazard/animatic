@@ -16,14 +16,16 @@ Contents: [Status and limits](#status-and-limits) ·
 
 ## Status and limits
 
-- Windows and Linux (x86-64) are the supported targets. CI builds both and uploads one
-  executable per platform (see [CI artifacts](#option-a-use-a-ci-artifact)).
+- Windows and Linux (x86-64) are the supported targets. Published releases carry an unsigned
+  Windows ZIP and an unsigned Linux tar.gz (see [Option A](#option-a-download-a-release)); CI
+  builds and tests both platforms.
 - Native Windows runs were exercised during development. **Linux runtime behavior and
   production AniDB traffic have not been exercised** (see the
   [v2 verification record](aom-forum-audit.md#v2-verification-observed-only)). Treat
   Linux desktop launch and any real AniDB exchange as unverified.
-- There is no installer, no tagged release and no auto-update. The repository
-  contains `.github/workflows/ci.yml` only; "releases" are CI build artifacts.
+- There is no installer, code signing or auto-update. Releases are published as GitHub
+  Releases only after a maintainer reviews a draft; see [Releases](releases.md). A CI build
+  artifact is not a release.
 - Animatic never contacts AniDB at startup. Network traffic happens only when you start
   **Tools → Run command queue** or **Queue → Synchronize now** (see
   [Synchronization](user-guide.md#synchronization)). The default settings still have
@@ -32,22 +34,25 @@ Contents: [Status and limits](#status-and-limits) ·
 
 ## Get an executable
 
-### Option A: use a CI artifact
+### Option A: download a release
 
-`.github/workflows/ci.yml` runs on every push and pull request on `windows-latest` and
-`ubuntu-latest`. After formatting, Clippy, tests and `cargo build --release -p animatic`
-succeed it uploads:
+Each GitHub Release lists three assets (if the project has published one):
 
-| Artifact name | Content | Platform |
+| Asset | Content | Platform |
 |---|---|---|
-| `animatic-windows-x86_64` | `animatic.exe` | Windows |
-| `animatic-linux-x86_64` | `animatic` | Linux |
+| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the `docs/*.md` guides | Windows |
+| `animatic-vVERSION-linux-x86_64.tar.gz` | `animatic` (executable) plus the same license and documentation files | Linux |
+| `SHA256SUMS` | SHA-256 of both archives | both |
 
-The files are the raw release binary: no installer, no bundled resources. On Linux the
-download may lose the executable bit; run `chmod +x animatic` after extracting. The
-Linux binary links against the desktop libraries listed below, so those must be present
-at run time as well [INFERENCE: the CI job installs them for the build; the workflow
-does not verify a run on a machine without them].
+Download the archive for your platform and `SHA256SUMS`, verify the checksum, then unpack. The
+commands for PowerShell and for Linux `sha256sum` are in
+[Releases](releases.md#install-a-release). Each archive has a single root folder named after
+the archive; the Linux binary keeps its executable bit. The archives are **unsigned** and the
+bundled documentation works offline, but the Rust API documentation is not included.
+
+The Linux binary links against the desktop libraries listed below, so those must be present at
+run time as well [INFERENCE: the CI job installs them for the build; the workflows do not
+verify a run on a machine without them].
 
 ### Option B: build from source
 
