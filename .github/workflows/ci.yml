@@ -11,16 +11,56 @@ on:
 permissions:
   contents: read
 
-# Stack children wait until their PR is retargeted to main. Metadata-only edits
+# Query the actual PR target before allocating build runners. Metadata-only edits
 # cannot cancel a real validation run.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base.ref.from != '') && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  scope:
+    name: Resolve pull request scope
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - name: Look up the actual pull request base
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != pull_request ]; then
+            echo "mode=run" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.ref // empty')"
+          if [ -z "$base" ]; then
+            echo "::error::the pull request API returned no base branch"
+            exit 1
+          fi
+          if [ "$base" = main ]; then
+            echo "mode=run" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=defer" >> "$GITHUB_OUTPUT"
+            {
+              printf '### Stacked pull request deferred\n\n'
+              printf 'The actual base branch is %s, not main. Code checks are deferred until the pull request targets main.\n' "$base"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   quality:
     name: ${{ (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '') && 'Quality' || 'PR metadata (no code checks)' }}
-    if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
+    needs: scope
+    if: needs.scope.outputs.mode == 'run'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
