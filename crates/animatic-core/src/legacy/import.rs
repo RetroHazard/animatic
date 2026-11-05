@@ -565,3 +565,26 @@ fn import_categories(conn: &Connection) -> Result<usize> {
         Ok(())
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn databank_is_found_from_the_kowai_folder_or_the_aom_folder_above_it() {
+        let root = tempfile::tempdir().unwrap();
+        let aom = root.path().join("animatic-test-root").join("AOM");
+        let kowai = aom.join("kowai");
+        std::fs::create_dir_all(&kowai).unwrap();
+        assert_eq!(find_databank(&aom), None, "no databank files yet");
+
+        std::fs::write(kowai.join("mylist.data"), b"").unwrap();
+        assert_eq!(find_databank(&kowai), Some(kowai.clone()));
+        assert_eq!(find_databank(&aom), Some(kowai.clone()));
+        assert_eq!(
+            find_databank(root.path()),
+            None,
+            "only one level is searched"
+        );
+    }
+}
