@@ -1110,6 +1110,10 @@ mod tests {
 
     /// Local stand-in for the AniDB UDP server. `reply(n, request)` is the reply (without tag)
     /// to the n-th packet; the fixture echoes the request tag like the real server.
+    ///
+    /// The receive loop blocks without a read timeout: Windows documents a socket whose blocking
+    /// receive timed out as indeterminate, and a 25 ms polling timeout intermittently lost the
+    /// one request a test sends. `Drop` wakes the loop with an empty datagram instead.
     struct Fixture {
         addr: SocketAddr,
         packets: Arc<AtomicUsize>,
@@ -1120,17 +1124,20 @@ mod tests {
     impl Fixture {
         fn start(reply: impl Fn(usize, &str) -> String + Send + 'static) -> Fixture {
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_millis(25)))
-                .unwrap();
             let addr = socket.local_addr().unwrap();
             let packets = Arc::new(AtomicUsize::new(0));
             let stop = Arc::new(AtomicBool::new(false));
             let (p, s) = (packets.clone(), stop.clone());
             let handle = std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
-                while !s.load(Ordering::Relaxed) {
-                    let Ok((n, from)) = socket.recv_from(&mut buf) else {
+                loop {
+                    let received = socket.recv_from(&mut buf);
+                    if s.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    // Errors such as a Windows connection reset from an earlier reply are
+                    // reported once per receive; the next receive is unaffected.
+                    let Ok((n, from)) = received else {
                         continue;
                     };
                     let index = p.fetch_add(1, Ordering::SeqCst);
@@ -1158,8 +1165,12 @@ mod tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
+            self.stop.store(true, Ordering::SeqCst);
             if let Some(h) = self.handle.take() {
+                // Wake the blocking receive; the loop sees `stop` and exits.
+                if let Ok(waker) = UdpSocket::bind("127.0.0.1:0") {
+                    let _ = waker.send_to(&[], self.addr);
+                }
                 let _ = h.join();
             }
         }
@@ -1234,7 +1245,12 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, Event::Cooldown { .. })));
         assert_eq!(fixture.packets(), 1, "only the login was sent");
         let (until, _) = db.open().sync_cooldown().unwrap().expect("cooldown stored");
-        assert!(until >= started + 29 * 60, "conservative ban cooldown");
+        assert!(
+            until >= started + 29 * 60,
+            "conservative ban cooldown: {}s after {} packet(s)",
+            until - started,
+            fixture.packets()
+        );
         let d = db.open();
         assert_eq!(d.queue_len().unwrap(), 2, "nothing is dropped");
         assert_eq!(
@@ -1258,7 +1274,12 @@ mod tests {
         let started = format::now();
         run_queue(&db, &settings(fixture.addr));
         let (until, _) = db.open().sync_cooldown().unwrap().expect("cooldown stored");
-        assert!(until >= started + 29 * 60);
+        assert!(
+            until >= started + 29 * 60,
+            "ban cooldown: {}s after {} packet(s)",
+            until - started,
+            fixture.packets()
+        );
         assert_eq!(fixture.packets(), 1);
         assert_eq!(db.open().queue_blocked_len().unwrap(), 0);
     }
