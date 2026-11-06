@@ -1,4 +1,5 @@
 mod app;
+mod hash_jobs;
 mod scheduler;
 mod table;
 mod tray;

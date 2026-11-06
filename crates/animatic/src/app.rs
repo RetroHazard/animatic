@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use animatic_core::db::Db;
 use animatic_core::format;
+use animatic_core::hash_queue::HashSource;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
 use animatic_core::secrets::{CredentialStorage, Credentials};
@@ -27,6 +28,7 @@ use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
 
 mod covers;
+mod hash_queue_panel;
 mod mylist_editor;
 mod mylist_export;
 mod player_actions;
@@ -691,7 +693,18 @@ impl AnimaticApp {
             app.worker.submit(Job::QueueFullUpdate);
         }
         if !initial_files.is_empty() {
-            app.worker.submit(Job::Hash(initial_files));
+            let pause_between = app.settings.file_managers.file_pause();
+            app.worker.submit(Job::Hash {
+                paths: initial_files,
+                source: HashSource::CommandLine,
+                pause_between,
+            });
+        }
+        // Resume files queued before the last quit; local only, so it is not tied to Work offline.
+        // The scheduler thread submits it once nothing blocks it (an empty queue does nothing).
+        if app.settings.hashing.autostart {
+            app.sync_scan_schedule();
+            app.worker.scan_control().request_hash_resume();
         }
         // Local only (scans never contact AniDB): the scheduler thread starts it as soon as
         // nothing blocks a scan.
@@ -1271,6 +1284,7 @@ impl AnimaticApp {
                     }
                     self.error(e)
                 }
+                Event::HashQueueChanged => self.request_library_refresh(),
                 Event::Finished => {
                     self.activity.busy = false;
                     self.status = "Ready".into();
@@ -1320,7 +1334,11 @@ impl AnimaticApp {
             if let Some(parent) = files.first().and_then(|p| p.parent()) {
                 self.settings.ui.last_directory = parent.to_string_lossy().into_owned();
             }
-            self.worker.submit(Job::Hash(files));
+            self.worker.submit(Job::Hash {
+                paths: files,
+                source: HashSource::AddFiles,
+                pause_between: self.settings.file_managers.file_pause(),
+            });
         }
     }
     fn import_legacy_settings(&mut self) {
@@ -2052,7 +2070,11 @@ impl AnimaticApp {
                 "Hashing {} file(s) from another launch",
                 files.len()
             ));
-            self.worker.submit(Job::Hash(files));
+            self.worker.submit(Job::Hash {
+                paths: files,
+                source: HashSource::Handoff,
+                pause_between: self.settings.file_managers.file_pause(),
+            });
         }
     }
 
@@ -2358,6 +2380,7 @@ impl AnimaticApp {
         if unknown > 0 {
             ui.label(format!("{unknown} files are not identified yet"));
         }
+        self.hash_queue_panel(ui, true);
         ui.add_space(20.0);
         self.account_figures(ui);
         ui.add_space(20.0);
@@ -2898,6 +2921,7 @@ impl AnimaticApp {
                 format!("{shown} of {total} files")
             });
         });
+        self.hash_queue_panel(ui, false);
         let file_menu = self.file_menu();
         let mut file_action = None;
         {
@@ -3452,15 +3476,12 @@ impl AnimaticApp {
                     self.tray_options_ui(ui);
                     ui.separator();
                     ui.heading("Hashing");
-                    not_active_yet(
-                        ui,
-                        "a persistent hash queue will resume on start.",
-                        |ui| {
-                            ui.checkbox(
-                                &mut self.settings.hashing.autostart,
-                                "Start hashing automatically",
-                            )
-                        },
+                    ui.checkbox(
+                        &mut self.settings.hashing.autostart,
+                        "Start hashing automatically",
+                    )
+                    .on_hover_text(
+                        "Resume the files still waiting in the hash queue when Animatic starts",
                     );
                     ui.checkbox(
                         &mut self.settings.hashing.identify_after_hashing,
@@ -4569,7 +4590,11 @@ impl eframe::App for AnimaticApp {
             }
         }
         // Worker events are only seen while frames run, so poll while anything is in flight.
+        // A job the scheduler thread started (autostart, scheduled scan) has no UI action that
+        // triggers a frame, so the worker's own pending count keeps the polling going too.
         if self.activity.busy
+            || !self.worker.is_idle()
+            || self.worker.scan_control().hash_resume_pending()
             || self.loader.outstanding.is_some()
             || self.loader.dirty
             || !self.deferred.is_empty()

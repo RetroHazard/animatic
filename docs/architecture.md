@@ -78,17 +78,17 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans).
-The Options row for the file-menu entry is `app/shell_menu.rs`.
+projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `hash_jobs.rs` (worker side of the persistent hash queue).
+The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash queue panel is `app/hash_queue_panel.rs`.
 
 ## Runtime model
 
 | Thread | Database connection | Work |
 |---|---|---|
 | UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump, an anime refresh or a MyList export; the one-file rename preview (point reads of the local database); settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ImportMylistExport`, `ProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: one per drain); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash` (queue files, then drain), `ResumeHashQueue`, `ClearHashQueue`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ImportMylistExport`, `ProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
-| `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; see [Scheduled folder scans](#scheduled-folder-scans) |
+| `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; also submits the one-time `Job::ResumeHashQueue` for hashing autostart; see [Scheduled folder scans](#scheduled-folder-scans) and [Persistent hash queue](#persistent-hash-queue) |
 | `animatic-covers` | A fresh `Db::open` per request | `Worker::load_cover` (not a `Job`): cache lookup, at most one image download through the shared limiter, decoding; answers with `Event::CoverLoaded`. Joined, like the worker, only by `stop_and_join` (restore) |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
@@ -139,7 +139,29 @@ Inside a scan, `file_manager::settle_scan` applies `action_delay_ms` after plann
 modification time is younger than the delay is deferred, the other candidates are re-stat'ed after
 one wait of the delay (once for the whole scan, cancellable) and deferred when size or
 modification time changed. Deferred files are not recorded, so the next scan plans them again.
-`sleep_time_ms` is a cancellable pause between two hashed files of one scan.
+`sleep_time_ms` is a cancellable pause between two hashed files of one drain of the hash queue.
+
+### Persistent hash queue
+
+Every way of hashing a file ends in the `hash_queue` table (`animatic_core::hash_queue`, one row per
+canonical path, `HashSource` = add-files, command-line, scan, handoff) and then in one drain of
+it, so a quit or crash loses no queued file. `Job::Hash { paths, source, pause_between }`
+queues the paths (`Db::hash_queue_enqueue`: canonical-path key, absolute path as given is what is
+hashed and recorded, so a linked managed folder keeps its recorded paths) and drains; `Job::Scan`
+queues its settled `Hash`/`Rehash` actions with source `scan` and drains; `Job::ResumeHashQueue`
+(**Resume hashing**, **Retry failed**, autostart) drains only; `Job::ClearHashQueue` empties the
+table. `hash_queue::drain` takes the oldest `queued` row, hashes it with `hash_and_register`
+(rule 5: one read), removes the row only after the library holds the result, marks a
+file that cannot be read as `failed` with a reason (it is not retried on its own), and on cancel
+leaves the row it was hashing and every later row queued. A database error ends the drain with the
+row still queued; `hash_jobs.rs` turns drain steps into `Progress`, `Hashed`, `Error` and
+`HashQueueChanged` events. The projection carries `hash_queue` (exact counts plus the first 500
+rows), refreshed on those events, and `app/hash_queue_panel.rs` draws it on the Hashed files page
+and the Overview. Hashing autostart (`hashing.autostart`) is `ScanControl::request_hash_resume`,
+called once at start: the scheduler thread submits `Job::ResumeHashQueue` through
+`worker::submit_if_idle` under the same UI blocker as a scan, ahead of any scan, and an empty queue
+reports nothing. `hashing.priority` is stored for AOM compatibility only: there is no
+cross-platform thread-priority abstraction, so hashing threads run at normal priority (rule 10).
 
 ## Principal data flows
 
@@ -153,7 +175,7 @@ sequenceDiagram
     participant Hash as hash_file
     participant DB
     User->>UI: Add files / Tools > Scan managed folders
-    UI->>Worker: Job::Hash or Job::Scan
+    UI->>Worker: Job::Hash or Job::Scan (queued in hash_queue, then drained)
     Worker->>Hash: read each file once (ED2K, CRC32, MD5, SHA-1)
     Hash-->>Worker: hashes
     Worker->>DB: add_local_file(path, hashes, mtime)
@@ -750,7 +772,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Full update menu action, update known file information | `crates/animatic/src/app/refresh.rs`: `after_hash` (what hashing queues: identify, refresh a known file inside the 7-day window, nothing), `start_full_update_preview`/`full_update_window`; `worker.rs`: `plan_full_update` (shared by `preview_full_update` and `queue_full_update`, so the preview counts equal what is queued) |
 | Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals`, `client_version_field` |
 | Search filters | `app.rs`: `filter_anime`, `filter_search`, `matches_anime`, `aid_query`; `library.rs`: `SearchKeys`, `LibraryProjection::assemble` |
-| Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan` |
+| Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan`; `hash_jobs.rs`; `animatic-core/src/hash_queue.rs`: `drain` |
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
 | Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |

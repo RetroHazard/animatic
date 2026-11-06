@@ -9,10 +9,9 @@ use animatic_anidb::http::HttpClient;
 use animatic_anidb::limits::Limits;
 use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
 use animatic_core::db::Db;
-use animatic_core::file_manager::hash_and_register;
 use animatic_core::file_manager::{MoveControl, MoveMethod, clear_emptied_folders, move_file};
 use animatic_core::format;
-use animatic_core::hash::Ed2kVariant;
+use animatic_core::hash_queue::HashSource;
 use animatic_core::library::LibraryProjection;
 use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
 use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityReport};
@@ -24,6 +23,7 @@ use animatic_core::update::{
     InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
 };
 
+use crate::hash_jobs;
 use crate::scheduler::{self, ScanControl};
 use crossbeam_channel::{Receiver, Sender};
 
@@ -41,7 +41,21 @@ pub struct RenameItem {
 
 #[derive(Debug)]
 pub enum Job {
-    Hash(Vec<PathBuf>),
+    /// Queue the files in the persistent hash queue (`source` tells where they came from) and
+    /// drain the queue (see `hash_jobs`).
+    Hash {
+        paths: Vec<PathBuf>,
+        source: HashSource,
+        pause_between: Duration,
+    },
+    /// Drain the persistent hash queue (**Resume hashing**, autostart). `retry_failed` queues
+    /// failed entries again first. Silent when nothing is queued.
+    ResumeHashQueue {
+        retry_failed: bool,
+        pause_between: Duration,
+    },
+    /// Remove every hash queue entry, waiting and failed.
+    ClearHashQueue,
     Scan {
         settings: FileManagerSettings,
         extensions: String,
@@ -230,6 +244,8 @@ pub enum Event {
         outcome: CoverOutcome,
     },
     Finished,
+    /// The hash queue table changed (files queued, drained or cleared); reload the projection.
+    HashQueueChanged,
 }
 pub struct Worker {
     pub jobs: Sender<Job>,
@@ -590,54 +606,31 @@ fn run(
             Job::RenameFiles { items, managers } => {
                 run_renames(&db_path, items, &managers, &events, &cancel, &pause)
             }
-            Job::Hash(paths) => {
-                let total = paths.len();
-                let _ = events.send(Event::Started {
-                    label: "Hashing files".into(),
-                    total,
-                });
-                for (index, path) in paths.into_iter().enumerate() {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let label = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
-                    let result = Db::open(&db_path).and_then(|db| {
-                        hash_and_register(
-                            &db,
-                            &path,
-                            Ed2kVariant::Red,
-                            &cancel,
-                            &pause,
-                            &mut |done, size| {
-                                let _ = events.send(Event::Progress {
-                                    label: label.clone(),
-                                    current: index + 1,
-                                    total,
-                                    fraction: done as f32 / size.max(1) as f32,
-                                });
-                            },
-                        )
-                    });
-                    match result {
-                        Ok((local_id, hashes)) => {
-                            let _ = events.send(Event::Hashed {
-                                path,
-                                local_id,
-                                size: hashes.size,
-                                ed2k: hashes.ed2k,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = events.send(Event::Error(format!("{}: {e}", path.display())));
-                        }
-                    }
-                }
-                let _ = events.send(Event::Finished);
-            }
+            Job::Hash {
+                paths,
+                source,
+                pause_between,
+            } => hash_jobs::run_hash(
+                &db_path,
+                paths,
+                source,
+                pause_between,
+                &events,
+                &cancel,
+                &pause,
+            ),
+            Job::ResumeHashQueue {
+                retry_failed,
+                pause_between,
+            } => hash_jobs::run_resume(
+                &db_path,
+                retry_failed,
+                pause_between,
+                &events,
+                &cancel,
+                &pause,
+            ),
+            Job::ClearHashQueue => hash_jobs::run_clear(&db_path, &events),
             Job::ProcessQueue(settings) => {
                 process_queue(&db_path, settings, &events, &cancel, &network)
             }
@@ -700,57 +693,17 @@ fn run(
                     label: "Scanning managed folders".into(),
                     total,
                 });
-                let pause_between_files = settings.file_pause();
-                let mut hashed_before = false;
-                for (index, action) in actions.into_iter().enumerate() {
+                // Files to hash join the persistent queue (M5.4) and are drained in order below, so
+                // a cancel or a quit leaves the rest queued.
+                let mut to_hash = Vec::new();
+                for action in actions {
                     if cancel.load(Ordering::Relaxed) {
                         break;
                     }
                     match action {
                         animatic_core::file_manager::ScanAction::Hash { path, .. }
                         | animatic_core::file_manager::ScanAction::Rehash { path, .. } => {
-                            if hashed_before
-                                && !animatic_core::file_manager::interruptible_sleep(
-                                    pause_between_files,
-                                    &cancel,
-                                )
-                            {
-                                break;
-                            }
-                            hashed_before = true;
-                            let label = path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            match hash_and_register(
-                                &db,
-                                &path,
-                                Ed2kVariant::Red,
-                                &cancel,
-                                &pause,
-                                &mut |done, size| {
-                                    let _ = events.send(Event::Progress {
-                                        label: label.clone(),
-                                        current: index + 1,
-                                        total,
-                                        fraction: done as f32 / size.max(1) as f32,
-                                    });
-                                },
-                            ) {
-                                Ok((local_id, hashes)) => {
-                                    let _ = events.send(Event::Hashed {
-                                        path,
-                                        local_id,
-                                        size: hashes.size,
-                                        ed2k: hashes.ed2k,
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = events
-                                        .send(Event::Error(format!("{}: {e}", path.display())));
-                                }
-                            }
+                            to_hash.push(path);
                         }
                         animatic_core::file_manager::ScanAction::RemoveMissing {
                             local_id,
@@ -766,6 +719,16 @@ fn run(
                                 let _ = events.send(Event::Error(e.to_string()));
                             }
                         },
+                    }
+                }
+                match hash_jobs::enqueue(&db, &to_hash, HashSource::Scan, &events) {
+                    Ok(()) => {
+                        hash_jobs::drain(&db, settings.file_pause(), &events, &cancel, &pause)
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!(
+                            "Could not queue scanned files for hashing: {e}"
+                        )));
                     }
                 }
                 let _ = events.send(Event::Finished);
@@ -1926,6 +1889,7 @@ mod tests {
 
     use animatic_anidb::limits::Clock;
     use animatic_anidb::testing::{ManualClock, UdpFixture as Fixture};
+    use animatic_core::hash::Ed2kVariant;
     use parking_lot::Mutex;
 
     use super::*;

@@ -26,6 +26,10 @@ table) and shown again after a restart; each new result replaces the old one.
 
 Buttons: **Add files**, **Open hashed files**, **Refresh data**.
 
+While the [hash queue](Hashing-and-Identification.md#hash-queue) is not empty, a compact panel
+under the health summary shows the pending and failed counts with **Resume hashing**, **Retry
+failed** and **Clear hash queue**.
+
 The **first-run card** ("Bring your AniDB O'Matic library forward") is shown while
 `first_launch` is true. It has a folder box, **Browse…**, **Import** (same as
 [File → Import AOM databank…](Migrating-from-AOM.md#migrate-an-aom-databank), but you may paste a folder path) and
@@ -106,12 +110,20 @@ invisible file; **Add to MyList…** and **Rename N selected…** likewise only 
 are listed. There is one selection on this page: the files you select this way are the ones
 both of those buttons use.
 
+**Hash queue panel.** While files wait to be hashed (or failed), a framed panel between the
+buttons and the table shows `N file(s) waiting to be hashed` and `M failed`, and lists them (up to
+500: failed files first with their reason, then waiting files in hashing order, each tagged with
+where it came from: Add files, Command line, Scan or Other launch). Its buttons: **Resume
+hashing**, **Retry failed** and **Clear hash queue** (they wait while another task runs). With
+*Start hashing automatically* off, a note says hashing does not resume on its own. See
+[Hash queue](Hashing-and-Identification.md#hash-queue).
+
 Buttons (Rename…, Open, Play, Open in player, Enqueue and AVDump need a selected file; **Add to MyList…** and **Rename N
 selected…** take one or several):
 
 | Button | Does |
 |---|---|
-| Add files… | File picker (multiple); starts [hashing](Hashing-and-Identification.md) |
+| Add files… | File picker (multiple); queues the files and starts [hashing](Hashing-and-Identification.md) |
 | Rename… | Previews a [manual rename](Renaming-Files.md) of the selected file |
 | Rename N selected… | Plans the selected files in the background and opens the [Batch rename](Renaming-Files.md#several-files-batch-rename) preview |
 | Select all shown / Clear selection | Selects every listed file / clears the selection |

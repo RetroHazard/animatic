@@ -31,6 +31,8 @@
 //! * [`sync`] — the durable command outbox: [`sync::Command`], priorities, latest-intent edit
 //!   merging, blocked/deferred/failed states, pending-intent overlays and [`sync::execute`].
 //! * [`hash`] — one-pass ED2K, CRC32, MD5 and SHA-1 hashing with pause/cancel hooks.
+//! * [`hash_queue`] — the persistent hash queue: enqueue by canonical path, ordered draining
+//!   with the single-pass hasher, failed entries with a reason, retry and clear.
 //! * [`file_manager`] — side-effect-free scan planning plus hash-and-register and
 //!   [`file_manager::move_file`].
 //! * [`legacy`] — decryption and per-collection import of an AniDB O'Matic databank.
@@ -87,6 +89,7 @@ pub mod external;
 pub mod file_manager;
 pub mod format;
 pub mod hash;
+pub mod hash_queue;
 pub mod instance;
 pub mod legacy;
 pub mod library;

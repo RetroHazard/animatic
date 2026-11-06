@@ -1296,6 +1296,8 @@ pub struct LibraryProjection {
     pub account_stats: Option<crate::store::StoredMylistStats>,
     /// Queued intent per mylist entry.
     pub mylist_pending: HashMap<i64, MylistPending>,
+    /// The persistent hash queue: exact counts and the first entries.
+    pub hash_queue: crate::hash_queue::HashQueueView,
     pub summary: LibrarySummary,
     pub keys: SearchKeys,
 }
@@ -1313,11 +1315,13 @@ impl LibraryProjection {
         let queue = db.queue_list()?;
         let cooldown = db.sync_cooldown()?;
         let account_stats = db.mylist_stats_snapshot()?;
+        let hash_queue = db.hash_queue_view()?;
         drop(tx);
         let mut projection = Self::assemble(
             anime, mylist, states, local, groups, genres, queue, cooldown,
         );
         projection.account_stats = account_stats;
+        projection.hash_queue = hash_queue;
         Ok(projection)
     }
 
@@ -1376,6 +1380,7 @@ impl LibraryProjection {
             cooldown,
             account_stats: None,
             mylist_pending,
+            hash_queue: crate::hash_queue::HashQueueView::default(),
             summary,
             keys,
         }

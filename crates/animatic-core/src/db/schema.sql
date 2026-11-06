@@ -294,3 +294,19 @@ CREATE TABLE IF NOT EXISTS request_attempt (
     attempted INTEGER NOT NULL,
     PRIMARY KEY (kind, id)
 );
+
+-- Files waiting to be hashed (roadmap M5.4), so a quit or crash does not lose them.
+-- key: canonical path (unique), so one file is queued once however its path is spelled;
+-- path: the absolute path as given, which is hashed and recorded in local_file.
+-- source: 'add-files', 'command-line', 'scan' or 'handoff'.
+-- state: 'queued' or 'failed'; a failed entry keeps its reason until retried or cleared.
+CREATE TABLE IF NOT EXISTS hash_queue (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    path   TEXT    NOT NULL,
+    key    TEXT    NOT NULL UNIQUE,
+    added  INTEGER NOT NULL,
+    source TEXT    NOT NULL,
+    state  TEXT    NOT NULL DEFAULT 'queued',
+    reason TEXT
+);
+CREATE INDEX IF NOT EXISTS hash_queue_order ON hash_queue(state, id);

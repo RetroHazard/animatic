@@ -81,10 +81,17 @@ next scan looks at it again. With a delay of 0 nothing is held back. A scan with
 therefore takes at least the delay.
 
 **Pause between hashed files** (`sleep_time_ms`, default 0, 0 to 10000 ms) waits between two
-hashed files of one scan, so a large folder does not keep the disk busy continuously; there is no
+hashed files of one run of the [hash queue](Hashing-and-Identification.md#hash-queue), so a large
+folder does not keep the disk busy continuously; there is no
 pause before the first or after the last file. Cancelling interrupts both waits. Earlier versions
 stored `sleep_time_ms` as a pause between scans (default 900000); a stored value above 10000 is
 reset to 0 on load, and the scan interval above replaces the old meaning.
+
+**Scans use the hash queue.** A scan first queues every file it will hash (settled files only,
+after the settle delay) in the persistent [hash queue](Hashing-and-Identification.md#hash-queue)
+and then drains the queue in order. Cancelling a scan, or closing Animatic, leaves the files that
+were not hashed yet queued; they are hashed by the next run (autostart, **Resume hashing**, or the
+next scan) without being discovered again.
 
 Hashes found by a scan follow the normal [identification](Hashing-and-Identification.md) path.
 The rule field `auto_rename` has no effect; the **Auto rename** checkbox exists but renaming is

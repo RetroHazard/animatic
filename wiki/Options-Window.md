@@ -22,7 +22,7 @@ written with the settings.
 | Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Active; applied at launch and on Save |
 | | Use status colors | Active: tints table rows by status (CRC mismatch, unidentified, watched, in MyList); each status is also written in the row. Applies immediately. See [Main window](Main-Window.md#sorting-columns-and-row-colors) |
 | System tray | Show tray icon, Minimize to tray | Active. Both are disabled, with a yellow explanation, where the system has no tray (see [System tray](Main-Window.md#system-tray)) |
-| Hashing | Start hashing automatically | Shown disabled ("Not active yet"); value kept |
+| Hashing | Start hashing automatically | Active: resumes the [persistent hash queue](Hashing-and-Identification.md#hash-queue) when Animatic starts (once nothing else blocks it); off shows the pending count with **Resume hashing** instead. Applies at the next start |
 | | Identify files with AniDB after hashing | Active |
 | | Add "Hash with Animatic" to the file menu | Active, off by default; applied by **Save options**, see [File-menu entry](#file-menu-entry) |
 | | Restrict file extensions + list | The picker filter; the list also always drives [scans](Managed-Folders-and-Scans.md) |

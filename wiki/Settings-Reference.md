@@ -88,8 +88,8 @@ Object `hashing`.
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `autostart` | boolean | `true` | "Start hashing automatically" | **Inert control.** Shown disabled ("Not active yet": planned resume of a persistent hash queue on start); the stored value is kept and never read; hashing starts when you add files or run a scan. (AOM import sets it from `autostartHashing`, default `false` when absent.) |
-| `priority` | integer 0-6 (u8) | `1` | none | **Import only.** Legacy thread-priority index (0 idle to 6 time critical). No code applies it to hashing threads; the importer clamps it to 6. |
+| `autostart` | boolean | `true` | "Start hashing automatically" | **Active.** When Animatic starts with files still in the [persistent hash queue](Hashing-and-Identification.md#hash-queue), hashing resumes by itself once nothing blocks it (an import review, a restore, the settings recovery notice or a running task). With `false` nothing hashes at start; the Hashed files page and Overview show the pending count with a **Resume hashing** button. Read at start, so a change applies at the next start. (AOM import sets it from `autostartHashing`, default `false` when absent.) |
+| `priority` | integer 0-6 (u8) | `1` | none | **Stored only** (kept for AOM compatibility, no effect). Legacy thread-priority index (0 idle to 6 time critical). Hashing always runs at the normal thread priority, because there is no cross-platform thread-priority control; the importer clamps the value to 6. |
 | `use_extensions` | boolean | `false` | "Restrict file extensions" | **Partly active.** Only applies a file-type filter to the **Add files…** picker. It does not filter files given on the command line, and it does not switch scanning on or off (scans always use `extensions`; see below). |
 | `extensions` | array of strings | the 52 legacy AOM extensions (`7z`, `aac`, `ac3` … `zip`) | multi-line box, comma separated | **Active.** Scan allow-list, see below. Add files picker filter when `use_extensions` is true. |
 | `export_template` | string | `%fulled2k%` | "Hash export template" | **Active.** Template for File → Export hashes…; see [Hash export tokens](#hash-export-template-tokens). |
@@ -461,8 +461,7 @@ Practical notes that follow from this order:
 
 ## Options controls and keys at a glance
 
-Controls that do nothing: **Start hashing automatically**,
-**Auto rename** (per folder). Keys that work but have no control:
+Controls that do nothing: **Auto rename** (per folder). Keys that work but have no control:
 `anidb.udp_server`, `local_port`, per-folder `exclude_hidden`, `can_edit_path`
 and `default`, extra `players` entries, the window and
 column state (`ui.window`, `ui.maximized`, `ui.columns`, changed by using the window) and the row

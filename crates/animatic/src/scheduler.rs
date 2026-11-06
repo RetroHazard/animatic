@@ -10,6 +10,10 @@
 //! [`crate::worker::submit_if_idle`], so it never overlaps a running job or a manual scan, and it
 //! is held back while the UI reports that an import, a settings review, a restore or unsaved
 //! commands are in progress.
+//!
+//! The same thread carries the one-time request to resume the persistent hash queue (hashing
+//! autostart, roadmap M5.4): it submits the ordinary [`Job::ResumeHashQueue`] under the same
+//! blocker and idle rule, ahead of any scan, and never again after that.
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -133,6 +137,7 @@ struct Inputs {
     extensions: Vec<String>,
     blocker: Option<&'static str>,
     start_requested: bool,
+    hash_resume_requested: bool,
 }
 
 /// What the scheduler thread needs from the application: the current settings, whether the
@@ -150,6 +155,7 @@ impl ScanControl {
                 extensions: Vec::new(),
                 blocker: None,
                 start_requested: false,
+                hash_resume_requested: false,
             }),
         }
     }
@@ -184,6 +190,29 @@ impl ScanControl {
     /// Ask for one scan as soon as nothing blocks it (scan at start).
     pub fn request_scan(&self) {
         self.lock().start_requested = true;
+    }
+
+    /// Ask for the persistent hash queue to be drained as soon as nothing blocks it and the
+    /// worker is idle (hashing autostart, roadmap M5.4). Draining an empty queue does nothing.
+    pub fn request_hash_resume(&self) {
+        self.lock().hash_resume_requested = true;
+    }
+
+    /// True from the request until the thread has submitted the resume, so the UI can keep
+    /// polling for the events of a job it did not start itself.
+    pub fn hash_resume_pending(&self) -> bool {
+        self.lock().hash_resume_requested
+    }
+
+    fn clear_hash_resume(&self) {
+        self.lock().hash_resume_requested = false;
+    }
+
+    fn resume_job(&self) -> Job {
+        Job::ResumeHashQueue {
+            retry_failed: false,
+            pause_between: self.lock().managers.file_pause(),
+        }
     }
 
     fn take_request(&self) -> bool {
@@ -236,6 +265,13 @@ pub fn spawn(
                 let now = Instant::now();
                 let (config, blocker) = control.snapshot();
                 schedule.configure(now, config);
+                // The hash queue goes first: a scan that follows it queues behind nothing.
+                if control.hash_resume_pending()
+                    && blocker.is_none()
+                    && submit_if_idle(&jobs, &pending, control.resume_job())
+                {
+                    control.clear_hash_resume();
+                }
                 if control.take_request() {
                     schedule.request_scan();
                 }
@@ -468,6 +504,43 @@ mod tests {
             "{notes:?}"
         );
         assert!(notes.iter().any(|n| n.contains("started")), "{notes:?}");
+
+        h.stop.send(()).unwrap();
+        h.thread.join().unwrap();
+    }
+
+    #[test]
+    fn a_hash_resume_request_waits_for_the_blocker_and_an_idle_worker_and_runs_once() {
+        let h = harness();
+        let settings = FileManagerSettings {
+            sleep_time_ms: 250,
+            ..FileManagerSettings::default()
+        };
+        h.control.sync(&settings, &[], Some("an import is waiting"));
+        h.pending.store(1, Ordering::SeqCst);
+        h.control.request_hash_resume();
+
+        assert!(h.jobs.recv_timeout(Duration::from_millis(300)).is_err());
+        h.control.sync(&settings, &[], None);
+        assert!(
+            h.jobs.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a running job still blocks the resume"
+        );
+        h.pending.store(0, Ordering::SeqCst);
+
+        let job = h
+            .jobs
+            .recv_timeout(Duration::from_secs(5))
+            .expect("resume submitted");
+        assert!(matches!(
+            job,
+            Job::ResumeHashQueue { retry_failed: false, pause_between }
+                if pause_between == Duration::from_millis(250)
+        ));
+        assert!(
+            h.jobs.recv_timeout(Duration::from_millis(200)).is_err(),
+            "exactly one resume, and no scan unless one is due"
+        );
 
         h.stop.send(()).unwrap();
         h.thread.join().unwrap();

@@ -520,8 +520,12 @@ impl UiSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HashingSettings {
+    /// Resume the persistent hash queue (`hash_queue`) when the application starts. Off: the
+    /// pending count is shown with a **Resume hashing** button.
     pub autostart: bool,
-    /// 0 idle .. 6 time critical (legacy thread priority index).
+    /// 0 idle .. 6 time critical (legacy thread priority index). Stored for AOM settings
+    /// compatibility only: hashing runs at the normal thread priority, because Animatic has no
+    /// cross-platform thread-priority abstraction (AGENTS.md rule 10).
     pub priority: u8,
     pub use_extensions: bool,
     pub extensions: Vec<String>,

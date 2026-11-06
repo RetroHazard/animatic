@@ -55,8 +55,8 @@ Jobs and what the controls do:
 
 | Job (status label) | Started by | Pause | Cancel |
 |---|---|---|---|
-| Hashing files | Add files…, command-line paths | Pauses between 4 MiB blocks | Stops after the current block; the file in progress is discarded (its error `…: cancelled` is logged) and the remaining files are skipped |
-| Scanning managed folders | Tools → Scan managed folders | Pauses while a file is being hashed | Stops before the next planned action |
+| Hashing files | Add files…, command-line paths, files from another launch, **Resume hashing**, **Retry failed**, hashing autostart | Pauses between 4 MiB blocks | Stops after the current block; the file in progress is discarded and, like every file not hashed yet, stays in the persistent [hash queue](Hashing-and-Identification.md#hash-queue) (the log says how many) |
+| Scanning managed folders | Tools → Scan managed folders, scheduled scan | Pauses while a file is being hashed | Stops before the next planned action or file; files already queued but not hashed stay in the hash queue |
 | Importing legacy databank | File → Import AOM databank… | No effect | Checked only between steps (see [migration](Migrating-from-AOM.md#migrate-an-aom-databank)); a late Cancel can still end in success |
 | Reading AOM settings | File → Import AOM settings… | No effect | No effect; the review window decides whether anything changes |
 | Synchronizing with AniDB | Run command queue / Synchronize now | No effect | Stops before the next command; a request already in flight finishes or times out (UDP 20 s, HTTP 60 s) |
@@ -150,7 +150,7 @@ uncolored unless you set a color for them.
 
 | Menu | Item | Behavior |
 |---|---|---|
-| File | Add files… | Picker; hashes the chosen files. Disabled during a settings review. Remembers the last folder. When *Restrict file extensions* is on the picker filter is "Configured media files". |
+| File | Add files… | Picker; queues the chosen files in the [hash queue](Hashing-and-Identification.md#hash-queue) and hashes them. Disabled during a settings review. Remembers the last folder. When *Restrict file extensions* is on the picker filter is "Configured media files". |
 | File | Import AOM databank… | Folder picker → [databank import](Migrating-from-AOM.md#migrate-an-aom-databank); a database that already holds data first shows **Import into a database that has data?** (Continue / Cancel). Disabled during a settings review. |
 | File | Import AOM settings… | File picker (`.xml`) → [settings import](Migrating-from-AOM.md#import-aom-settings). |
 | File | Import MyList export… | File picker (`.tgz`, `.gz`, `.xml`, `.zip`, `.tar`, or any file) → [import of the downloaded export](AniDB-Synchronization.md#full-account-mylist-import) on the worker. Validates the whole file first; a refused file changes nothing. Disabled while a job runs, during an import or settings review, or during a restore. |

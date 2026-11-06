@@ -78,14 +78,18 @@ Speed is limited by the disk, network share, USB bridge or security scanner read
 
 - Files are hashed one after another on the background worker. The status bar shows the file
   and a progress bar; **Pause** and **Cancel** act between 4 MiB blocks.
-- A cancelled file is not recorded; the remaining files in that job are skipped. The Log shows
-  the file with an error such as `cancelled`. Quitting also cancels.
-- A file that cannot be read (permissions, a lock by another program, a vanished network share)
-  logs `<path>: <error>` and the job continues with the next file.
-- A hash is stored only after the whole file was read. Nothing is saved for a crash or
-  power loss mid-file; hash it again.
+- A cancelled file is not recorded, and neither it nor the files after it are lost: they stay in
+  the persistent [hash queue](Hashing-and-Identification.md#hash-queue) and the Log says how many.
+  **Resume hashing** (Hashed files page or Overview) or the next start with *Start hashing
+  automatically* on continues. Quitting also cancels.
+- A file that cannot be read (permissions, a lock by another program, a vanished network share,
+  a file that was moved) logs `<path>: <reason>` and the job continues with the next file. The
+  file stays in the hash queue as *failed* with that reason until you add it again, use **Retry
+  failed** or **Clear hash queue**.
+- A hash is stored only after the whole file was read, and the file leaves the queue only after
+  that. After a crash or power loss mid-file the file is simply still queued.
 - Hashing does not delay the interface; the library views read their own snapshot (WAL).
-  The queue runs separately and is not started by hashing.
+  The AniDB command queue runs separately and is not started by hashing.
 
 ## Rename problems
 
