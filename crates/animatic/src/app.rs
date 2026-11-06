@@ -2554,9 +2554,15 @@ impl AnimaticApp {
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",
                     );
-                    ui.checkbox(
-                        &mut self.settings.anidb.update_file_information,
-                        "Update known file information",
+                    not_active_yet(
+                        ui,
+                        "an already identified file will be re-queried from AniDB when hashed again.",
+                        |ui| {
+                            ui.checkbox(
+                                &mut self.settings.anidb.update_file_information,
+                                "Update known file information",
+                            )
+                        },
                     );
                     ui.separator();
                     ui.heading("Appearance");
@@ -2574,12 +2580,20 @@ impl AnimaticApp {
                     ui.add(
                         egui::Slider::new(&mut self.settings.ui.zoom, 0.75..=2.0).text("UI scale"),
                     );
-                    ui.checkbox(&mut self.settings.ui.colored_rows, "Use status colors");
+                    not_active_yet(ui, "table rows will be tinted by status.", |ui| {
+                        ui.checkbox(&mut self.settings.ui.colored_rows, "Use status colors")
+                    });
                     ui.separator();
                     ui.heading("Hashing");
-                    ui.checkbox(
-                        &mut self.settings.hashing.autostart,
-                        "Start hashing automatically",
+                    not_active_yet(
+                        ui,
+                        "a persistent hash queue will resume on start.",
+                        |ui| {
+                            ui.checkbox(
+                                &mut self.settings.hashing.autostart,
+                                "Start hashing automatically",
+                            )
+                        },
                     );
                     ui.checkbox(
                         &mut self.settings.hashing.identify_after_hashing,
@@ -2630,7 +2644,11 @@ impl AnimaticApp {
                                 ui.checkbox(&mut manager.auto_hash, "Auto hash");
                                 ui.checkbox(&mut manager.auto_rehash, "Rehash changed");
                                 ui.checkbox(&mut manager.auto_remove, "Remove missing");
-                                ui.checkbox(&mut manager.auto_rename, "Auto rename");
+                                not_active_yet(
+                                    ui,
+                                    "identified files in this folder will be renamed automatically (opt-in).",
+                                    |ui| ui.checkbox(&mut manager.auto_rename, "Auto rename"),
+                                );
                                 ui.checkbox(&mut manager.mylist_auto_add, "Add to mylist");
                             });
                             ui.horizontal(|ui| {
@@ -2710,7 +2728,12 @@ impl AnimaticApp {
                             .push(animatic_core::settings::Player::default());
                     }
                     for player in &mut self.settings.players {
-                        field(ui, "Name", &mut player.name);
+                        ui.horizontal(|ui| {
+                            ui.label("Name");
+                            not_active_yet(ui, "the name will be shown in a player chooser.", |ui| {
+                                ui.text_edit_singleline(&mut player.name)
+                            });
+                        });
                         field(ui, "Executable", &mut player.path);
                         field(ui, "Play arguments", &mut player.play);
                         ui.checkbox(&mut player.default, "Default player");
@@ -3317,6 +3340,18 @@ fn filter_genres(p: &LibraryProjection, q: &str) -> Vec<usize> {
     (0..p.genres.len())
         .filter(|&i| q.is_empty() || p.keys.genres[i].contains(q))
         .collect()
+}
+
+/// Renders a control whose feature is not built yet: disabled, value untouched, with a hover
+/// text. Re-enable a control by deleting its `not_active_yet` call.
+fn not_active_yet(
+    ui: &mut egui::Ui,
+    planned: &str,
+    add: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) {
+    ui.add_enabled_ui(false, add)
+        .inner
+        .on_disabled_hover_text(format!("Not active yet: {planned}"));
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
