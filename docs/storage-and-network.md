@@ -22,6 +22,8 @@ AniDB with unregistered client credentials.
   the WAL side files `<name>-wal` and `<name>-shm` while it is open. Copy or back up the main
   file only with the application closed, or copy all three together; recent commits can still be
   in the WAL.
+  The desktop offers a consistent copy while running: **File > Back up library...** (see
+  [Backup, restore and maintenance](#backup-restore-and-maintenance)).
 - `Db::open(path)` creates missing parent directories, opens read-write/create with a 30 s busy
   timeout, and sets `journal_mode=WAL`, `synchronous=NORMAL`, `temp_store=MEMORY`,
   `cache_size=-65536` (64 MiB). It then upgrades and creates the schema (below). The desktop UI
@@ -134,6 +136,37 @@ own transaction.
 | `store_anime_xml` | One *deferred* transaction (`unchecked_transaction`); it does not join a caller's transaction |
 | `store_episode_info`, `store_group_info`, `store_anime_info`, `add_local_file`, `queue_remove`, `queue_failed`, `queue_block*` | Individual statements; no multi-statement atomicity |
 | Legacy import | One transaction **per collection** |
+
+### Backup, restore and maintenance
+
+`animatic_core::maintenance` holds the blocking operations behind **File > Back up library...**,
+**File > Restore library...**, **Tools > Check library** and **Tools > Compact library...**.
+
+- **Backup**: `backup_to(&Db, &Path)` uses SQLite's online backup API (256 pages per step, 2 ms
+  pause) from the live connection into a temporary file in the destination folder, sets
+  `journal_mode=DELETE` on the copy and renames it over the destination, so a failed backup leaves
+  no partial file and the copy has no `-wal`/`-shm`. It refuses the library file itself and its
+  `-wal`, `-shm` and `-journal` names. Writers during the copy only make the backup API restart;
+  the copy is always a consistent snapshot. The `rusqlite` `backup` feature is enabled.
+- **Validation**: `validate_backup(&Path)` returns `BackupInfo` (schema version, size, counts of
+  `anime`, `mylist`, `local_file`, `command_queue`) or an error that says why the file is
+  refused: unreadable or failing `integrity_check`, a missing required table
+  (`meta`, `anime`, `mylist`, `local_file`, `local_hash`, `command_queue`; later tables are created on
+  open), a missing or newer `meta.schema_version`. A source in WAL mode makes SQLite create `-wal`
+  and `-shm` files; they are removed again when they did not exist before.
+- **Restore**: `restore_database(&Path, &Path) -> Result<RestoreOutcome>` requires that no
+  connection to the database is open. Order: refuse the library itself, validate the source, copy
+  it to `<db>.restore-staging` (backup API) and validate that copy, keep the current database as
+  `<db>.before-restore-YYYYMMDD-HHMMSS[-N]` (checkpoint with `TRUNCATE`, then a byte copy of the
+  file, plus `<name>-wal` when a non-empty `-wal` is left), remove the old `-wal` and `-shm`, rename
+  the staging file over the database. Any failure before the rename leaves the database
+  file untouched and removes the staging file; a failure to keep the copy aborts the restore.
+- **Check**: `check_file(&Path) -> IntegrityReport` opens read-only, runs `PRAGMA integrity_check`
+  (findings, capped at 100; an unreadable file is a finding) and, when that is clean, `PRAGMA
+  foreign_key_check`. The schema declares no foreign keys, so the second check is a guard for
+  databases from other sources. It never writes.
+- **Compaction**: `compact(&Db) -> CompactReport` runs `VACUUM` with `temp_store=FILE`, then
+  `wal_checkpoint(TRUNCATE)`; sizes are `page_count * page_size`.
 
 ## Outbox command queue
 
@@ -659,6 +692,7 @@ durable contracts.
 | `atomic` | `write_atomic(&Path, &[u8]) -> io::Result<()>`, `write_atomic_with(&Path, FnOnce(&mut File) -> io::Result<()>)`: temporary file in the target folder, flush, rename over the target, remove the temporary file on failure (the parent folder must exist) |
 | `stats` | `Db::library_stats() -> Result<LibraryStats>` (one read transaction; a failed query is an error, never 0), `LibraryStats::{render(&self, &str, StatFormat) -> String, write(&self, &Path, &str, StatFormat)}` (atomic replace; creates missing parent folders) |
 | `library` (hash export) | `Db::local_hashes_export_text(&str, bool) -> Result<(String, usize)>`, `Db::export_local_hashes(&Path, &str, bool) -> Result<usize>` (atomic replace) |
+| `maintenance` | `backup_to(&Db, &Path) -> Result<u64>`, `validate_backup(&Path) -> Result<BackupInfo>`, `check_restore_source(&Path, &Path)`, `restore_database(&Path, &Path) -> Result<RestoreOutcome>`, `check_file(&Path) -> Result<IntegrityReport>`, `compact(&Db) -> Result<CompactReport>` |
 | `external` | `launch_player(&Player, PlayerAction, &Path) -> Result<Child>`, `launch_avdump(&AvdumpSettings, &Path, &str, u16) -> Result<Child>`, `PlayerAction::{Open, Play, Enqueue}` |
 | `update` | `Platform::{Windows, Linux, current() -> Option<Platform>}`, `UpdateClient::{new() -> Result<Self>, check(&self, &str, Platform, &AtomicBool) -> Result<Option<ReleaseInfo>>, download(&self, &ReleaseInfo, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<VerifiedUpdate>}`, `ReleaseInfo { version, tag, page_url, archive_size }`, `InstallationTarget::capture() -> Result<Self>`, `VerifiedUpdate::{version(), sha256(), install(self, &InstallationTarget) -> Result<String>}`, `UpdateError` (with `install_attempted()`), `Result<T, E = UpdateError>` (its own error type, independent of `Error`) |
 | `format`, `error` | Formatting helpers (`now()`, `size_short`, `date`, ...); `Error`, `Result<T, E = Error>` (re-exported at the crate root) |

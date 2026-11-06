@@ -54,6 +54,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
 | `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
 | `stats` | Library aggregation (one read transaction) and XML/INI rendering |
+| `maintenance` | Online backup, restore validation and file swap, integrity/foreign-key check, `VACUUM`; blocking file work for the worker and the restore thread |
 | `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
 | `format` | Size, date, duration and count formatting |
 | `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
@@ -75,8 +76,9 @@ projection bookkeeping, the Software updates window), `worker.rs` (jobs, events,
 | Thread | Database connection | Work |
 |---|---|---|
 | UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); rename apply; settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: per file) | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate` |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: per file) | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics` and `Job::ExportHashes` |
+| `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
 
@@ -263,6 +265,45 @@ successful import, and a large collection decrypts to completion before the canc
 The import still replaces rows that share ids; the confirmation exists because of that. The
 `import-legacy` example does not ask, since it writes the file the caller names.
 
+### Library backup, restore, check and compaction
+
+The four menu actions share the rules of the rest of the application: pickers and confirmation
+dialogs run on the UI thread, everything that touches the database or copies files does not
+(rules 1, 3 and 16), and none of them starts while the worker is busy, an import or the
+settings-import review is open, or a restore is in progress (`library_task_blocker`; restore
+also needs an empty `deferred` list, since unsaved commands would be lost or land in the wrong
+library).
+
+- **File > Back up library...** → `Job::BackupLibrary { dest }` → `Event::LibraryBackedUp`. The
+  worker opens its own `Db` and runs `maintenance::backup_to`: SQLite's online backup API from
+  the live connection into `.animatic-copy-*.tmp` beside `dest`, journal mode `DELETE` so the
+  copy is one file, then a rename over `dest`. Writing over the library file (or its `-wal`/`-shm`)
+  is refused.
+- **File > Restore library...** → `Job::ValidateBackup { source }` → `Event::RestoreCandidate`
+  (or `Event::Error`; nothing changes). `maintenance::validate_backup` opens the file
+  read-only, requires `PRAGMA integrity_check` to be `ok`, the tables `meta`, `anime`, `mylist`,
+  `local_file`, `local_hash` and `command_queue`, and `meta.schema_version` not above
+  `SCHEMA_VERSION`; it removes `-wal`/`-shm` files that opening created next to a source. After the
+  user confirms, `AnimaticApp::begin_restore` re-checks the blockers, then
+  `Worker::stop_and_join` stops the worker and the projection thread, the UI's `Db` is replaced
+  by an in-memory placeholder (closing its connection) and `worker::spawn_restore` runs
+  `maintenance::restore_database` on an `animatic-restore` thread: validate again, copy the source
+  into `<db>.restore-staging` with the backup API (validated once more), keep the current
+  database as `<db>.before-restore-YYYYMMDD-HHMMSS` (checkpoint, then a byte copy of the file and,
+  if it still has content, its `-wal`), remove the old `-wal`/`-shm` and rename the staging file
+  over the database. A modal window covers the UI meanwhile. `finish_restore` then reopens the
+  `Db`, spawns a new `Worker` and resets every projection; if the reopen fails the only choice
+  left is **Quit** (`RestoreStage::Broken`), never working on the placeholder. `on_exit` waits for
+  a running restore thread.
+- **Tools > Check library** → `Job::CheckLibrary` → `Event::LibraryChecked`:
+  `maintenance::check_file` on a separate read-only connection runs `PRAGMA integrity_check`
+  (which includes `quick_check`) and, if that is clean, `PRAGMA foreign_key_check`. At most 100
+  findings are kept. A failure produces an error that points to **Restore library** and names the
+  latest backup of the session. Nothing is repaired.
+- **Tools > Compact library...** → confirmation → `Job::CompactLibrary` →
+  `Event::LibraryCompacted`: `maintenance::compact` runs `VACUUM` with `temp_store=FILE`
+  (the connections otherwise use memory) and truncates the WAL.
+
 ### Legacy settings migration
 
 **File > Import AOM settings...** submits `Job::ImportLegacySettings`; the worker parses the
@@ -381,6 +422,7 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 | API reply application | FILE multi-table writes and MyList reply overlays are atomic, also when nested in a caller's transaction (`write_tx` savepoint) | Atomicity of `store_episode_info`, `store_group_info`, `store_anime_info`, `add_local_file` (separate statements); `store_anime_xml` is one transaction but must not be nested |
 | Title dump | Invalid, truncated or over-limit dumps leave titles and timestamp unchanged | Resume, external checksum, protection against a *valid* but wrong dump |
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
+| Library backup and restore | A backup is a consistent snapshot, written to a temporary file and renamed into place; a restore validates the file twice, keeps a byte-for-byte copy of the replaced library and swaps the database file with one rename, after removing the old `-wal`/`-shm`, so the database path is the old or the new library; a refused file changes nothing | That the restored queue matches what AniDB already received; settings (not part of the database); a crash between removing the old `-wal` and the rename (the kept copy is then the way back); automatic or rolling backups; repair |
 | `move_file` | The database path changes only after `fs::rename` succeeded; an existing destination is refused first | See below |
 | Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. `.bak` may retain old or removed credentials. Directory-entry durability. Encryption (plain text). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
@@ -483,4 +525,5 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | External tools | `crates/animatic-core/src/external.rs` |
 | Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
+| Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |

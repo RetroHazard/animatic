@@ -3,6 +3,57 @@ temporary and leftover files.
 
 ## Backups and restore
 
+### Back up and restore inside Animatic
+
+**File → Back up library…** asks for a file name (the suggestion is
+`animatic-backup-YYYYMMDD-HHMMSS.sqlite3`) and copies the library there with SQLite's online
+backup. The copy is a consistent snapshot even while background work, the command queue and the
+write-ahead log are busy, and it is one self-contained file (no `-wal`/`-shm`). It is written
+to a temporary file in the folder you chose and renamed into place, so a failed backup leaves
+no half-written file, and Animatic refuses to write over the library itself. The work runs
+in the background; the result appears in the status bar and the **Log** page. A backup holds
+the library and queue only: copy `settings.json` yourself (see
+[What to back up](#what-to-back-up-and-why-it-is-sensitive)) and keep the file as secret as the
+library.
+
+**File → Restore library…** replaces the current library with a backup:
+
+1. Choose the file. Animatic checks it in the background without changing anything: it must be
+   a readable SQLite database that passes `PRAGMA integrity_check`, contain the Animatic tables,
+   and carry a database schema version that this version supports. A damaged file, a database
+   that is not an Animatic library, a library written by a newer Animatic and the current
+   library file itself are refused with a message, and your library stays exactly as it was.
+2. A confirmation window shows what the backup holds (anime, My list entries, hashed files,
+   queued commands, size). Choose **Restore** or **Cancel**.
+3. On **Restore** Animatic stops its background work, closes the database, keeps the current
+   library next to it as `<database>.before-restore-YYYYMMDD-HHMMSS` (a damaged library is
+   copied byte for byte, with its `-wal` if that was not yet merged), replaces the database
+   file, restarts its background work and reloads every page. Settings are not touched.
+
+Restore is unavailable while a job is running, while an AOM import or the review of imported
+settings is open, and while queued commands are not saved yet (the menu item says why). A restored queue can contain commands
+you already ran on a later date: tick **Work offline** and look at **Queue** before using the
+network. If the files cannot be swapped, the message names the kept copy; if the library cannot
+be opened afterwards, a **Library unavailable** window asks you to quit, and the
+`.before-restore-*` copy is the way back. Animatic never deletes those copies.
+
+### Check and compact the library
+
+**Tools → Check library** runs `PRAGMA integrity_check` (which covers everything `quick_check`
+does) and `PRAGMA foreign_key_check` on a separate read-only connection in the background. A healthy
+library reports **Library check passed**. Otherwise the status bar says **Library check FAILED**,
+the **Log** page lists the first findings, and the message points to **File → Restore library…**
+(naming the latest backup made in this session, if any). Nothing is ever repaired
+automatically.
+
+**Tools → Compact library…** asks for confirmation, then runs SQLite `VACUUM` in the background, which
+rewrites the library without its unused space and reports the size before and after. It changes
+no data, needs free disk space (see [Disk space](#disk-space-temporary-files-and-leftovers)) and
+blocks other background work until it finishes.
+
+Both are unavailable while a job is running, an import or settings review is open, or a restore
+is in progress.
+
 ### What to back up and why it is sensitive
 
 | Data | Files | Sensitivity |
@@ -15,7 +66,7 @@ not encrypt anything; if you need an encrypted backup, use your own encryption t
 `settings.json.bak` holds the **previous** valid settings, so it can still contain a password
 or key you have since changed or removed.
 
-### A consistent copy
+### A consistent copy by hand
 
 The database runs in SQLite WAL mode, so committed changes can live in the `-wal` file until
 SQLite folds them back into the main file. Copying only `animatic.sqlite3` while Animatic is
@@ -70,7 +121,7 @@ running a scan with `auto_remove`, choosing **Clear queue**, upgrading to a buil
 changes (upgrades are applied when the database is opened and no downgrade is provided or
 tested), or editing the settings JSON by hand.
 
-### Restore
+### Restore by hand
 
 1. Close Animatic.
 2. Move the current database, its `-wal` and `-shm` files and the current settings files into
@@ -89,7 +140,10 @@ If a restored settings file is invalid, follow [Settings problems](#settings-pro
 ### Damaged database
 
 If startup fails with a SQLite message such as `database disk image is malformed` or `file is
-not a database`, Animatic has no repair path. Restore a backup. SQLite's own recovery tools
+not a database`, Animatic cannot open the library and its menus are not available: restore a
+backup by hand as described above. If Animatic starts but you suspect damage, use
+[Tools → Check library](#check-and-compact-the-library) and then **File → Restore library…**.
+Animatic has no repair path. SQLite's own recovery tools
 may salvage rows from a damaged file; they are not part of Animatic, and the project has not
 verified their output against its schema, so work on a copy and re-check the result.
 
@@ -212,6 +266,9 @@ name, so the first thing to do is open **Tools → Options…**, tick **Work off
 | Database growth and the WAL | The database folder | The `-wal` file grows during large writes and is folded back by SQLite later. A full disk produces a SQLite `database or disk is full` error; the transaction is rolled back |
 | Settings save | The settings folder | A temporary file and the backup are written there |
 | Anime titles download | The system temporary directory | The download is spooled into a private SQLite temporary database, then merged atomically. The download limits are 32 MiB compressed, 128 MiB decoded, 250,000 anime, 2,000,000 titles and 2,048 bytes per name. Keep comfortable free space on the volume that holds the temp directory |
+| Back up library | The folder you choose | A temporary `.animatic-copy-*.tmp` file of about the size of the library, renamed into place when complete |
+| Restore library | The database folder | A staging copy of the backup plus the `.before-restore-*` copy of the current library: about twice the library's size on top of the library |
+| Compact library | The system temporary directory and the database folder | `VACUUM` writes a rewritten copy to a temporary file of about the size of the library's used data, then folds it back; keep that much free |
 | Update download | The system temporary directory (a private staging folder) and the executable's folder | Up to the archive (limit 256 MiB) plus the extracted executable (limit 512 MiB) are staged in the temporary directory; the install then needs room for a copy of the new executable beside the current one |
 | AOM databank import | The system temporary directory (a marked `animatic-legacy-import-*` folder) | One decrypted collection at a time, roughly the size of the largest source `.data` file in addition to the database growth |
 
@@ -240,5 +297,14 @@ until you have a verified backup.
   SQLite. After a crash a leftover can remain in the system temp directory (SQLite's temporary
   file names typically begin with `etilqs_`); delete such files only when no Animatic process
   is running.
+- `.animatic-copy-*.tmp` in the folder you backed up into, or beside the database: a backup or
+  restore that was interrupted. Safe to delete when Animatic is closed. A finished backup is
+  never a `.tmp` file.
+- `animatic.sqlite3.restore-staging` beside the database: the half-made copy of a restore that
+  was interrupted. Safe to delete when Animatic is closed; the next restore replaces it anyway.
+- `animatic.sqlite3.before-restore-YYYYMMDD-HHMMSS` (and, rarely, a matching `-wal`): the library
+  that **File → Restore library…** replaced. Kept on purpose and never deleted by Animatic;
+  delete it yourself once the restored library is confirmed (it holds your previous viewing
+  history, file paths and queue).
 - `-wal` and `-shm` beside the database: **not** leftovers. See [A consistent
-  copy](#a-consistent-copy).
+  copy](#a-consistent-copy-by-hand).

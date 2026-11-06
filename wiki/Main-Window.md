@@ -13,6 +13,8 @@ and tables, and the menus. The individual pages are described in [Library pages]
 - **Floating windows**: [Anime detail](Library-Pages.md#anime-detail-window), [Options](Options-Window.md),
   "Confirm rename", "Review imported AOM settings", "Import into a database that has data?",
   "Leftover import files", "Settings recovered", the
+  "Restore library", "Restoring library", "Library unavailable" and "Compact library" dialogs
+  (modal: nothing else can be used while one is open), the
   [Software updates](Updating-Animatic.md) window and "About Animatic" (the build's version from
   `Cargo.toml`, an AniDB link and the license buttons).
 
@@ -53,6 +55,10 @@ Jobs and what the controls do:
 | Reading AOM settings | File → Import AOM settings… | No effect | No effect; the review window decides whether anything changes |
 | Synchronizing with AniDB | Run command queue / Synchronize now | No effect | Stops before the next command; a request already in flight finishes or times out (UDP 20 s, HTTP 60 s) |
 | Queueing full update | `--full-update` | No effect | – |
+| Backing up library | File → Back up library… | No effect | No effect; it runs to completion and a half-written file is never left |
+| Checking backup file | File → Restore library… | No effect | No effect; the check changes nothing |
+| Checking library | Tools → Check library | No effect | No effect |
+| Compacting library | Tools → Compact library… | No effect | No effect; `VACUUM` is atomic |
 
 Jobs run one at a time in submission order. Library snapshots and the statistics and hash exports run on
 their own thread and do not show a progress bar or take part in Cancel.
@@ -108,12 +114,16 @@ Semantics (from `app.rs` and `library.rs`):
 | File | Import AOM settings… | File picker (`.xml`) → [settings import](Migrating-from-AOM.md#import-aom-settings). |
 | File | Export statistics… | Save dialog (default `animatic-stats.xml`/`.ini`) → [statistics export](Exports.md#statistics-export). |
 | File | Export hashes… | Save dialog (default `animatic-hashes.txt`) → [hash export](Exports.md#hash-export). |
+| File | Back up library… | Save dialog (default `animatic-backup-YYYYMMDD-HHMMSS.sqlite3`) → [online backup](Backups-and-Recovery.md#back-up-and-restore-inside-animatic) of the library. Disabled while a job runs, during an import or settings review, or during a restore. |
+| File | Restore library… | File picker → background validation → confirmation window → [restore](Backups-and-Recovery.md#back-up-and-restore-inside-animatic). Disabled for the same reasons as Back up library and while commands are not saved yet. |
 | File | Refresh | Requests a new snapshot. |
 | File | Quit | Closes; saves settings (unless guarded) and tries to save unsaved commands. |
 | Tools | Options… | Opens [Options](Options-Window.md). |
 | Tools | Scan managed folders | Starts a [scan](Managed-Folders-and-Scans.md). Disabled during a settings review. |
 | Tools | Download anime titles | Queues the title-list download (nothing is sent yet). |
 | Tools | Fetch mylist statistics | Queues a MyList-statistics request. When run, only a log line (`N anime, N episodes, N files in mylist`) is produced; the result is not stored. |
+| Tools | Check library | Runs [`integrity_check` and `foreign_key_check`](Backups-and-Recovery.md#check-and-compact-the-library) in the background; never repairs. Disabled while a job runs, during an import or settings review, or during a restore. |
+| Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
 | Tools | Edit AniDB data ▸ | Opens AniDB web pages in the browser: Add anime, Add episode, Add file, Submit change request (`anidb.net/anime/add`, `/episode/add`, `/file/add`, `/creq`). |
 | Tools | Run command queue | Starts the [synchronization](AniDB-Synchronization.md#synchronization) job. Disabled during a settings review or an active cooldown. |
 | Help | AniDB website | Opens `https://anidb.net/`. |

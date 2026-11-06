@@ -31,6 +31,8 @@ Companion files you will meet:
 | `settings.json.bak` | Written by **Save** when the previous primary parsed as valid | The backup name replaces the settings file's last extension with `.json.bak`. `my-settings.json` → `my-settings.json.bak`; a name without `.json` such as `custom.cfg` → `custom.json.bak`. |
 | `settings.json.tmp`, `settings.json.bak.tmp` | Briefly during a save | Same replacement rule; removed after the atomic rename. |
 | `animatic-legacy-import-*/` | During a databank import | Created in the system temporary folder (not the database's folder), with a marker file `.animatic-legacy-import`. Holds one decrypted (plaintext) collection file such as `animes.sqlite` at a time and is removed when the import ends. After a crash the next start offers to remove marked folders that no running import uses; only those are removed. An older version's `import-temp/` folder beside the database is not offered. See [Migration](Migrating-from-AOM.md#migrate-an-aom-databank). |
+| `animatic.sqlite3.before-restore-YYYYMMDD-HHMMSS` | After **File → Restore library…** | The library that was replaced, kept on purpose and never deleted by Animatic. Delete it yourself once the restored library is confirmed. |
+| `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
 
 Runtime files store your AniDB password and API key in plain text, and the `.bak` copy holds the
 *previous* valid settings (possibly credentials you have since removed). Nothing is encrypted at

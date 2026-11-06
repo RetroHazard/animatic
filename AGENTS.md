@@ -30,7 +30,7 @@ The migration implementation necessarily contains clean-room format knowledge an
 
 ## Workspace structure
 
-- `crates/animatic-core`: storage, schema, library queries, hashing, migration, settings, rename language, file-manager policy, statistics, external tools, durable command model, and `update` (GitHub release check, bounded download, `SHA256SUMS` verification and `self-replace` install, with its own error type).
+- `crates/animatic-core`: storage, schema, `maintenance` (library backup, restore, integrity check, compaction), library queries, hashing, migration, settings, rename language, file-manager policy, statistics, external tools, durable command model, and `update` (GitHub release check, bounded download, `SHA256SUMS` verification and `self-replace` install, with its own error type).
 - `crates/animatic-anidb`: AniDB UDP and HTTP transports plus typed command/reply handling.
 - `crates/animatic`: native eframe/egui application, background worker (including the dedicated updater thread), UI state, restart handoff and CLI entry point.
 - `wiki/`: the user guide (installation, command line, data locations, every page and task, settings reference, rename language, troubleshooting, feature parity with AOM). Published to the GitHub wiki by `wiki.yml` and shipped in release archives as `docs/*.md`. Flat pages named like the archive's docs (letters, digits, `.`, `-`, `_`), plus `_Sidebar.md` and `_Footer.md`; a page links other pages relatively (`Page.md#anchor`) and repository files only by absolute `https://github.com/RetroHazard/animatic/blob/main/...` URLs, which `scripts/ci.py docs` enforces.

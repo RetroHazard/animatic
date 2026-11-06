@@ -13,7 +13,11 @@ use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedU
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
-use crate::worker::{Event, Job, UpdateEvent, UpdateJob, Updater, Worker};
+use crate::worker::{
+    Event, Job, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
+};
+use animatic_core::maintenance::{BackupInfo, IntegrityReport};
+use crossbeam_channel::{Receiver, TryRecvError};
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
 const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
@@ -374,6 +378,24 @@ pub struct Startup {
     pub restart: Arc<AtomicBool>,
 }
 
+/// Longest the window waits for a running library restore when it closes.
+const EXIT_RESTORE_WAIT: Duration = Duration::from_secs(60);
+
+/// Steps of **File > Restore library…**, from the validated backup to the swapped files.
+enum RestoreStage {
+    /// The worker validated the backup; waiting for the user's decision.
+    Confirm { source: PathBuf, info: BackupInfo },
+    /// The worker and projection threads are stopped and the UI connection is closed while
+    /// the restore thread swaps the files.
+    Running {
+        source: PathBuf,
+        result: Receiver<RestoreResult>,
+    },
+    /// The library could not be opened again after the swap. The application must not go on
+    /// (its own connection is an empty placeholder), so only quitting is offered.
+    Broken(String),
+}
+
 /// The automatic check is the only update step that runs unasked. It follows the user's choice,
 /// never runs in offline mode, and never after a settings recovery (which forces offline mode,
 /// so even the in-memory state must not make network requests the user did not enable).
@@ -479,6 +501,12 @@ pub struct AnimaticApp {
     update: UpdateState,
     installation: Option<Arc<InstallationTarget>>,
     restart: Arc<AtomicBool>,
+    /// Library restore in progress, if any; see [`RestoreStage`].
+    restore: Option<RestoreStage>,
+    /// The user asked to compact the library and has not answered the confirmation yet.
+    compact_confirm: bool,
+    /// Latest backup made in this session, named when a library check fails.
+    last_backup: Option<PathBuf>,
 }
 
 impl AnimaticApp {
@@ -562,6 +590,9 @@ impl AnimaticApp {
             },
             installation,
             restart,
+            restore: None,
+            compact_confirm: false,
+            last_backup: None,
         };
         app.request_library_refresh();
         // Off the UI thread: look for decrypted copies an interrupted import left behind.
@@ -844,6 +875,8 @@ impl AnimaticApp {
     fn update_blocker(&self) -> Option<&'static str> {
         if self.installation.is_none() {
             Some("Animatic cannot tell where it is installed.")
+        } else if self.restore.is_some() {
+            Some("A library restore is in progress.")
         } else if !self.worker.is_idle() || self.activity.busy {
             Some("Wait for the running task to finish, or cancel it, first.")
         } else if self.import_confirm.is_some() {
@@ -997,6 +1030,25 @@ impl AnimaticApp {
                 Event::LegacyLeftovers { temp_root, folders } => {
                     self.leftover_imports = Some((temp_root, folders));
                 }
+                Event::LibraryBackedUp { path, bytes } => {
+                    self.log(format!(
+                        "Library backed up to {} ({})",
+                        path.display(),
+                        format::size_short(bytes as i64)
+                    ));
+                    self.last_backup = Some(path);
+                }
+                Event::RestoreCandidate { source, info } => {
+                    if self.restore.is_none() {
+                        self.restore = Some(RestoreStage::Confirm { source, info });
+                    }
+                }
+                Event::LibraryChecked(report) => self.library_checked(&report),
+                Event::LibraryCompacted(report) => self.log(format!(
+                    "Library compacted: {} → {}",
+                    format::size_short(report.before as i64),
+                    format::size_short(report.after as i64)
+                )),
                 Event::LegacySettingsImported(settings) => {
                     self.imported_settings = Some(settings);
                 }
@@ -1619,6 +1671,8 @@ impl AnimaticApp {
         let cooling = self
             .active_cooldown()
             .map(|(until, reason)| Self::cooldown_text(until, reason));
+        let library_blocker = self.library_task_blocker();
+        let restore_blocker = self.restore_start_blocker();
         egui::Panel::top("menu").show(root, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -1660,6 +1714,28 @@ impl AnimaticApp {
                         ui.close();
                         self.export_hashes();
                     }
+                    if ui
+                        .add_enabled(
+                            library_blocker.is_none(),
+                            egui::Button::new("Back up library…"),
+                        )
+                        .on_disabled_hover_text(library_blocker.unwrap_or_default())
+                        .clicked()
+                    {
+                        ui.close();
+                        self.backup_library();
+                    }
+                    if ui
+                        .add_enabled(
+                            restore_blocker.is_none(),
+                            egui::Button::new("Restore library…"),
+                        )
+                        .on_disabled_hover_text(restore_blocker.unwrap_or_default())
+                        .clicked()
+                    {
+                        ui.close();
+                        self.restore_library();
+                    }
                     if ui.button("Refresh").clicked() {
                         ui.close();
                         self.request_library_refresh();
@@ -1689,6 +1765,28 @@ impl AnimaticApp {
                     if ui.button("Fetch mylist statistics").clicked() {
                         self.queue_command(animatic_core::sync::Command::MylistStats);
                         ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            library_blocker.is_none(),
+                            egui::Button::new("Check library"),
+                        )
+                        .on_disabled_hover_text(library_blocker.unwrap_or_default())
+                        .clicked()
+                    {
+                        ui.close();
+                        self.worker.submit(Job::CheckLibrary);
+                    }
+                    if ui
+                        .add_enabled(
+                            library_blocker.is_none(),
+                            egui::Button::new("Compact library…"),
+                        )
+                        .on_disabled_hover_text(library_blocker.unwrap_or_default())
+                        .clicked()
+                    {
+                        ui.close();
+                        self.compact_confirm = true;
                     }
                     ui.menu_button("Edit AniDB data", |ui| {
                         for (label, url) in [
@@ -3172,6 +3270,316 @@ impl AnimaticApp {
     }
 }
 
+/// Library backup, restore, check and compaction (File and Tools menus). Pickers and dialogs
+/// run here on the UI thread; every database and file operation runs on the worker, or for the
+/// file swap of a restore on the `animatic-restore` thread.
+impl AnimaticApp {
+    /// Why no worker-side library task can start: the worker is busy, or an import or the
+    /// review of imported settings is open.
+    fn busy_reason(&self) -> Option<&'static str> {
+        if !self.worker.is_idle() || self.activity.busy {
+            Some("Wait for the running task to finish, or cancel it, first.")
+        } else if self.import_confirm.is_some() {
+            Some("Confirm or cancel the import first.")
+        } else if self.import_pending {
+            Some("An import is in progress.")
+        } else if self.imported_settings.is_some() {
+            Some("Apply or cancel the imported settings first.")
+        } else {
+            None
+        }
+    }
+
+    /// Why a backup, check or compaction cannot start now.
+    fn library_task_blocker(&self) -> Option<&'static str> {
+        if self.restore.is_some() {
+            Some("A library restore is in progress.")
+        } else {
+            self.busy_reason()
+        }
+    }
+
+    /// Why a restore cannot start now: besides the busy states, queued commands that are not
+    /// saved yet would be lost or land in the wrong library.
+    fn restore_start_blocker(&self) -> Option<&'static str> {
+        self.library_task_blocker().or_else(|| {
+            (!self.deferred.is_empty()).then_some("Some changes are not saved to the database yet.")
+        })
+    }
+
+    fn backup_library(&mut self) {
+        if let Some(reason) = self.library_task_blocker() {
+            self.error(format!("Library not backed up: {reason}"));
+            return;
+        }
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let Some(dest) = rfd::FileDialog::new()
+            .set_title("Back up library")
+            .set_file_name(format!("animatic-backup-{stamp}.sqlite3"))
+            .add_filter("SQLite database", &["sqlite3", "sqlite", "db"])
+            .save_file()
+        else {
+            return;
+        };
+        self.worker.submit(Job::BackupLibrary { dest });
+    }
+
+    fn restore_library(&mut self) {
+        if let Some(reason) = self.restore_start_blocker() {
+            self.error(format!("Library not restored: {reason}"));
+            return;
+        }
+        let Some(source) = rfd::FileDialog::new()
+            .set_title("Choose a library backup to restore")
+            .add_filter("SQLite database", &["sqlite3", "sqlite", "db"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.worker.submit(Job::ValidateBackup { source });
+    }
+
+    fn library_checked(&mut self, report: &IntegrityReport) {
+        if report.is_ok() {
+            self.log(report.summary());
+            return;
+        }
+        for line in report.lines().take(20) {
+            self.note(format!("  {line}"));
+        }
+        let mut message = format!(
+            "{}. Nothing was repaired; restore a backup with File → Restore library…",
+            report.summary()
+        );
+        if let Some(backup) = &self.last_backup {
+            message.push_str(&format!(
+                " (latest backup made in this session: {})",
+                backup.display()
+            ));
+        }
+        self.error(message);
+    }
+
+    /// Confirmed restore: stop the worker and projection threads, close the UI connection,
+    /// then let the restore thread swap the files. The state machine continues in
+    /// [`Self::finish_restore`] when the thread reports.
+    fn begin_restore(&mut self, source: PathBuf) {
+        if let Some(reason) = self.restore_start_blocker() {
+            self.error(format!("Library not restored: {reason}"));
+            return;
+        }
+        let placeholder = match Db::memory() {
+            Ok(db) => db,
+            Err(e) => {
+                self.error(format!("Library not restored: {e}"));
+                return;
+            }
+        };
+        self.worker.stop_and_join();
+        drop(std::mem::replace(&mut self.db, placeholder));
+        self.log("Restoring library…");
+        let result = spawn_restore(self.db_path.clone(), source.clone());
+        self.restore = Some(RestoreStage::Running { source, result });
+    }
+
+    /// The restore thread reported (or died): reopen the library, restart the worker and
+    /// reload every projection, whatever the outcome.
+    fn finish_restore(&mut self, result: RestoreResult) {
+        self.restore = None;
+        let restored = match &result {
+            Ok(outcome) => {
+                let kept = outcome
+                    .previous_copy
+                    .as_ref()
+                    .map(|p| format!("; the previous library was kept as {}", p.display()))
+                    .unwrap_or_default();
+                self.log(format!("Library restored{kept}"));
+                true
+            }
+            Err(e) => {
+                self.error(format!("Library restore failed: {e}"));
+                false
+            }
+        };
+        match Db::open(&self.db_path).and_then(|db| {
+            db.conn().busy_timeout(UI_DB_BUSY_TIMEOUT)?;
+            Ok(db)
+        }) {
+            Ok(db) => {
+                self.db = db;
+                self.worker = Worker::spawn(self.db_path.clone());
+                self.reset_library_views();
+            }
+            Err(e) => {
+                self.restore = Some(RestoreStage::Broken(format!(
+                    "The library could not be opened after {}: {e}. Close Animatic; \
+                     the previous library, if any, is next to the database file as \
+                     .before-restore-*.",
+                    if restored {
+                        "the restore"
+                    } else {
+                        "the failed restore"
+                    }
+                )));
+            }
+        }
+    }
+
+    /// Forget everything shown from the previous library and request a fresh projection.
+    fn reset_library_views(&mut self) {
+        self.projection = LibraryProjection::default();
+        self.detail = None;
+        self.mylist_overlay.clear();
+        self.cooldown = None;
+        self.cooldown_floor = 0;
+        self.blocked_floor = 0;
+        self.projection_generation = 0;
+        self.selected_aid = None;
+        self.selected_local = None;
+        self.rename_preview = None;
+        self.activity = Activity::default();
+        self.loader.outstanding = None;
+        self.loader.last_request = None;
+        self.loader.version += 1;
+        self.request_library_refresh();
+    }
+
+    fn library_safety_windows(&mut self, ctx: &egui::Context) {
+        self.restore_window(ctx);
+        self.compact_window(ctx);
+    }
+
+    fn compact_window(&mut self, ctx: &egui::Context) {
+        if !self.compact_confirm {
+            return;
+        }
+        let mut go = None;
+        let response = egui::Modal::new(egui::Id::unique("compact_library")).show(ctx, |ui| {
+            ui.heading("Compact library");
+            ui.label(
+                "Rewrites the library file without its unused space (SQLite VACUUM). It needs \
+                 free disk space about the size of the library and blocks other background \
+                 work until it is done. Nothing is lost.",
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Compact").clicked() {
+                    go = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    go = Some(false);
+                }
+            });
+        });
+        if response.should_close() && go.is_none() {
+            go = Some(false);
+        }
+        let Some(go) = go else { return };
+        self.compact_confirm = false;
+        if !go {
+            return;
+        }
+        if let Some(reason) = self.library_task_blocker() {
+            self.error(format!("Library not compacted: {reason}"));
+        } else {
+            self.worker.submit(Job::CompactLibrary);
+        }
+    }
+
+    fn restore_window(&mut self, ctx: &egui::Context) {
+        let id = egui::Id::unique("restore_library");
+        let mut start = None;
+        let mut cancelled = false;
+        let mut quit = false;
+        let mut finished = None;
+        match &self.restore {
+            None => return,
+            Some(RestoreStage::Confirm { source, info }) => {
+                let response = egui::Modal::new(id).show(ctx, |ui| {
+                    ui.heading("Restore library");
+                    ui.label(format!(
+                        "Replace the current library with {}?",
+                        source.display()
+                    ));
+                    ui.label(format!(
+                        "The backup holds {} anime, {} My list entries, {} hashed files and {} \
+                         queued commands ({}).",
+                        format::thousands(info.anime),
+                        format::thousands(info.mylist),
+                        format::thousands(info.local_files),
+                        format::thousands(info.queued_commands),
+                        format::size_short(info.size as i64)
+                    ));
+                    ui.colored_label(
+                        Color32::YELLOW,
+                        "The current library is kept next to its file as \
+                         <name>.before-restore-<date>-<time>. Background work stops while the \
+                         files are swapped.",
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Restore").clicked() {
+                            start = Some(source.clone());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancelled = true;
+                        }
+                    });
+                });
+                cancelled |= response.should_close() && start.is_none();
+            }
+            Some(RestoreStage::Running { source, result }) => {
+                egui::Modal::new(id).show(ctx, |ui| {
+                    ui.heading("Restoring library");
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Replacing the library with {}…", source.display()));
+                    });
+                    ui.label("Do not close Animatic until this is finished.");
+                });
+                match result.try_recv() {
+                    Ok(outcome) => finished = Some(outcome),
+                    Err(TryRecvError::Empty) => {
+                        ctx.request_repaint_after(Duration::from_millis(100));
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        finished = Some(Err("the restore thread stopped unexpectedly".into()));
+                    }
+                }
+            }
+            Some(RestoreStage::Broken(message)) => {
+                egui::Modal::new(id).show(ctx, |ui| {
+                    ui.heading("Library unavailable");
+                    ui.colored_label(Color32::LIGHT_RED, message);
+                    if ui.button("Quit").clicked() {
+                        quit = true;
+                    }
+                });
+            }
+        }
+        if let Some(outcome) = finished {
+            self.finish_restore(outcome);
+        } else if let Some(source) = start {
+            self.restore = None;
+            self.begin_restore(source);
+        } else if cancelled {
+            self.restore = None;
+        }
+        if quit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// A restore still swapping files when the window closes is waited for, so that the files
+    /// are never left half swapped by the process ending.
+    fn finish_restore_before_exit(&mut self) {
+        if let Some(RestoreStage::Running { result, .. }) = &self.restore {
+            let _ = result.recv_timeout(EXIT_RESTORE_WAIT);
+        }
+    }
+}
+
 impl eframe::App for AnimaticApp {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
@@ -3199,6 +3607,7 @@ impl eframe::App for AnimaticApp {
         self.settings_notice_window(&ctx);
         self.legacy_import_confirm_window(&ctx);
         self.leftover_import_window(&ctx);
+        self.library_safety_windows(&ctx);
         self.rename_window(&ctx);
         if self.about_open {
             let mut open = true;
@@ -3258,6 +3667,7 @@ impl eframe::App for AnimaticApp {
     }
 
     fn on_exit(&mut self) {
+        self.finish_restore_before_exit();
         if self.settings_guard.allows_exit_save() {
             let _ = self.settings.save(&self.settings_path);
         } else {

@@ -43,7 +43,7 @@ which is a research log and not a specification.
 | Add anime/episode/file/change request | Replaced | **Tools > Edit AniDB data** opens AniDB's maintained web editors | AOM's retired TCP `ADDANIMEDATA`/`ADDEP` route is not implemented |
 | Command line / shell handoff | Desktop | Media paths (hashed at startup), `--database`/`-d`, `--full-update`, `--help`; legacy `/database`, `/fullupdate`; `/utf8` and `/ucs2` accepted and ignored | No shell-extension integration. Unknown `-` options are rejected |
 | Status, progress, log | Desktop | Progress with pause/cancel, activity log, Queue page with Pending/N retries/Blocked, cooldown banner, "N commands NOT saved yet" | |
-| Local cache recovery tooling | Not implemented | Settings backup recovery exists | No user-facing database backup/restore or repair workflow |
+| Local cache recovery tooling | Partial | **File > Back up library...** (online backup, atomic file), **File > Restore library...** (validated, confirmed, keeps a timestamped copy of the replaced library), **Tools > Check library** (`integrity_check` and `foreign_key_check`) and **Tools > Compact library...** (`VACUUM`), all in the background; settings backup recovery | No repair, no automatic or rolling backups, no scheduled checks; a backup holds the database only (not `settings.json`); restore and compaction wait for an idle worker |
 | Full-account MyList bootstrap | Not implemented | Entries arrive through legacy import, FILE replies for hashed local files, queued adds/edits | Local state is not equivalent to a complete account download; there is no reconciliation of the whole MyList |
 | Scheduled folder scanning | Not implemented | Manual scan only | |
 | Tray icon, colour-coded rows, saved columns | Not implemented | Settings fields exist | See below |
@@ -113,7 +113,8 @@ synchronization have not been exercised**. Test counts in older documents are hi
 Verified absent from the application (some exist in `animatic-core` or are stored only):
 
 - Full-account MyList download or reconciliation; scheduled or automatic folder scanning;
-  automatic renaming; background watchers.
+  automatic renaming; background watchers; automatic or rolling database backups and database
+  repair (backup, restore, check and compaction are manual menu actions).
 - Adding or deleting MyList entries from the UI; editing storage, source, other or view date
   after the fact; editing anime metadata (the Edit AniDB data menu opens web pages).
 - Images and covers (the HTTP image function is unused; no image UI); system tray and

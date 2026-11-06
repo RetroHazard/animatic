@@ -18,6 +18,8 @@
 //!   title-dump merge (`Db::import_title_dump`, implemented in [`store`]).
 //! * [`library`] — read side: display types, queries and the immutable
 //!   [`library::LibraryProjection`] snapshot used by the UI.
+//! * [`maintenance`] — library safety: online backup, validated restore, integrity check and
+//!   compaction (blocking; never on the UI thread).
 //! * [`sync`] — the durable command outbox: [`sync::Command`], priorities, latest-intent edit
 //!   merging, blocked/deferred/failed states, pending-intent overlays and [`sync::execute`].
 //! * [`hash`] — one-pass ED2K, CRC32, MD5 and SHA-1 hashing with pause/cancel hooks.
@@ -63,6 +65,7 @@ pub mod format;
 pub mod hash;
 pub mod legacy;
 pub mod library;
+pub mod maintenance;
 pub mod rename;
 pub mod settings;
 pub mod stats;

@@ -10,10 +10,13 @@ source has changed since.
 
 Know the limits before you rely on a recovery path:
 
-- **No backup or repair tooling.** There is no backup, restore, integrity-check or repair
-  command in the application or the command line. There is no automatic database backup and
-  no rotation. The only automatic copy is the single settings backup (`settings.json.bak`),
-  described under [Settings problems](Backups-and-Recovery.md#settings-problems).
+- **Backups are manual and there is no repair.** **File → Back up library…**, **File → Restore
+  library…**, **Tools → Check library** and **Tools → Compact library…** exist (see
+  [Back up and restore inside Animatic](Backups-and-Recovery.md#back-up-and-restore-inside-animatic)),
+  but nothing backs the database up automatically, there is no rotation and no repair command
+  in the application or the command line. A library backup does not include the settings. The
+  only automatic copy is the single settings backup (`settings.json.bak`), described under
+  [Settings problems](Backups-and-Recovery.md#settings-problems).
 - **No checksums or verification of copies.** Nothing records or checks a checksum of your
   database, settings or any backup you make.
 - **Plain-text secrets.** The settings file and its backup hold your AniDB password, API key

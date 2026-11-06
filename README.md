@@ -16,6 +16,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 - Compatible rename expressions with diagnostics, preview and explicit confirmation.
 - Configurable players, AVDump integration and XML/INI statistics exports.
 - Safe settings-backup recovery that starts offline and preserves the original files.
+- Library backup, validated restore, integrity check and compaction from the File and Tools
+  menus.
 - Explicit, user-confirmed updates from published GitHub releases (check, download and
   verify, install, restart); nothing is downloaded or installed unattended.
 

@@ -12,6 +12,7 @@ use animatic_core::file_manager::hash_and_register;
 use animatic_core::format;
 use animatic_core::hash::Ed2kVariant;
 use animatic_core::library::LibraryProjection;
+use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityReport};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
 use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
 use animatic_core::update::{
@@ -38,6 +39,18 @@ pub enum Job {
     ImportLegacySettings {
         source: PathBuf,
     },
+    /// Back the library up into `dest` (online backup, off the UI thread).
+    BackupLibrary {
+        dest: PathBuf,
+    },
+    /// Check that `source` may replace the library; the swap itself is `spawn_restore`.
+    ValidateBackup {
+        source: PathBuf,
+    },
+    /// Integrity and foreign key check of the library; never repairs.
+    CheckLibrary,
+    /// `VACUUM` the library.
+    CompactLibrary,
     ProcessQueue(AnidbSettings),
     /// Look for leftover marked import folders below `temp_root` (see `legacy::workdir`).
     FindLegacyLeftovers {
@@ -101,6 +114,17 @@ pub enum Event {
         temp_root: PathBuf,
         folders: Vec<PathBuf>,
     },
+    LibraryBackedUp {
+        path: PathBuf,
+        bytes: u64,
+    },
+    /// A restore source passed validation; the UI asks for confirmation.
+    RestoreCandidate {
+        source: PathBuf,
+        info: BackupInfo,
+    },
+    LibraryChecked(Box<IntegrityReport>),
+    LibraryCompacted(CompactReport),
     LegacySettingsImported(Box<Settings>),
     LegacySettingsImportFailed(String),
     Synced {
@@ -525,6 +549,70 @@ fn run(
                 }
                 let _ = events.send(Event::Finished);
             }
+            Job::BackupLibrary { dest } => {
+                let _ = events.send(Event::Started {
+                    label: "Backing up library".into(),
+                    total: 1,
+                });
+                match Db::open(&db_path).and_then(|db| maintenance::backup_to(&db, &dest)) {
+                    Ok(bytes) => {
+                        let _ = events.send(Event::LibraryBackedUp { path: dest, bytes });
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Backup failed: {e}")));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::ValidateBackup { source } => {
+                let _ = events.send(Event::Started {
+                    label: "Checking backup file".into(),
+                    total: 1,
+                });
+                match maintenance::check_restore_source(&db_path, &source)
+                    .and_then(|()| maintenance::validate_backup(&source))
+                {
+                    Ok(info) => {
+                        let _ = events.send(Event::RestoreCandidate { source, info });
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!(
+                            "Restore refused, the current library was not changed: {e}"
+                        )));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::CheckLibrary => {
+                let _ = events.send(Event::Started {
+                    label: "Checking library".into(),
+                    total: 1,
+                });
+                match maintenance::check_file(&db_path) {
+                    Ok(report) => {
+                        let _ = events.send(Event::LibraryChecked(Box::new(report)));
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Library check failed: {e}")));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::CompactLibrary => {
+                let _ = events.send(Event::Started {
+                    label: "Compacting library".into(),
+                    total: 1,
+                });
+                match Db::open(&db_path).and_then(|db| maintenance::compact(&db)) {
+                    Ok(report) => {
+                        let _ = events.send(Event::LibraryCompacted(report));
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Compacting failed: {e}")));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
             Job::ImportLegacy {
                 source,
                 temp_root,
@@ -611,6 +699,25 @@ fn run(
             }
         }
     }
+}
+
+/// What the restore thread reports: the outcome, or why the library was not replaced.
+pub type RestoreResult = Result<maintenance::RestoreOutcome, String>;
+
+/// Replace the library file with the backup `source` on a thread of its own (it copies and
+/// validates whole databases). The caller must have stopped the worker and the projection
+/// thread and closed its own connection first: nothing may have `db_path` open meanwhile.
+/// If the thread dies without a result the receiver reports a disconnect.
+pub fn spawn_restore(db_path: PathBuf, source: PathBuf) -> Receiver<RestoreResult> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    std::thread::Builder::new()
+        .name("animatic-restore".into())
+        .spawn(move || {
+            let _ = tx
+                .send(maintenance::restore_database(&db_path, &source).map_err(|e| e.to_string()));
+        })
+        .expect("start restore thread");
+    rx
 }
 
 /// A request for the updater thread (see [`Updater`]).
@@ -1600,6 +1707,73 @@ mod tests {
             worker.is_idle(),
             "a job nobody can run must not stay counted"
         );
+    }
+
+    #[test]
+    fn library_backup_check_validation_and_restore_work_end_to_end() {
+        use animatic_core::sync::Command;
+        let db = TempDb::new();
+        let live = db.open();
+        live.queue_push(&Command::TitlesDump).unwrap();
+        let backup = db.dir.join("backup.sqlite3");
+        let mut worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::BackupLibrary {
+            dest: backup.clone(),
+        });
+        match wait_for(&worker, |e| {
+            matches!(e, Event::LibraryBackedUp { .. } | Event::Error(_))
+        }) {
+            Event::LibraryBackedUp { path, bytes } => {
+                assert_eq!(path, backup);
+                assert_eq!(bytes, std::fs::metadata(&backup).unwrap().len());
+            }
+            other => panic!("backup failed: {other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        live.queue_push(&Command::MylistStats).unwrap();
+
+        worker.submit(Job::CheckLibrary);
+        match wait_for(&worker, |e| matches!(e, Event::LibraryChecked(_))) {
+            Event::LibraryChecked(report) => assert!(report.is_ok(), "{report:?}"),
+            other => panic!("{other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+
+        let garbage = db.dir.join("garbage.sqlite3");
+        std::fs::write(&garbage, b"synthetic garbage ".repeat(300)).unwrap();
+        worker.submit(Job::ValidateBackup { source: garbage });
+        match wait_for(&worker, |e| {
+            matches!(e, Event::RestoreCandidate { .. } | Event::Error(_))
+        }) {
+            Event::Error(message) => assert!(message.contains("not changed"), "{message}"),
+            other => panic!("a damaged file must be refused: {other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        worker.submit(Job::ValidateBackup {
+            source: backup.clone(),
+        });
+        match wait_for(&worker, |e| {
+            matches!(e, Event::RestoreCandidate { .. } | Event::Error(_))
+        }) {
+            Event::RestoreCandidate { source, info } => {
+                assert_eq!(source, backup);
+                assert_eq!(info.queued_commands, 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+
+        // What the confirmed restore does: stop the threads, close every connection, swap.
+        worker.stop_and_join();
+        drop(live);
+        let outcome = spawn_restore(db.path.clone(), backup)
+            .recv_timeout(Duration::from_secs(20))
+            .expect("restore thread reports")
+            .expect("restore succeeds");
+        assert_eq!(db.open().queue_len().unwrap(), 1, "the backup's queue");
+        let previous = outcome.previous_copy.expect("the replaced library is kept");
+        assert_eq!(Db::open(&previous).unwrap().queue_len().unwrap(), 2);
     }
 
     #[test]
