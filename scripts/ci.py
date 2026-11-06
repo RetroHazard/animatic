@@ -5,6 +5,7 @@ Commands (``--root`` is a global option and goes BEFORE the subcommand):
 
     python scripts/ci.py plan --base SHA [--head SHA] [--force] [--github-output FILE]
     python scripts/ci.py docs
+    python scripts/ci.py wiki --out DIR
     python scripts/ci.py gate
 
 ``plan`` decides which expensive CI jobs a change needs. It diffs ``--base`` against
@@ -22,8 +23,17 @@ not planned; it runs for every change.
 ``docs`` validates every tracked Markdown file of the checkout: relative file links
 and images, ``#anchor`` fragments (GitHub heading slugs, duplicate suffixes, explicit
 HTML ids), balanced code fences and consistent table column counts. Fenced code,
-inline code, HTML comments and external URLs are not inspected. Targets must be
-tracked paths of the source checkout (release archives are not considered).
+inline code, HTML comments and external URLs are not inspected, except absolute URLs
+into this repository's ``main`` branch (``blob``/``tree``) or its wiki, which are checked
+like relative links against the checkout. Targets must be tracked paths of the source
+checkout (release archives are not considered). ``wiki/`` holds the user guide: flat
+Markdown pages whose names the release archive and updater accept, plus ``_Sidebar.md``
+and ``_Footer.md``. A wiki page may link relatively only to other wiki pages, because the
+published wiki and the archive's ``docs/`` carry nothing else.
+
+``wiki`` writes the tracked ``wiki/`` pages into ``--out`` (which must be empty apart
+from ``.git``) for publishing to the GitHub wiki: relative ``Page.md`` links become the
+wiki's ``Page`` links; everything else is copied byte for byte.
 
 ``gate`` is the ``Required checks`` job logic. It reads ``CI_NEEDS_JSON`` (the
 ``toJSON(needs)`` of the gate job) plus the ``CI_RUST``, ``CI_LICENSES`` and
@@ -50,6 +60,10 @@ from pathlib import Path
 from urllib.parse import unquote
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
+REPOSITORY_URL = "https://github.com/RetroHazard/animatic"
+WIKI_DIR = "wiki"
+# Rendered by GitHub as wiki chrome; never packaged into release archives.
+WIKI_SPECIAL_PAGES = frozenset({"_Sidebar.md", "_Footer.md"})
 
 # job id -> selection flag env name (None: must always succeed). Order = report order.
 GATE_JOBS = (
@@ -241,7 +255,29 @@ class ParsedDoc:
 class DocsReport:
     documents: int = 0
     links: int = 0  # relative links checked
+    urls: int = 0  # absolute repository and wiki URLs checked
     errors: list[str] = field(default_factory=list)  # "path:line: message"
+
+
+def is_packaged_wiki_page(name: str) -> bool:
+    """A wiki page name that ships in release archives (mirrors the updater's doc-name rule)."""
+    return (
+        len(name) <= 100
+        and ".." not in name
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", name) is not None
+    )
+
+
+def wiki_page_problem(path: str) -> str | None:
+    """Why a tracked path under ``wiki/`` is not allowed there, or ``None``."""
+    name = path[len(WIKI_DIR) + 1 :]
+    if name in WIKI_SPECIAL_PAGES or is_packaged_wiki_page(name):
+        return None
+    return (
+        f"'{path}' is not a wiki page: {WIKI_DIR}/ holds only flat Markdown pages named with letters, "
+        "digits, '.', '-' and '_' (first character a letter or digit), plus "
+        + " and ".join(sorted(WIKI_SPECIAL_PAGES))
+    )
 
 
 def slugify(text: str) -> str:
@@ -396,11 +432,8 @@ def _strip_quote(line: str) -> str:
     return _QUOTE_PREFIX.sub("", line)
 
 
-def parse_markdown(text: str) -> ParsedDoc:
-    doc = ParsedDoc()
-    raw_lines = text.lstrip("\ufeff").splitlines()
-
-    # 1. Blank fenced code blocks; an unterminated fence is an error.
+def _blank_fences(raw_lines: list[str]) -> tuple[list[str], tuple[str, int, int] | None]:
+    """Blank fenced code blocks (same line lengths); returns the lines and an unclosed fence."""
     lines: list[str] = []
     fence: tuple[str, int, int] | None = None  # (char, length, opening line)
     for number, line in enumerate(raw_lines, 1):
@@ -408,13 +441,22 @@ def parse_markdown(text: str) -> ParsedDoc:
         if fence is None:
             if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
                 fence = (match.group(1)[0], len(match.group(1)), number)
-                lines.append("")
+                lines.append(" " * len(line))
             else:
                 lines.append(line)
         else:
-            lines.append("")
+            lines.append(" " * len(line))
             if match and match.group(1)[0] == fence[0] and len(match.group(1)) >= fence[1] and not match.group(2).strip():
                 fence = None
+    return lines, fence
+
+
+def parse_markdown(text: str) -> ParsedDoc:
+    doc = ParsedDoc()
+    raw_lines = text.lstrip("\ufeff").splitlines()
+
+    # 1. Blank fenced code blocks; an unterminated fence is an error.
+    lines, fence = _blank_fences(raw_lines)
     if fence is not None:
         doc.errors.append(f"{fence[2]}: unclosed code fence ({fence[0] * fence[1]})")
 
@@ -480,33 +522,33 @@ def parse_markdown(text: str) -> ParsedDoc:
     return doc
 
 
-def _check_link(
-    source: str,
+def repository_url_target(dest: str) -> tuple[str, str] | None:
+    """Map an absolute URL into this repository's ``main`` branch or wiki to ``(path, fragment)``.
+
+    ``blob``/``tree`` URLs map to the checkout path; wiki URLs map to ``wiki/<Page>.md``
+    (``Home`` when no page is named). Any other URL returns ``None``.
+    """
+    for kind in ("blob", "tree"):
+        prefix = f"{REPOSITORY_URL}/{kind}/main/"
+        if dest.startswith(prefix):
+            path, _, fragment = dest[len(prefix) :].partition("#")
+            return unquote(path.partition("?")[0]).rstrip("/"), unquote(fragment)
+    prefix = f"{REPOSITORY_URL}/wiki"
+    if dest == prefix or dest.startswith((prefix + "/", prefix + "#")):
+        page, _, fragment = dest[len(prefix) :].partition("#")
+        page = unquote(page.partition("?")[0]).strip("/") or "Home"
+        return f"{WIKI_DIR}/{page}.md", unquote(fragment)
+    return None
+
+
+def _check_target(
+    resolved: str,
+    fragment: str,
     dest: str,
     tracked: Collection[str],
     directories: Collection[str],
     docs: Mapping[str, ParsedDoc],
 ) -> str | None:
-    """Return an error message for a broken relative link, ``None`` if fine or external."""
-    dest = html.unescape(_ESCAPED.sub(r"\1", dest.strip()))
-    if not dest or _SCHEME.match(dest) or dest.startswith("//"):
-        return None
-    path, _, fragment = dest.partition("#")
-    path = unquote(path.partition("?")[0])
-    fragment = unquote(fragment)
-    if path:
-        if path.startswith("/"):
-            resolved = posixpath.normpath(path.lstrip("/"))
-        else:
-            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
-        if resolved == ".." or resolved.startswith("../"):
-            return f"link '{dest}' escapes the repository"
-        if resolved == ".":
-            return None  # the repository root directory
-        if resolved not in tracked and resolved not in directories:
-            return f"link target '{resolved}' is not a tracked file or directory (from '{dest}')"
-    else:
-        resolved = source
     if not fragment or fragment == "top" or resolved in directories and resolved not in tracked:
         return None
     if resolved.lower().endswith(MARKDOWN_SUFFIXES):
@@ -521,18 +563,74 @@ def _check_link(
     return f"fragment '#{fragment}' is not a line anchor of non-Markdown file '{resolved}' (from '{dest}')"
 
 
+def _check_link(
+    source: str,
+    dest: str,
+    tracked: Collection[str],
+    directories: Collection[str],
+    docs: Mapping[str, ParsedDoc],
+) -> str | None:
+    """Return an error message for a broken internal link, ``None`` if fine or external."""
+    dest = html.unescape(_ESCAPED.sub(r"\1", dest.strip()))
+    if not dest:
+        return None
+    repository = repository_url_target(dest)
+    if repository is not None:
+        path, fragment = repository
+        resolved = posixpath.normpath(path) if path else "."
+        if resolved == ".." or resolved.startswith("../"):
+            return f"URL '{dest}' escapes the repository"
+        if resolved == ".":
+            return None
+        if resolved not in tracked and resolved not in directories:
+            return f"URL target '{resolved}' is not a tracked file or directory (from '{dest}')"
+        return _check_target(resolved, fragment, dest, tracked, directories, docs)
+    if _SCHEME.match(dest) or dest.startswith("//"):
+        return None
+    path, _, fragment = dest.partition("#")
+    path = unquote(path.partition("?")[0])
+    fragment = unquote(fragment)
+    if path:
+        if path.startswith("/"):
+            resolved = posixpath.normpath(path.lstrip("/"))
+        else:
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
+        if resolved == ".." or resolved.startswith("../"):
+            return f"link '{dest}' escapes the repository"
+        if posixpath.dirname(source) == WIKI_DIR and (
+            posixpath.dirname(resolved) != WIKI_DIR or not resolved.lower().endswith(MARKDOWN_SUFFIXES)
+        ):
+            return (
+                f"wiki page link '{dest}' leaves the wiki pages; the published wiki and release archives "
+                f"carry nothing else, so link repository files as {REPOSITORY_URL}/blob/main/<path>"
+            )
+        if resolved == ".":
+            return None  # the repository root directory
+        if resolved not in tracked and resolved not in directories:
+            return f"link target '{resolved}' is not a tracked file or directory (from '{dest}')"
+    else:
+        resolved = source
+    return _check_target(resolved, fragment, dest, tracked, directories, docs)
+
+
 def check_markdown(documents: Mapping[str, str], tracked: Iterable[str]) -> DocsReport:
     """Validate ``documents`` (repo-relative POSIX path -> Markdown text) against ``tracked`` paths."""
     tracked_set = set(tracked)
     directories = {p for path in tracked_set for p in _parents(path)}
     parsed = {path: parse_markdown(text) for path, text in documents.items()}
     report = DocsReport(documents=len(documents))
+    for path in sorted(p for p in tracked_set if p.startswith(WIKI_DIR + "/")):
+        problem = wiki_page_problem(path)
+        if problem:
+            report.errors.append(f"{path}: {problem}")
     for path in sorted(parsed):
         doc = parsed[path]
         report.errors.extend(f"{path}:{message}" for message in doc.errors)
         for line, dest in doc.links:
             clean = html.unescape(dest.strip())
-            if clean and not _SCHEME.match(clean) and not clean.startswith("//"):
+            if repository_url_target(clean) is not None:
+                report.urls += 1
+            elif clean and not _SCHEME.match(clean) and not clean.startswith("//"):
                 report.links += 1
             problem = _check_link(path, dest, tracked_set, directories, parsed)
             if problem:
@@ -569,7 +667,77 @@ def run_docs(args: argparse.Namespace) -> int:
             print(message, file=sys.stderr)
         print(f"docs: FAIL - {len(errors)} problem(s) in {report.documents} Markdown file(s)", file=sys.stderr)
         return 1
-    print(f"docs: OK - {report.documents} Markdown file(s), {report.links} relative link(s) checked")
+    print(
+        f"docs: OK - {report.documents} Markdown file(s), {report.links} relative link(s) "
+        f"and {report.urls} repository URL(s) checked"
+    )
+    return 0
+
+
+# -------------------------------------------------------------------------- wiki
+
+
+def _mask_for_links(text: str) -> str:
+    """``text`` with fenced code, HTML comments and code spans blanked, offsets unchanged."""
+    lines, _ = _blank_fences(text.split("\n"))
+    joined = _HTML_COMMENT.sub(lambda m: _blank_keep_newlines(m.group(0)), "\n".join(lines))
+    return "\n".join(_mask_code_spans(joined.split("\n")))
+
+
+def wiki_links(text: str, pages: Collection[str]) -> str:
+    """Rewrite relative ``Page.md[#fragment]`` links to wiki ``pages`` as ``Page[#fragment]``."""
+    masked = _mask_for_links(text)
+    starts: list[int] = []
+    for j, _ in _inline_destinations(masked):
+        k = j + 2
+        while masked[k] in " \t\n":
+            k += 1
+        starts.append(k + 1 if masked[k] == "<" else k)
+    offset = 0
+    for line in masked.split("\n"):
+        match = _REF_DEFINITION.match(line)
+        if match:
+            starts.append(offset + match.start(1) + (1 if match.group(1).startswith("<") else 0))
+        offset += len(line) + 1
+    out: list[str] = []
+    pos = 0
+    for start in sorted(starts):
+        match = re.match(r"([^\s#)>]+)\.md(?=[#)\s>]|$)", text[start:])
+        if match and match.group(1) + ".md" in pages:
+            out.append(text[pos:start])
+            out.append(match.group(1))
+            pos = start + match.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def export_wiki(root: Path, out: Path) -> list[str]:
+    """Write the tracked wiki pages into ``out`` with wiki-style links; returns the page names."""
+    tracked = sorted(p for p in git(root, "ls-files", "-z", "--", WIKI_DIR).split("\0") if p)
+    if not tracked:
+        raise CiError(f"no tracked {WIKI_DIR}/ pages to export")
+    problems = [problem for path in tracked if (problem := wiki_page_problem(path))]
+    if problems:
+        raise CiError("; ".join(problems))
+    if out.exists() and (not out.is_dir() or any(entry.name != ".git" for entry in out.iterdir())):
+        raise CiError(f"--out {out} must be a missing or empty directory (a .git directory is allowed)")
+    names = [posixpath.basename(path) for path in tracked]
+    out.mkdir(parents=True, exist_ok=True)
+    for path, name in zip(tracked, names):
+        source = root / path
+        if source.is_symlink() or not source.is_file():
+            raise CiError(f"{path} must be a regular file")
+        try:
+            text = source.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise CiError(f"{path} is not valid UTF-8 ({exc.reason})") from None
+        (out / name).write_bytes(wiki_links(text, names).encode("utf-8"))
+    return names
+
+
+def run_wiki(args: argparse.Namespace) -> int:
+    names = export_wiki(args.root.resolve(), args.out)
+    print(f"wiki: exported {len(names)} page(s) to {args.out}")
     return 0
 
 
@@ -674,6 +842,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--github-output", type=Path, help="append rust=/licenses= lines to this GITHUB_OUTPUT file")
 
     sub.add_parser("docs", help="validate tracked Markdown links, anchors, fences and tables")
+    p = sub.add_parser("wiki", help="write the tracked wiki/ pages with wiki-style links for publishing")
+    p.add_argument("--out", type=Path, required=True, help="missing or empty directory (a .git directory is allowed)")
     sub.add_parser("gate", help="judge the needs results (CI_NEEDS_JSON, CI_RUST, CI_LICENSES, CI_PACKAGE)")
     return parser
 
@@ -690,6 +860,8 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
             return run_plan(args)
         if args.command == "docs":
             return run_docs(args)
+        if args.command == "wiki":
+            return run_wiki(args)
         return run_gate(args, os.environ if environ is None else environ)
     except CiError as exc:
         print(f"error: {exc}", file=sys.stderr)

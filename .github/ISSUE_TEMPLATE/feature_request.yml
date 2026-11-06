@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check the [feature-parity matrix](https://github.com/RetroHazard/animatic/blob/main/docs/feature-parity.md)
+        Check the [feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity)
         first: it lists what is implemented, partial, core-only or deliberately absent. Animatic uses
         current AniDB APIs and prefers AniDB's web editors over retired metadata-change protocols.
         Issues are public: use placeholders instead of real user names, paths, titles or library data.

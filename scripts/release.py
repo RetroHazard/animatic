@@ -50,8 +50,11 @@ PLATFORMS = {
     "windows": (".zip", "animatic.exe"),
     "linux": (".tar.gz", "animatic"),
 }
-# Fixed top-level files that ship in every archive; docs/*.md is added on top.
+# Fixed top-level files that ship in every archive; the user guide is added under docs/.
 PACKAGED_FILES = ("LICENSE", "README.md", CHANGELOG_NAME)
+# The user guide's source (published as the GitHub wiki) and its directory in the archive.
+GUIDE_DIR = "wiki"
+ARCHIVE_DOCS_DIR = "docs"
 DEP_KEYS = ("dependencies", "dev-dependencies", "build-dependencies")
 # Deterministic archive metadata (the ZIP format cannot represent earlier dates).
 ARCHIVE_TIME = (1980, 1, 1, 0, 0, 0)
@@ -933,31 +936,42 @@ def _require_regular(root: Path, name: str) -> None:
         raise ReleaseError(f"{name} resolves outside the repository") from None
 
 
-def doc_files(root: Path) -> list[str]:
-    """The tracked ``docs/*.md`` files. Only git-tracked files are eligible, so untracked or
-    ignored local drafts can never ship; a tracked file missing from the working tree is an error."""
+def doc_files(root: Path) -> list[tuple[str, str]]:
+    """``(archive name, repository path)`` of the tracked user-guide pages ``wiki/*.md``.
+
+    Only git-tracked files are eligible, so untracked or ignored local drafts can never ship; a
+    tracked file missing from the working tree is an error. Wiki chrome (``_Sidebar.md``,
+    ``_Footer.md``) is not shipped, and every shipped name must pass the updater's doc-name rule.
+    """
     if not is_repo_root(root):
         raise ReleaseError("package needs the repository root to be a git checkout (docs are taken from git)")
-    docs_dir = root / "docs"
-    if docs_dir.is_symlink() or (docs_dir.exists() and not docs_dir.resolve().is_relative_to(root.resolve())):
-        raise ReleaseError("docs/ is a link or resolves outside the repository")
-    out = git(root, "ls-files", "-z", "--", "docs").stdout
-    names = sorted({e for e in out.split("\0") if re.fullmatch(r"docs/[^/]+\.md", e)})
+    guide_dir = root / GUIDE_DIR
+    if guide_dir.is_symlink() or (guide_dir.exists() and not guide_dir.resolve().is_relative_to(root.resolve())):
+        raise ReleaseError(f"{GUIDE_DIR}/ is a link or resolves outside the repository")
+    out = git(root, "ls-files", "-z", "--", GUIDE_DIR).stdout
+    names = sorted(
+        e for e in set(out.split("\0"))
+        if re.fullmatch(rf"{GUIDE_DIR}/[^/]+\.md", e) and not e.startswith(f"{GUIDE_DIR}/_")
+    )
     if not names:
-        raise ReleaseError("no tracked docs/*.md files to package")
+        raise ReleaseError(f"no tracked {GUIDE_DIR}/*.md pages to package")
     for name in names:
+        page = name[len(GUIDE_DIR) + 1 :]
+        if len(page) > 100 or ".." in page or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", page):
+            raise ReleaseError(f"{name}: the updater only accepts doc names of letters, digits, '.', '-' and '_'")
         if not (root / name).exists() and not (root / name).is_symlink():
             raise ReleaseError(f"tracked file {name} is missing from the working tree")
         _require_regular(root, name)
-    return names
+    return [(f"{ARCHIVE_DOCS_DIR}/{name[len(GUIDE_DIR) + 1 :]}", name) for name in names]
 
 
-def package_files(root: Path) -> list[str]:
+def package_files(root: Path) -> list[tuple[str, str]]:
+    """``(archive name, repository path)`` of every packaged repository file."""
     for name in PACKAGED_FILES:
         if not (root / name).exists():
             raise ReleaseError(f"{name} is missing")
         _require_regular(root, name)
-    return [*PACKAGED_FILES, *doc_files(root)]
+    return [*((name, name) for name in PACKAGED_FILES), *doc_files(root)]
 
 
 def _copy_to_zip(zf: zipfile.ZipFile, arcname: str, source: Path, mode: int) -> None:
@@ -1017,7 +1031,7 @@ def build_package(root: Path, platform: str, binary: Path, notices: Path, output
     entries: list[tuple[str, Path, int]] = [(binary_name, binary, 0o755)]
     entries += [(name, root / name, 0o644) for name in PACKAGED_FILES]
     entries.append((NOTICES_NAME, notices, 0o644))
-    entries += [(name, root / name, 0o644) for name in files if name not in PACKAGED_FILES]
+    entries += [(archive, root / source, 0o644) for archive, source in files if archive not in PACKAGED_FILES]
 
     output.mkdir(parents=True, exist_ok=True)
     final = output / archive_name(state.version.text, platform)
@@ -1035,8 +1049,8 @@ def build_package(root: Path, platform: str, binary: Path, notices: Path, output
                         _add_to_tar(tf, stem, None, 0o755)
                         docs_dir_added = False
                         for name, source, mode in entries:
-                            if name.startswith("docs/") and not docs_dir_added:
-                                _add_to_tar(tf, f"{stem}/docs", None, 0o755)
+                            if name.startswith(f"{ARCHIVE_DOCS_DIR}/") and not docs_dir_added:
+                                _add_to_tar(tf, f"{stem}/{ARCHIVE_DOCS_DIR}", None, 0o755)
                                 docs_dir_added = True
                             _add_to_tar(tf, f"{stem}/{name}", source, mode)
         os.replace(tmp, final)

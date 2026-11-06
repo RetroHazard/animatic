@@ -107,7 +107,9 @@ class ClassifyTests(unittest.TestCase):
             "README.md": NEITHER,
             "CHANGELOG.md": NEITHER,
             "AGENTS.md": NEITHER,
-            "docs/user-guide.md": NEITHER,
+            "docs/architecture.md": NEITHER,
+            "wiki/Home.md": NEITHER,
+            "wiki/_Sidebar.md": NEITHER,
             "docs/img/screenshot.png": NEITHER,
             "notes/idea.md": NEITHER,
             # unknown docs payload fails closed
@@ -502,11 +504,147 @@ class LinkTests(unittest.TestCase):
         text = "\ufeff# Top\r\n\r\n[x](b.md#section)\r\n\r\n```\r\nfenced\r\n```\r\n"
         self.assertEqual(self.run_docs(text), [])
 
-    def test_report_counts_relative_links_only(self):
+    def test_report_counts_relative_links_and_repository_urls(self):
         report = ci.check_markdown(
-            {"a.md": "[x](b.md) [y](https://example.invalid) [z](#top)\n", "b.md": "# B\n"}, {"a.md", "b.md"}
+            {
+                "a.md": "[x](b.md) [y](https://example.invalid) [z](#top) [u](https://github.com/RetroHazard/animatic/blob/main/b.md)\n",
+                "b.md": "# B\n",
+            },
+            {"a.md", "b.md"},
         )
-        self.assertEqual((report.documents, report.links, report.errors), (2, 2, []))
+        self.assertEqual((report.documents, report.links, report.urls, report.errors), (2, 2, 1, []))
+
+
+REPO_URL = "https://github.com/RetroHazard/animatic"
+
+
+class WikiDocsTests(unittest.TestCase):
+    TRACKED = ["README.md", "docs/dev.md", "crates/x/src/lib.rs", "wiki/Home.md", "wiki/Guide.md", "wiki/_Sidebar.md"]
+
+    def run_docs(self, readme: str = "# Readme\n", guide: str = "# Guide\n\n## Start\n", **extra: str) -> list[str]:
+        documents = {
+            "README.md": readme,
+            "docs/dev.md": "# Dev\n\n## Build\n",
+            "wiki/Home.md": "## Welcome\n",
+            "wiki/Guide.md": guide,
+            "wiki/_Sidebar.md": "- [Home](Home.md)\n",
+        }
+        documents.update({f"wiki/{name}": text for name, text in extra.items()})
+        return check(documents, self.TRACKED)
+
+    def test_wiki_pages_link_each_other_and_the_repository_by_url(self):
+        guide = (
+            "## Start\n\n[home](Home.md#welcome) [self](#start) [side](_Sidebar.md)\n"
+            f"[dev]({REPO_URL}/blob/main/docs/dev.md#build) [src]({REPO_URL}/tree/main/crates/x)\n"
+            f"[line]({REPO_URL}/blob/main/crates/x/src/lib.rs#L3) [issues]({REPO_URL}/issues/new/choose)\n"
+        )
+        self.assertEqual(self.run_docs(guide=guide), [])
+
+    def test_wiki_page_links_that_leave_the_wiki_are_reported(self):
+        guide = "[readme](../README.md)\n[dev](../docs/dev.md#build)\n[root](/README.md)\n"
+        errors = self.run_docs(guide=guide)
+        self.assertEqual(len(errors), 3)
+        self.assertTrue(all("leaves the wiki pages" in e for e in errors), errors)
+        self.assertEqual([e.split(":")[1] for e in errors], ["1", "2", "3"])
+
+    def test_repository_urls_are_checked_against_the_checkout(self):
+        readme = (
+            f"[ok]({REPO_URL}/blob/main/docs/dev.md#build)\n"
+            f"[gone]({REPO_URL}/blob/main/docs/gone.md)\n"
+            f"[anchor]({REPO_URL}/blob/main/docs/dev.md#absent)\n"
+            f"[wiki]({REPO_URL}/wiki) [page]({REPO_URL}/wiki/Guide#start)\n"
+            f"[no page]({REPO_URL}/wiki/Missing)\n"
+            f"[no anchor]({REPO_URL}/wiki/Guide#absent)\n"
+            f"[branch]({REPO_URL}/blob/other/docs/gone.md) [lookalike]({REPO_URL}/wikis/x)\n"
+        )
+        errors = self.run_docs(readme=readme)
+        self.assertEqual([e.split(":")[1] for e in errors], ["2", "3", "5", "6"], errors)
+        self.assertIn("docs/gone.md", errors[0])
+        self.assertIn("#absent", errors[1])
+        self.assertIn("wiki/Missing.md", errors[2])
+        self.assertIn("wiki/Guide.md", errors[3])
+
+    def test_wiki_holds_only_flat_packageable_pages(self):
+        tracked = [*self.TRACKED, "wiki/sub/Page.md", "wiki/_Header.md", "wiki/a b.md", "wiki/shot.png", "wiki/x..y.md"]
+        errors = check({"wiki/Home.md": "# Home\n"}, tracked)
+        self.assertEqual(
+            sorted(e.split(":")[0] for e in errors),
+            ["wiki/_Header.md", "wiki/a b.md", "wiki/shot.png", "wiki/sub/Page.md", "wiki/x..y.md"],
+        )
+
+    def test_page_names_follow_the_updater_rule(self):
+        self.assertTrue(ci.is_packaged_wiki_page("Rename-Language.md"))
+        self.assertTrue(ci.is_packaged_wiki_page("a" * 97 + ".md"))
+        self.assertFalse(ci.is_packaged_wiki_page("a" * 98 + ".md"))
+        for name in ("_Sidebar.md", "-x.md", ".x.md", "a..md", "x.txt", "Ä.md"):
+            self.assertFalse(ci.is_packaged_wiki_page(name), name)
+
+
+class WikiLinkTests(unittest.TestCase):
+    PAGES = {"Home.md", "Guide.md", "_Sidebar.md"}
+
+    def test_page_links_lose_the_extension(self):
+        text = (
+            "[a](Guide.md) [b](Guide.md#start) [c](<Guide.md>) [d](Guide.md \"title\") [e]( Home.md )\n"
+            "[side](_Sidebar.md)\n[ref]: Guide.md#ref\n"
+        )
+        expected = (
+            "[a](Guide) [b](Guide#start) [c](<Guide>) [d](Guide \"title\") [e]( Home )\n"
+            "[side](_Sidebar)\n[ref]: Guide#ref\n"
+        )
+        self.assertEqual(ci.wiki_links(text, self.PAGES), expected)
+
+    def test_other_links_and_code_are_untouched(self):
+        text = (
+            "[other](Other.md) [up](../Guide.md) [url](https://example.invalid/Guide.md) [file](Guide.mdx)\n"
+            "`[code](Guide.md)` <!-- [c](Guide.md) -->\n\n```md\n[fenced](Guide.md)\n```\r\n"
+            "[after](Guide.md)\r\n"
+        )
+        expected = text.replace("[after](Guide.md)", "[after](Guide)")
+        self.assertEqual(ci.wiki_links(text, self.PAGES), expected)
+
+
+@unittest.skipUnless(HAVE_GIT, "git is not available")
+class WikiExportTests(unittest.TestCase):
+    def setUp(self):
+        self.repo = Fixture(self)
+        self.repo.write("wiki/Home.md", "[guide](Guide.md#start)\n")
+        self.repo.write("wiki/Guide.md", "## Start\n\n[home](Home.md)\n")
+        self.repo.write("wiki/_Sidebar.md", "- [Guide](Guide.md)\n")
+        self.repo.write("docs/dev.md", "# Dev\n")
+        self.repo.commit_all()
+        self.repo.write("wiki/Draft.md", "untracked\n")
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name) / "wiki.git"
+
+    def export(self) -> tuple[int, str, str]:
+        return run_cli("--root", str(self.repo.root), "wiki", "--out", str(self.out))
+
+    def test_exports_tracked_pages_with_wiki_links(self):
+        (self.out / ".git").mkdir(parents=True)
+        code, out, err = self.export()
+        self.assertEqual(code, 0, err)
+        self.assertIn("3 page(s)", out)
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), [".git", "Guide.md", "Home.md", "_Sidebar.md"])
+        self.assertEqual((self.out / "Home.md").read_text(encoding="utf-8"), "[guide](Guide#start)\n")
+        self.assertEqual((self.out / "_Sidebar.md").read_text(encoding="utf-8"), "- [Guide](Guide)\n")
+
+    def test_refuses_an_output_directory_with_content(self):
+        self.out.mkdir(parents=True)
+        (self.out / "Stale.md").write_text("old\n", encoding="utf-8")
+        code, out, err = self.export()
+        self.assertEqual(code, 1)
+        self.assertIn("must be a missing or empty directory", err)
+        self.assertEqual([p.name for p in self.out.iterdir()], ["Stale.md"])
+
+    def test_refuses_invalid_page_names(self):
+        self.repo.write("wiki/sub/Page.md", "x\n")
+        self.repo.commit_all()
+        code, _, err = self.export()
+        self.assertEqual(code, 1)
+        self.assertIn("wiki/sub/Page.md", err)
+        self.assertFalse(self.out.exists())
 
 
 @unittest.skipUnless(HAVE_GIT, "git is not available")

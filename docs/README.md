@@ -1,32 +1,28 @@
-# Animatic documentation
+# Animatic developer documentation
 
-These guides describe the implementation in this repository. A stored setting or a Rust API
-is not necessarily a desktop feature. Unsupported and compatibility-only behavior is labeled
-explicitly; the historical forum audit is evidence, not a product specification.
+These pages describe how Animatic is built: architecture, storage and network contracts,
+development, releases and the rename engine's Rust API. A stored setting or a Rust API is not
+necessarily a desktop feature; the historical forum audit is evidence, not a product
+specification.
 
-## Use Animatic
+## User guide
 
-| Guide | Read it for |
-|---|---|
-| [Getting started](getting-started.md) | Download a release or build, first run, data locations, portable setup and CLI reference |
-| [User guide](user-guide.md) | Library views, hashing, identification, MyList edits, scans, migration, exports, external tools and updating Animatic |
-| [Settings reference](settings-reference.md) | JSON fields (including `updates.auto_check`), defaults, UI controls, active versus stored-only options and recovery rules |
-| [Rename language](rename-language.md) | Expressions, functions, object properties, working patterns, validation and safe application |
-| [Troubleshooting](troubleshooting.md) | Backups, recovery, synchronization failures, update problems, filesystem problems and privacy-safe support |
-
-For an existing AOM library, start with the migration section in the user guide. Keep the
-original databank and all runtime output outside the source checkout. Before online work,
-review imported settings and use a registered AniDB client identifier.
+The user guide is the [wiki](https://github.com/RetroHazard/animatic/wiki): installation, the
+command line and data locations, every page and task of the application, the settings
+reference, the rename language, troubleshooting and feature parity with AOM. Its source is the
+[`wiki/`](../wiki) folder of this repository; changes go through pull requests and are
+published by the wiki workflow (see [Wiki publishing](development.md#wiki-publishing)). Release
+archives carry the same pages in their `docs/` folder.
 
 ## Develop Animatic
 
 | Guide | Read it for |
 |---|---|
-| [Architecture](architecture.md) | Crate dependencies, threads (including the updater thread), data flows, invariants and extension points |
+| [Architecture](architecture.md) | Crate dependencies, threads (including the updater thread), data flows, invariants, extension points and where each user workflow is implemented |
 | [Storage and network contracts](storage-and-network.md) | Schema, queue ordering and failure states, AniDB protocol handling, the GitHub update transport and Rust API entry points |
-| [Development](development.md) | Toolchain, checks, native smoke verification, CI and contribution/privacy rules |
+| [Development](development.md) | Toolchain, checks, native smoke verification, CI, wiki publishing and contribution/privacy rules |
 | [Releases](releases.md) | Versioning and changelog, release tool, workflows, maintainer procedure, archive contents, checksum verification and the in-app update contract |
-| [Feature parity](feature-parity.md) | Desktop workflows versus core-only capabilities, compatibility differences and open gaps |
+| [Rename language Rust API](rename-api.md) | Planning a rename from Rust, against fixed objects or the library database, and custom data sources |
 
 Generate API documentation with `cargo doc --workspace --no-deps`; the local entry points
 are `target/doc/animatic_core/index.html` and `target/doc/animatic_anidb/index.html`.

@@ -22,8 +22,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
 There is **no full-account MyList bootstrap, scheduled folder scanning, automatic
 renaming, cover-art UI, or media-deletion UI**. See the
-[feature-parity matrix](docs/feature-parity.md) and
-[settings reference](docs/settings-reference.md) before relying on an imported option.
+[feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity) and
+[settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) before relying on an imported option.
 
 ## Install or build
 
@@ -32,8 +32,9 @@ renaming, cover-art UI, or media-deletion UI**. See the
 Published [GitHub Releases](https://github.com/RetroHazard/animatic/releases) carry an
 unsigned `animatic-vVERSION-windows-x86_64.zip`, an unsigned
 `animatic-vVERSION-linux-x86_64.tar.gz` and a `SHA256SUMS` file. Each archive contains the
-executable plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the Markdown guides from `docs/`
-(Rust API documentation is not included). There is no installer or code signing.
+executable plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the user
+guide from the [wiki](https://github.com/RetroHazard/animatic/wiki) as `docs/*.md` for offline
+reading (developer and Rust API documentation are not included). There is no installer or code signing.
 Verify the checksum before unpacking; the Windows PowerShell and Linux `sha256sum` commands
 are in [Releases](docs/releases.md#install-a-release). Linux runtime behavior has not been
 exercised by the project, and the Linux build is made on Ubuntu 22.04.
@@ -51,7 +52,7 @@ does not prove who produced it; releases are unsigned. Contacting GitHub exposes
 address and the Animatic version to GitHub; no account, token or library data is sent. The
 startup check is controlled by **Check for updates at startup** (`updates.auto_check`, on by
 default) and is skipped while *Work offline* is set or settings were recovered from a backup.
-See [Updating Animatic](docs/user-guide.md#updating-animatic) and
+See [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic) and
 [Releases](docs/releases.md#in-app-updates).
 
 ### Build from source
@@ -74,22 +75,32 @@ The executable is `target/release/animatic.exe` on Windows or
 
 Start **offline**. Before synchronizing, configure your AniDB credentials and a registered
 client identifier. Do not test production AniDB with invented client credentials.
-The [getting-started guide](docs/getting-started.md) covers downloads, first run,
-portable paths and the complete CLI. A source-checkout or package-manager executable
+The [Installation](https://github.com/RetroHazard/animatic/wiki/Installation),
+[Running Animatic](https://github.com/RetroHazard/animatic/wiki/Running-Animatic),
+[Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations) and
+[First launch](https://github.com/RetroHazard/animatic/wiki/First-Launch) wiki pages cover
+downloads, the complete CLI, portable paths and the first run. A source-checkout or package-manager executable
 can run the updater but should normally be updated through its own workflow; see
-[Updating Animatic](docs/user-guide.md#updating-animatic).
+[Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic).
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): pages, hashing, scans, MyList, migration and exports.
-- [Settings reference](docs/settings-reference.md): defaults, JSON, UI exposure and
+The user guide is the [Animatic wiki](https://github.com/RetroHazard/animatic/wiki), published
+from [`wiki/`](wiki) in this repository:
+
+- [Getting started](https://github.com/RetroHazard/animatic/wiki#get-started): installation,
+  command line, data locations and the first launch.
+- [Using Animatic](https://github.com/RetroHazard/animatic/wiki#use-animatic): pages, hashing,
+  scans, MyList, renaming, exports, updating and migrating from AOM.
+- [Settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference): defaults, JSON, UI exposure and
   which compatibility fields actually affect runtime behavior.
-- [Troubleshooting and recovery](docs/troubleshooting.md): backups, startup failures,
+- [Troubleshooting and recovery](https://github.com/RetroHazard/animatic/wiki/Troubleshooting): backups, startup failures,
   queue/network problems, renaming and privacy-safe diagnostics.
-- [Releases](docs/releases.md): versioning, changelog, release workflows, archive contents,
-  checksum verification and the in-app update contract.
-- [Complete documentation index](docs/README.md): rename language, architecture,
-  storage/network contracts, development and historical research.
+
+Developer documentation stays in [`docs/`](docs/README.md): architecture, storage/network
+contracts, development, [releases](docs/releases.md) (versioning, changelog, release
+workflows, archive contents, checksum verification and the in-app update contract) and
+historical research.
 
 ## Development and verification
 

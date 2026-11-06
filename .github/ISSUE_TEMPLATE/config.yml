@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Troubleshooting guide
-    url: https://github.com/RetroHazard/animatic/blob/main/docs/troubleshooting.md
+    url: https://github.com/RetroHazard/animatic/wiki/Troubleshooting
     about: Known messages, recovery steps and how to sanitize diagnostics before reporting.
   - name: Security problem
-    url: https://github.com/RetroHazard/animatic/blob/main/docs/troubleshooting.md#privacy-safe-support-and-bug-reports
+    url: https://github.com/RetroHazard/animatic/wiki/Reporting-Problems
     about: Do not open a public issue for a vulnerability or include credentials or library data anywhere public.
