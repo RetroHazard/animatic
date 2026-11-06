@@ -141,6 +141,12 @@ the generated line for that pull request's squash commit.
   is read with strict size and structure limits and merged in one step: a damaged file changes
   nothing, queued local changes win, and entries missing from the export are never deleted. The
   accepted layout is inferred and not yet checked against a real AniDB export.
+- Files waiting to be hashed survive a quit or crash: Add files, command-line paths, files
+  forwarded by another launch and scans go into a persistent hash queue hashed in order;
+  cancelling keeps the rest queued, and an unreadable file stays listed with its reason. Hashed
+  files and the Overview show the queue with Resume hashing, Retry failed and Clear hash queue.
+  **Start hashing automatically** resumes the queue at start. The hashing thread priority setting
+  is kept only for AOM compatibility and has no effect.
 
 ### Changed
 
