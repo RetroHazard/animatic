@@ -72,7 +72,7 @@ moment, so edits apply from the next run. (Update checks contact GitHub, not Ani
 | `udp_server` | string | `api.anidb.net:9000` | none | **Active, JSON only.** `host:port` of the UDP API. |
 | `local_port` | integer (u16) | `29456` | none | **Active, JSON only.** Local UDP port to bind (all interfaces). AniDB bans clients that use many different source ports, so Animatic uses exactly this port and **never falls back to another one**: if it cannot be bound (another program uses it) the run stops with an error naming `anidb.local_port`, nothing is sent and the commands stay queued; free the port or choose another above 1024. Also passed to AVDump as `{port}`. `0` asks the operating system for a port, a different one every run, which is meant for tests and risks that ban. |
 | `image_server` | string | `cdn.anidb.net` | none | **Import only.** The HTTP client has an image-download method, but nothing calls it; no image feature exists in the UI. |
-| `update_file_information` | boolean | `false` | "Update known file information" | **Inert control.** Shown disabled ("Not active yet": planned re-query of an already identified file when hashed again); the stored value is kept and never read. (Import fills it from AOM.) |
+| `update_file_information` | boolean | `false` | "Update known file information" | **Active.** When true, hashing a file that is already identified (it has an AniDB file id) again queues a refresh of its AniDB record (`Fetch file`), at most once per file per 7 days; with the default `false`, re-hashing a known file queues nothing. Unidentified files follow *Identify after hashing*. (Import fills it from AOM.) |
 | `offline` | boolean | `false` | "Work offline (keep commands queued)" | **Active.** When true, Run command queue / Synchronize now send nothing and report "Offline mode is enabled; commands remain queued". Commands are still queued locally. The status bar shows "Offline" or "Ready for AniDB". Forced to `true` by backup recovery and by applying imported AOM settings. It also suppresses the automatic startup [update check](#updates); an explicit **Help → Check for updates…** is still allowed. |
 | `idle_logout_minutes` | integer (u32) | `10` | none | **Stored only.** Not read. Each queue run ends with a logout regardless of this value. |
 
@@ -418,7 +418,7 @@ Practical notes that follow from this order:
 
 ## Options controls and keys at a glance
 
-Controls that do nothing: **Update known file information**, **Start hashing automatically**,
+Controls that do nothing: **Start hashing automatically**,
 **Use status colors**, **Auto rename** (per folder), and the player **Name** field. Keys that work but have no control:
 `anidb.client_version`, `udp_server`, `local_port`, per-folder `exclude_hidden`, `can_edit_path`
 and `default`, extra `players` entries, `players[].open`/`enqueue` (core only), and `ui.columns`

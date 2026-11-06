@@ -44,17 +44,25 @@ What the user-reachable commands do:
 | Remove mylist entry | From **My list → Remove from MyList…**. Deletes the entry on AniDB. The local row is removed only after AniDB acknowledges (or says the entry no longer exists), and not at all if you queued something for the entry afterwards. Never touches your media file. |
 | Refresh mylist entry | From **My list → Refresh entry**. Re-reads the entry and replaces the cached row, keeping edits that are still queued on top. If AniDB says the entry is gone, the row is removed unless changes for it are queued. |
 | Fetch anime N | Downloads the HTTP-API anime record: titles, episodes, genres, relations, reviews, metadata. At most once per anime per 24 hours (see [Request limits](#request-limits)) |
-| Fetch file N | Updates a file record (from a full update). At most once per file per 7 days |
+| Fetch file N | Updates a file record (from a full update, or from hashing an already identified file again with *Update known file information* on). At most once per file per 7 days |
 | Fetch episode N | From the **Refresh** button of an episode in the [anime detail window](Library-Pages.md#anime-detail-window). Replaces the cached episode record |
 | Fetch group N | From the **Refresh** link on the [Groups page](Library-Pages.md#groups). Replaces the cached group record |
 | Download anime title list | Streams `anime-titles.xml.gz` into a temporary store, validates it, then merges atomically in one transaction. Creates an anime row for every unknown id and replaces titles only of anime without a full HTTP record (imported AOM anime count as such). Failure leaves titles and the completion time untouched. Limits: 32 MiB compressed, 128 MiB decoded, 250 000 anime, 2 000 000 titles, 2048 bytes per name. At most once per 24 hours (see [Request limits](#request-limits)) |
 | Fetch mylist statistics | Stores AniDB's account figures with the time they arrived (replacing the previous ones) and shows them on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures. The log line `N anime, N episodes, N files in mylist` is still written |
 
-A full update (`--full-update`) queues the title list plus one file lookup and one anime refresh for
+A full update (**Tools → Full update…** after a confirmation that shows the counts, or `--full-update`) queues the title list plus one file lookup and one anime refresh for
 each file id and anime id that your **identified hashed local files** resolve to (not the whole local
 cache or the title catalog); it does not run them. It leaves out what AniDB's limits do not
 allow yet (the title list, anime and files requested recently, see [Request limits](#request-limits))
 and the log line says how many were left out.
+
+**Update known file information** (Options, off by default): when a file the library already
+knows from AniDB is hashed again (Add files, the command line or a scan), Animatic queues a
+`Fetch file` for it instead of looking it up by hash again, unless that file was requested within
+the last 7 days (the log then says when it is allowed). With the option off, hashing a known file
+again queues nothing; a file AniDB did not know yet keeps the *Identify after hashing* path. A
+folder that adds files to MyList automatically still queues `Identify` (which refreshes the record
+too).
 
 ## Request limits
 

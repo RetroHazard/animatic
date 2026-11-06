@@ -21,6 +21,7 @@ use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
 
 mod mylist_editor;
+mod refresh;
 mod shell_menu;
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
@@ -533,6 +534,7 @@ pub struct AnimaticApp {
     restore: Option<RestoreStage>,
     /// The user asked to compact the library and has not answered the confirmation yet.
     compact_confirm: bool,
+    full_update: refresh::FullUpdateStage,
     /// Latest backup made in this session, named when a library check fails.
     last_backup: Option<PathBuf>,
     /// Keystore the settings' credential fields are saved to and loaded from.
@@ -643,6 +645,7 @@ impl AnimaticApp {
             restart,
             restore: None,
             compact_confirm: false,
+            full_update: refresh::FullUpdateStage::default(),
             last_backup: None,
         };
         app.request_library_refresh();
@@ -1094,18 +1097,13 @@ impl AnimaticApp {
                         "Hashed {} (local #{local_id}, {ed2k})",
                         path.display()
                     ));
-                    if self.settings.hashing.identify_after_hashing {
-                        let manager = self.settings.file_managers.manager_for(&path);
-                        let add = manager
-                            .mylist_auto_add
-                            .then(|| animatic_core::sync::manager_mylist_edit(manager));
-                        self.queue_command(animatic_core::sync::Command::Identify {
-                            size,
-                            ed2k,
-                            add,
-                        });
-                    }
+                    self.queue_after_hash(&path, size, ed2k);
                     self.request_library_refresh();
+                }
+                Event::FullUpdatePreview(report) => {
+                    if matches!(self.full_update, refresh::FullUpdateStage::Computing) {
+                        self.full_update = refresh::FullUpdateStage::Confirm(report);
+                    }
                 }
                 Event::Imported { summary } => {
                     self.log(summary);
@@ -1230,7 +1228,12 @@ impl AnimaticApp {
                 }
                 // Not a dirty signal: statistics export failures arrive as errors and would
                 // otherwise re-request the projection (and the export) forever.
-                Event::Error(e) => self.error(e),
+                Event::Error(e) => {
+                    if matches!(self.full_update, refresh::FullUpdateStage::Computing) {
+                        self.full_update = refresh::FullUpdateStage::Closed;
+                    }
+                    self.error(e)
+                }
                 Event::Finished => {
                     self.activity.busy = false;
                     self.status = "Ready".into();
@@ -2120,6 +2123,21 @@ impl AnimaticApp {
                     });
                     if ui.button("Download anime titles").clicked() {
                         self.queue_titles_dump();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.import_pending
+                                && matches!(self.full_update, refresh::FullUpdateStage::Closed),
+                            egui::Button::new("Full update…"),
+                        )
+                        .on_hover_text(
+                            "Queue a refresh of the title dump and of every anime and file \
+                             in the library; nothing is sent until the queue runs.",
+                        )
+                        .clicked()
+                    {
+                        self.start_full_update_preview();
                         ui.close();
                     }
                     if ui.button("Fetch mylist statistics").clicked() {
@@ -3220,15 +3238,13 @@ impl AnimaticApp {
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",
                     );
-                    not_active_yet(
-                        ui,
-                        "an already identified file will be re-queried from AniDB when hashed again.",
-                        |ui| {
-                            ui.checkbox(
-                                &mut self.settings.anidb.update_file_information,
-                                "Update known file information",
-                            )
-                        },
+                    ui.checkbox(
+                        &mut self.settings.anidb.update_file_information,
+                        "Update known file information",
+                    )
+                    .on_hover_text(
+                        "When an already identified file is hashed again, queue a refresh of its \
+                         AniDB record (at most once every 7 days per file).",
                     );
                     ui.separator();
                     ui.heading("Appearance");
@@ -4188,6 +4204,7 @@ impl eframe::App for AnimaticApp {
         self.library_safety_windows(&ctx);
         self.rename_window(&ctx);
         self.mylist_windows(&ctx);
+        self.full_update_window(&ctx);
         self.batch_rename_window(&ctx);
         if self.about_open {
             let mut open = true;

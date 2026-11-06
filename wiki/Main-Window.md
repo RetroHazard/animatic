@@ -54,7 +54,7 @@ Jobs and what the controls do:
 | Importing legacy databank | File → Import AOM databank… | No effect | Checked only between steps (see [migration](Migrating-from-AOM.md#migrate-an-aom-databank)); a late Cancel can still end in success |
 | Reading AOM settings | File → Import AOM settings… | No effect | No effect; the review window decides whether anything changes |
 | Synchronizing with AniDB | Run command queue / Synchronize now | No effect | Stops before the next command; a request already in flight finishes or times out (UDP 20 s, HTTP 60 s) |
-| Queueing full update | `--full-update` | No effect | – |
+| Queueing full update | `--full-update`, Tools → Full update… (after confirming) | No effect | – |
 | Backing up library | File → Back up library… | No effect | No effect; it runs to completion and a half-written file is never left |
 | Checking backup file | File → Restore library… | No effect | No effect; the check changes nothing |
 | Checking library | Tools → Check library | No effect | No effect |
@@ -121,6 +121,7 @@ Semantics (from `app.rs` and `library.rs`):
 | Tools | Options… | Opens [Options](Options-Window.md). |
 | Tools | Scan managed folders | Starts a [scan](Managed-Folders-and-Scans.md). Disabled during a settings review. |
 | Tools | Download anime titles | Queues the title-list download (nothing is sent yet). The list is requested at most once per 24 hours: inside that window after the last attempt (even a failed one) nothing is queued and the log says when the next download is allowed. |
+| Tools | Full update… | Works out in the background what a [full update](AniDB-Synchronization.md#synchronization) would queue (the title list, a file refresh and an anime refresh for each identified hashed local file, minus what AniDB's limits do not allow yet and what the queue holds already) and asks for confirmation, showing the counts, how many were left out and when the title list is next allowed. **Queue** adds them (the same as `--full-update`); nothing is sent until you run the queue. Disabled during an import or settings review and while a preview is open. |
 | Tools | Fetch mylist statistics | Queues a MyList-statistics request. When run, the figures are stored with the time they arrived and shown on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures; the log also gets a line (`N anime, N episodes, N files in mylist`). |
 | Tools | Check library | Runs [`integrity_check` and `foreign_key_check`](Backups-and-Recovery.md#check-and-compact-the-library) in the background; never repairs. Disabled while a job runs, during an import or settings review, or during a restore. |
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
@@ -130,6 +131,6 @@ Semantics (from `app.rs` and `library.rs`):
 | Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
 | Help | About Animatic | Version and link, plus **View license** and **Third-party notices** buttons that open the license documents next to the program: the versioned `LICENSE-vVERSION` / `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `LICENSE` / `THIRD-PARTY-NOTICES.html`. A button is disabled when neither file exists (for example a bare executable copied out of an archive). |
 
-There is no menu item for a full update (command line only) or for downloading images. MyList
+There is no menu item for downloading images. MyList
 adds, removals and refreshes are buttons on the [Hashed files](Library-Pages.md#hashed-files) and
 [My list](Library-Pages.md#my-list) pages.

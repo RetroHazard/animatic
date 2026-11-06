@@ -78,6 +78,9 @@ pub enum Job {
     },
     /// Queue the commands of a full update from the hashed local files, off the UI thread.
     QueueFullUpdate,
+    /// Work out, without queueing anything, what `QueueFullUpdate` would queue now; answered
+    /// by `Event::FullUpdatePreview` (no started/finished events).
+    PreviewFullUpdate,
     /// Reload the library read model on the projection thread (see `Worker::submit`).
     LoadLibrary {
         generation: u64,
@@ -156,6 +159,8 @@ pub enum Event {
         description: String,
         changed: bool,
     },
+    /// Answer to `Job::PreviewFullUpdate`: nothing has been queued.
+    FullUpdatePreview(FullUpdateReport),
     Error(String),
     /// A queue entry was blocked (permanent failure, rejected credentials or too many attempts).
     Blocked {
@@ -599,6 +604,12 @@ fn run(
                     }
                 }
                 let _ = events.send(Event::Finished);
+            }
+            Job::PreviewFullUpdate => {
+                let _ = events.send(match preview_full_update(&db_path) {
+                    Ok(report) => Event::FullUpdatePreview(report),
+                    Err(e) => Event::Error(format!("Full update preview failed: {e}")),
+                });
             }
             Job::Scan {
                 settings,
@@ -1668,19 +1679,26 @@ fn open_for_legacy_import(db_path: &Path, confirmed: bool) -> animatic_core::Res
 }
 
 /// What a full update queued, and what AniDB's limits left out of it.
-#[derive(Debug, Default, PartialEq, Eq)]
-struct FullUpdateReport {
-    queued: usize,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FullUpdateReport {
+    /// Commands queued (or, in a preview, that would be queued now): the ones below that are
+    /// not in the queue already.
+    pub queued: usize,
+    /// Of `queued`, the title dump (0 or 1), file and anime commands.
+    pub new_titles_dump: usize,
+    pub new_files: usize,
+    pub new_anime: usize,
     /// The title dump is not requested again before this epoch second.
-    titles_dump_after: Option<i64>,
+    pub titles_dump_after: Option<i64>,
     /// Anime left out because they were requested less than a day ago.
-    recent_anime: usize,
+    pub recent_anime: usize,
     /// Files left out because they were requested less than seven days ago.
-    recent_files: usize,
+    pub recent_files: usize,
 }
 
 impl FullUpdateReport {
-    fn describe(&self) -> String {
+    /// What AniDB's limits keep out of the update, or `None` when nothing is left out.
+    pub fn left_out(&self) -> Option<String> {
         let mut left_out = Vec::new();
         if let Some(until) = self.titles_dump_after {
             left_out.push(format!(
@@ -1701,22 +1719,25 @@ impl FullUpdateReport {
                 KNOWN_FILE_MIN_AGE.as_secs() / 86_400
             ));
         }
+        (!left_out.is_empty()).then(|| left_out.join(", "))
+    }
+
+    pub fn describe(&self) -> String {
         let mut text = format!("Queued {} commands for the full update", self.queued);
-        if !left_out.is_empty() {
+        if let Some(left_out) = self.left_out() {
             text.push_str(&format!(
-                "; left out because AniDB's limits do not allow them yet: {}",
-                left_out.join(", ")
+                "; left out because AniDB's limits do not allow them yet: {left_out}"
             ));
         }
         text
     }
 }
 
-/// Queue the commands of a full update (`--full-update`): the titles dump plus every anime and
-/// file known from hashed local files, except what AniDB's limits do not allow yet (the title
-/// dump once a day, an anime a day, a known file seven days after the last attempt).
-fn queue_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> {
-    let db = Db::open(db_path)?;
+/// Work out the commands of a full update (`--full-update`): the titles dump plus every anime
+/// and file known from hashed local files, except what AniDB's limits do not allow yet (the
+/// title dump once a day, an anime a day, a known file seven days after the last attempt) and
+/// what the queue holds already. Reads only.
+fn plan_full_update(db: &Db) -> animatic_core::Result<(Vec<Command>, FullUpdateReport)> {
     let now = format::now();
     let mut fids = BTreeSet::new();
     let mut aids = BTreeSet::new();
@@ -1731,10 +1752,10 @@ fn queue_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> 
     aids.retain(|aid| !recent_anime.contains(aid));
     let titles_dump_after = db.titles_dump_next_allowed(now)?;
     let mut report = FullUpdateReport {
-        queued: 0,
         titles_dump_after,
         recent_anime: anime_known - aids.len(),
         recent_files: files_known - fids.len(),
+        ..Default::default()
     };
     let mut commands = Vec::with_capacity(1 + fids.len() + aids.len());
     if titles_dump_after.is_none() {
@@ -1742,6 +1763,34 @@ fn queue_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> 
     }
     commands.extend(fids.into_iter().map(|fid| Command::FetchFile { fid }));
     commands.extend(aids.into_iter().map(|aid| Command::FetchAnime { aid }));
+    let queued: Vec<Command> = db
+        .queue_list()?
+        .into_iter()
+        .filter_map(|e| e.command)
+        .collect();
+    commands.retain(|c| !queued.contains(c));
+    report.new_titles_dump = commands
+        .iter()
+        .filter(|c| matches!(c, Command::TitlesDump))
+        .count();
+    report.new_files = commands
+        .iter()
+        .filter(|c| matches!(c, Command::FetchFile { .. }))
+        .count();
+    report.new_anime = commands.len() - report.new_titles_dump - report.new_files;
+    report.queued = commands.len();
+    Ok((commands, report))
+}
+
+/// What a full update would queue now; nothing is queued.
+fn preview_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> {
+    Ok(plan_full_update(&Db::open(db_path)?)?.1)
+}
+
+/// Queue the commands of a full update (`--full-update`), as planned by `plan_full_update`.
+fn queue_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> {
+    let db = Db::open(db_path)?;
+    let (commands, mut report) = plan_full_update(&db)?;
     report.queued = db.queue_push_many(&commands)?;
     Ok(report)
 }
@@ -2515,6 +2564,55 @@ mod tests {
             "queueing is idempotent"
         );
         assert_eq!(db.open().queue_len().unwrap(), 4);
+    }
+
+    #[test]
+    fn full_update_preview_counts_what_is_then_queued() {
+        use animatic_core::limits::RequestKind;
+        let db = TempDb::new();
+        let d = db.open();
+        d.conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1),(2,'bb',1),(3,'cc',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/s/1'),(2,2,'/s/2'),(3,3,'/s/3');
+                 INSERT INTO file(fid, aid, ed2k, size) VALUES (10,100,'aa',1),(11,101,'bb',1),(12,102,'cc',1);",
+            )
+            .unwrap();
+        let now = format::now();
+        d.record_titles_dump_attempt(now - 60).unwrap();
+        d.record_request_attempt(RequestKind::Anime, 100, now - 60)
+            .unwrap();
+        d.record_request_attempt(RequestKind::File, 10, now - 60)
+            .unwrap();
+        // One of the commands is queued already and is not counted again.
+        d.queue_push(&Command::FetchFile { fid: 11 }).unwrap();
+
+        let preview = preview_full_update(&db.path).unwrap();
+        assert_eq!(d.queue_len().unwrap(), 1, "a preview queues nothing");
+        assert_eq!(
+            (
+                preview.new_titles_dump,
+                preview.new_files,
+                preview.new_anime
+            ),
+            (0, 1, 2)
+        );
+        assert_eq!((preview.recent_files, preview.recent_anime), (1, 1));
+        assert!(preview.titles_dump_after.is_some());
+
+        let queued = queue_full_update(&db.path).unwrap();
+        assert_eq!(queued.queued, preview.queued);
+        assert_eq!(d.queue_len().unwrap(), 1 + preview.queued as i64);
+        let commands: Vec<Command> = d
+            .queue_list()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| e.command)
+            .collect();
+        assert!(!commands.contains(&Command::FetchFile { fid: 10 }));
+        assert!(!commands.contains(&Command::FetchAnime { aid: 100 }));
+        assert!(!commands.contains(&Command::TitlesDump));
+        assert_eq!(preview_full_update(&db.path).unwrap().queued, 0);
     }
 
     /// A synthetic databank folder: one plain SQLite collection, which the importer accepts as

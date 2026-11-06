@@ -15,7 +15,7 @@ is always dark at normal scale (`Theme: System` never changes the look).
 |---|---|---|
 | AniDB account | Username, Password (masked), API key (shown in clear), Client name | Used by sync and AVDump |
 | | Work offline | Active |
-| | Update known file information | Shown disabled ("Not active yet"); value kept |
+| | Update known file information | Active: re-hashing an identified file queues a refresh of its AniDB record (at most every 7 days per file); off by default |
 | Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Dark/Light and scale apply on Save; System does nothing |
 | | Use status colors | Shown disabled ("Not active yet"); value kept, no row coloring exists |
 | Hashing | Start hashing automatically | Shown disabled ("Not active yet"); value kept |

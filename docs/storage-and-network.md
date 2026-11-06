@@ -213,8 +213,8 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 | `MylistAdd {file, edit}` | 0 | UDP (`FILE` for a hash reference), `MYLISTADD` | Stores the new entry; if present already, applies the edit | Yes: Hashed files "Add to MyList…" (`FileRef::Fid` for an identified file, `FileRef::Hash` otherwise) |
 | `MylistEdit {lid, edit}` | 0 | UDP `MYLISTADD edit=1` | `apply_edit_locally`; missing entry blocks the edit | Yes: My list state/watched, "Edit…" (state, watched, view date, storage, source, other) |
 | `MylistDelete {lid}` | 0 | UDP `MYLISTDEL` (211, or 411 = already gone) | Deletes the local entry only after the reply, and not when newer intent exists | Yes: My list "Remove from MyList…" (after confirmation) |
-| `Identify {size, ed2k, add}` | 1 | UDP `FILE` by hash; optional `MYLISTADD` by `fid` | `store_file_info`; mylist entry stored | Yes: after hashing, if enabled |
-| `FetchFile {fid}` | 2 | UDP `FILE` by fid | `store_file_info` | Only through `--full-update` |
+| `Identify {size, ed2k, add}` | 1 | UDP `FILE` by hash; optional `MYLISTADD` by `fid` | `store_file_info`; mylist entry stored | Yes: after hashing an unidentified file, if enabled (and for an identified file only when its folder adds to MyList) |
+| `FetchFile {fid}` | 2 | UDP `FILE` by fid | `store_file_info` | Yes: full update (Tools menu or `--full-update`); re-hashing an identified file with `anidb.update_file_information` |
 | `FetchEpisode {eid}` | 2 | UDP `EPISODE` | `store_episode_info` | Yes: the episode "Refresh" button of the anime detail window |
 | `FetchGroup {gid}` | 2 | UDP `GROUP` | `store_group_info` | Yes: Groups "Refresh" |
 | `FetchAnime {aid}` | 3 | HTTP anime XML | `store_anime_xml` | Yes: detail "Refresh"; full update |
@@ -222,8 +222,7 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 | `TitlesDump` | 3 | HTTPS title dump | Spool then merge | Yes: Tools menu; full update |
 | `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry (queued edits overlaid), or deletes it if AniDB says it is gone and no local intent is queued | Yes: My list "Refresh entry" |
 
-Every command can be queued from the desktop application, except `FetchFile`, which only
-`--full-update` queues. See
+Every command can be queued from the desktop application. See
 [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 
 ### Enqueue rules
