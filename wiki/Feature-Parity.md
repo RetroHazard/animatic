@@ -63,9 +63,6 @@ Available to code that links the crates, covered by tests where noted in the sou
 | `Db::is_empty`, `Db::clear_local_files` | [`db`](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/db/mod.rs), [`store.rs`](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/store.rs) |
 | Command-line import example | `cargo run -p animatic-core --example import-legacy -- <kowai> <output.sqlite3>` |
 
-Dependencies `trash` and `image` are declared by the application crate, but no source in the
-repository calls them: there is no recycle-bin handling and no image decoding.
-
 ## Settings persisted without runtime effect
 
 Nothing reads these fields; some have an Options checkbox that changes only the stored value.
