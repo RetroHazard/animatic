@@ -785,6 +785,19 @@ pub struct HttpClient {
     agent: ureq::Agent,
     anime_api: String,
     titles_dump_url: String,
+    /// Replaces `https://<image server>` (tests only).
+    image_base: Option<String>,
+}
+
+/// An agent for loopback fixtures: no environment proxy, shorter timeout.
+#[cfg(any(test, feature = "test-support"))]
+fn loopback_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .proxy(None)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .user_agent(format!("Animatic/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
 }
 
 impl HttpClient {
@@ -801,6 +814,7 @@ impl HttpClient {
             agent,
             anime_api: HTTP_API.to_string(),
             titles_dump_url: TITLES_DUMP.to_string(),
+            image_base: None,
         }
     }
 
@@ -814,12 +828,17 @@ impl HttpClient {
     ) -> Self {
         self.anime_api = anime_api.into();
         self.titles_dump_url = titles_dump_url.into();
-        self.agent = ureq::Agent::config_builder()
-            .proxy(None)
-            .timeout_global(Some(Duration::from_secs(30)))
-            .user_agent(format!("Animatic/{}", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into();
+        self.agent = loopback_agent();
+        self
+    }
+
+    /// Send image requests to `base` (for example `http://127.0.0.1:PORT`) instead of
+    /// `https://<image server>`, and never through a proxy picked up from the environment. The
+    /// path, the picture-name validation and the limiter are unchanged. For tests only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_loopback_image_base(mut self, base: impl Into<String>) -> Self {
+        self.image_base = Some(base.into());
+        self.agent = loopback_agent();
         self
     }
 
@@ -881,17 +900,100 @@ impl HttpClient {
         read_titles_dump(body.as_reader(), limits, out)
     }
 
+    /// Download the cover `picname` from the image `server` (a bare host, optionally with a
+    /// port; empty means [`DEFAULT_IMAGE_SERVER`]). Both are validated first, so neither can
+    /// change the path or the host of the request. No `Referer` is sent: AniDB's image servers
+    /// answer a foreign one with 404.
     pub fn image(&mut self, server: &str, picname: &str) -> Result<Vec<u8>> {
-        let server = if server.is_empty() {
-            DEFAULT_IMAGE_SERVER
-        } else {
-            server
+        validate_picname(picname)?;
+        let base = match &self.image_base {
+            Some(base) => base.clone(),
+            None => {
+                let server = if server.is_empty() {
+                    DEFAULT_IMAGE_SERVER
+                } else {
+                    server
+                };
+                validate_image_host(server)?;
+                format!("https://{server}")
+            }
         };
-        self.image_from(&format!("https://{server}"), picname)
+        self.image_from(&base, picname)
     }
 
     fn image_from(&mut self, base: &str, picname: &str) -> Result<Vec<u8>> {
-        self.get_bytes(&format!("{base}/images/main/{picname}"), 16 << 20)
+        self.get_bytes(&format!("{base}/images/main/{picname}"), MAX_IMAGE_BYTES)
+    }
+}
+
+/// Largest picture accepted from an image server.
+pub const MAX_IMAGE_BYTES: u64 = 16 << 20;
+
+/// Longest accepted picture name.
+const MAX_PICNAME_LEN: usize = 100;
+
+/// Check that `picname` is a bare, harmless file name: AniDB's picture names are like
+/// `12345.jpg`. Only letters, digits, `.`, `-` and `_` are accepted, with no leading or
+/// trailing dot, no `..`, and not a Windows device name, so the name can neither leave the
+/// cover folder nor change the request path on either platform.
+pub fn validate_picname(picname: &str) -> Result<()> {
+    let bad = |why: &str| {
+        Err(AnidbError::IllegalInput(format!(
+            "picture name {picname:?} {why}"
+        )))
+    };
+    if picname.is_empty() {
+        return bad("is empty");
+    }
+    if picname.len() > MAX_PICNAME_LEN {
+        return bad("is too long");
+    }
+    if !picname
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return bad("is not a plain file name (letters, digits, '.', '-' and '_' only)");
+    }
+    if picname.starts_with('.') || picname.ends_with('.') || picname.contains("..") {
+        return bad("has a misplaced dot");
+    }
+    let stem = picname.split('.').next().unwrap_or_default();
+    let upper = stem.to_ascii_uppercase();
+    let device = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            upper
+                .strip_prefix(prefix)
+                .is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']))
+        });
+    if device {
+        return bad("is a reserved device name");
+    }
+    Ok(())
+}
+
+/// Check that `host` is a host name (or address) with an optional port, nothing else: it
+/// comes from the `AUTH` reply or the settings and ends up in a URL.
+pub fn validate_image_host(host: &str) -> Result<()> {
+    let (name, port) = match host.rsplit_once(':') {
+        Some((name, port)) => (name, Some(port)),
+        None => (host, None),
+    };
+    let port_ok =
+        port.is_none_or(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()));
+    let name_ok = !name.is_empty()
+        && name.len() <= 253
+        && !name.starts_with(['.', '-'])
+        && !name.ends_with(['.', '-'])
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'));
+    if name_ok && port_ok {
+        Ok(())
+    } else {
+        Err(AnidbError::IllegalInput(format!(
+            "image server {host:?} is not a plain host name"
+        )))
     }
 }
 
@@ -1399,6 +1501,113 @@ mod tests {
         assert!(matches!(client.anime(1), Err(AnidbError::Auth(_))));
         assert!(client.check_client().is_err());
         assert_eq!(fixture.requests(), 0);
+        assert!(t.store.sends(crate::limits::Protocol::Http).is_empty());
+    }
+
+    #[test]
+    fn picture_names_must_be_bare_file_names() {
+        for good in ["12345.jpg", "a-b_c.PNG", "x", "9.webp"] {
+            assert!(validate_picname(good).is_ok(), "{good}");
+        }
+        let long = "a".repeat(101);
+        for bad in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "a..b.jpg",
+            "trailing.",
+            "../x.jpg",
+            "a/b.jpg",
+            "a\\b.jpg",
+            "C:evil.jpg",
+            "x.jpg:stream",
+            "a b.jpg",
+            "a%2fb.jpg",
+            "a?b.jpg",
+            "über.jpg",
+            "nul",
+            "NUL.jpg",
+            "con.txt",
+            "com1.jpg",
+            "LPT9.png",
+            long.as_str(),
+        ] {
+            assert!(
+                matches!(validate_picname(bad), Err(AnidbError::IllegalInput(_))),
+                "{bad:?}"
+            );
+        }
+        // COM0 and a name that only starts like a device are fine.
+        assert!(validate_picname("com0.jpg").is_ok());
+        assert!(validate_picname("console.jpg").is_ok());
+    }
+
+    #[test]
+    fn image_hosts_must_be_plain_host_names() {
+        for good in [
+            "cdn.anidb.net",
+            "img7.example.org:8443",
+            "localhost",
+            "127.0.0.1",
+        ] {
+            assert!(validate_image_host(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "evil.example/x",
+            "user@evil.example",
+            "a b",
+            ".leading.example",
+            "trailing.example.",
+            "a..b",
+            "host:",
+            "host:port",
+            "host:123456",
+            "host?x=1",
+            "host#frag",
+            "https://host",
+        ] {
+            assert!(validate_image_host(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_image_request_has_the_documented_path_and_no_referer() {
+        let heads = Arc::new(parking_lot::Mutex::new(Vec::<String>::new()));
+        let seen = heads.clone();
+        let fixture = HttpFixture::start(move |_, head| {
+            seen.lock().push(head.to_string());
+            HttpReply::ok(b"picture".to_vec())
+        });
+        let t = test_limits();
+        let mut client = HttpClient::new("synthetic", 1, t.limits.clone())
+            .with_loopback_image_base(fixture.base());
+        assert_eq!(
+            client.image("ignored.example", "42.jpg").unwrap(),
+            b"picture"
+        );
+        // Rejected before anything is sent, and without taking a limiter slot.
+        assert!(client.image("ignored.example", "../42.jpg").is_err());
+        assert_eq!(fixture.requests(), 1);
+        assert_eq!(t.store.sends(crate::limits::Protocol::Http).len(), 1);
+
+        let head = heads.lock()[0].to_ascii_lowercase();
+        assert!(
+            head.starts_with("get /images/main/42.jpg http/1.1"),
+            "{head}"
+        );
+        assert!(!head.contains("referer"), "{head}");
+    }
+
+    #[test]
+    fn an_invalid_image_host_sends_nothing() {
+        let t = test_limits();
+        let mut client = HttpClient::new("synthetic", 1, t.limits.clone());
+        assert!(matches!(
+            client.image("evil.example/path", "42.jpg"),
+            Err(AnidbError::IllegalInput(_))
+        ));
         assert!(t.store.sends(crate::limits::Protocol::Http).is_empty());
     }
 }

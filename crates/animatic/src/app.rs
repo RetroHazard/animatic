@@ -26,6 +26,7 @@ use crate::worker::{
 use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
 
+mod covers;
 mod mylist_editor;
 mod refresh;
 mod shell_menu;
@@ -493,6 +494,7 @@ pub struct AnimaticApp {
     /// Zoom factor the last tracked window geometry was measured with.
     window_zoom: f32,
     detail: Option<DetailCache>,
+    covers: covers::CoverUi,
     mylist_overlay: HashMap<i64, MylistOverlay>,
     mylist_ui: mylist_editor::MylistUi,
     /// Queue pushes that hit a busy database, retried until saved.
@@ -605,6 +607,7 @@ impl AnimaticApp {
             client_version_text: None,
             window_zoom: 1.0,
             detail: None,
+            covers: covers::CoverUi::default(),
             mylist_overlay: HashMap::new(),
             mylist_ui: mylist_editor::MylistUi::default(),
             deferred: Vec::new(),
@@ -1237,6 +1240,9 @@ impl AnimaticApp {
                     self.cooldown = Some((until, reason));
                     self.cooldown_floor = self.loader.next_generation;
                     self.request_library_refresh();
+                }
+                Event::CoverLoaded { picname, outcome } => {
+                    self.covers.on_loaded(ctx, picname, outcome);
                 }
                 // Not a dirty signal: statistics export failures arrive as errors and would
                 // otherwise re-request the projection (and the export) forever.
@@ -3183,6 +3189,7 @@ impl AnimaticApp {
     fn anime_detail_window(&mut self, ctx: &egui::Context) {
         let Some(aid) = self.selected_aid else {
             self.detail = None;
+            self.covers.window_closed();
             return;
         };
         // One detail read per (anime, projection version), not one per frame.
@@ -3199,17 +3206,28 @@ impl AnimaticApp {
             .default_width(520.0)
             .show(ctx, |ui| {
                 if let Some(d) = &detail {
-                    ui.heading(if d.anime.name.is_empty() {
-                        format!("Anime {aid}")
-                    } else {
-                        d.anime.name.clone()
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(d.anime.type_name());
-                        ui.separator();
-                        ui.label(&d.anime.year);
-                        ui.separator();
-                        ui.label(format!("{} episodes", d.anime.episodes));
+                    ui.horizontal_top(|ui| {
+                        self.covers.show(
+                            ui,
+                            &self.worker,
+                            &self.settings.anidb,
+                            aid,
+                            d.anime.picname.as_deref(),
+                        );
+                        ui.vertical(|ui| {
+                            ui.heading(if d.anime.name.is_empty() {
+                                format!("Anime {aid}")
+                            } else {
+                                d.anime.name.clone()
+                            });
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(d.anime.type_name());
+                                ui.separator();
+                                ui.label(&d.anime.year);
+                                ui.separator();
+                                ui.label(format!("{} episodes", d.anime.episodes));
+                            });
+                        });
                     });
                     if let Some(text) = &d.anime.description {
                         ui.add_space(8.0);
@@ -3298,6 +3316,7 @@ impl AnimaticApp {
             });
         } else {
             self.selected_aid = None;
+            self.covers.window_closed();
         }
         if refresh_requested {
             self.queue_anime_refresh(aid);
@@ -3353,6 +3372,14 @@ impl AnimaticApp {
                     .on_hover_text(
                         "When an already identified file is hashed again, queue a refresh of its \
                          AniDB record (at most once every 7 days per file).",
+                    );
+                    ui.checkbox(
+                        &mut self.settings.anidb.download_covers,
+                        "Download anime covers when a detail window opens",
+                    )
+                    .on_hover_text(
+                        "Each cover is downloaded once from AniDB's image server and kept on \
+                         disk for your own display; covers already on disk are always shown",
                     );
                     ui.separator();
                     ui.heading("Appearance");

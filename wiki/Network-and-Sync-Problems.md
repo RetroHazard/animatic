@@ -8,8 +8,9 @@ What the code uses (source: `animatic-anidb`):
 | Purpose | Endpoint | Notes |
 |---|---|---|
 | UDP API | `api.anidb.net:9000` by default (**AniDB account** settings can change the server and local port) | IPv4 only. The client binds `0.0.0.0` on the configured local port (default 29456) and **never uses another port**: if it cannot be bound the run stops with an error naming `anidb.local_port` and nothing is sent. Each exchange waits up to 20 s and a first timeout is retried once |
-| HTTP API | `http://api.anidb.net:9001/httpapi` | Plain HTTP; every HTTP request (anime records, the title list) is spaced at least 2 s from the previous one; 60 s timeout |
+| HTTP API | `http://api.anidb.net:9001/httpapi` | Plain HTTP; every HTTP request (anime records, the title list, cover pictures) is spaced at least 2 s from the previous one; 60 s timeout |
 | Titles dump | `https://anidb.net/api/anime-titles.xml.gz` | Public download, at most once per 24 hours, bounded as described in [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers) |
+| Cover pictures | `https://<image host>/images/main/<picture>`, HTTPS; the host AniDB announced at the last login, else `anidb.image_server` (`cdn.anidb.net`) | One picture per request, only when an anime detail window opens on an anime whose cover is not in the [covers folder](Data-Locations.md#cover-pictures); never offline or during a ban; spaced with every other HTTP request; no `Referer`; at most 16 MiB; 60 s timeout. Turn it off with **Download anime covers…** in Options |
 | Update check and download | `https://api.github.com/` and `https://github.com/` (plus the CDN hosts GitHub redirects asset downloads to), HTTPS only | Not AniDB: no flood spacing and no cooldown. Anonymous: sends your IP address and `User-Agent: Animatic/VERSION`, no credentials or library data. Bounded sizes and timeouts. Used only for update checks and downloads you start, plus the optional startup check |
 
 Animatic enforces AniDB's request spacing for the whole program, not per run: UDP packets are

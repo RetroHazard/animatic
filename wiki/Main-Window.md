@@ -171,6 +171,7 @@ uncolored unless you set a color for them.
 | Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
 | Help | About Animatic | Version and link, plus **View license** and **Third-party notices** buttons that open the license documents next to the program: the versioned `LICENSE-vVERSION` / `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `LICENSE` / `THIRD-PARTY-NOTICES.html`. A button is disabled when neither file exists (for example a bare executable copied out of an archive). |
 
-There is no menu item for downloading images. MyList
+There is no menu item for downloading images (a
+[cover](Library-Pages.md#cover) is downloaded when an anime detail window opens). MyList
 adds, removals and refreshes are buttons on the [Hashed files](Library-Pages.md#hashed-files) and
 [My list](Library-Pages.md#my-list) pages.

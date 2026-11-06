@@ -26,6 +26,10 @@ use animatic_core::update::{
 use crate::scheduler::{self, ScanControl};
 use crossbeam_channel::{Receiver, Sender};
 
+mod covers;
+pub use covers::{CoverJob, CoverOutcome};
+use covers::{CoverMsg, run_covers};
+
 /// One file of a rename job: the library entry and where it moves.
 #[derive(Debug, Clone)]
 pub struct RenameItem {
@@ -213,6 +217,11 @@ pub enum Event {
         request: u64,
         rows: Vec<BatchRow>,
     },
+    /// The cover of an anime (or why there is none), the answer to `Worker::load_cover`.
+    CoverLoaded {
+        picname: String,
+        outcome: CoverOutcome,
+    },
     Finished,
 }
 pub struct Worker {
@@ -225,7 +234,9 @@ pub struct Worker {
     /// Jobs submitted to the main worker thread that have not finished yet (queued or running).
     pending: Arc<AtomicUsize>,
     loads: Sender<Background>,
+    covers: Sender<CoverMsg>,
     projection: Option<std::thread::JoinHandle<()>>,
+    covers_thread: Option<std::thread::JoinHandle<()>>,
     main: Option<std::thread::JoinHandle<()>>,
     /// Settings and blocking state for the scheduled scan; see [`crate::scheduler`].
     scan: Arc<ScanControl>,
@@ -253,6 +264,12 @@ impl Worker {
         let scheduler_events = event_tx.clone();
         let projection_shutdown = shutdown.clone();
         let main_loads = load_tx.clone();
+        // The one AniDB request limiter of the process, shared by the queue runs and covers.
+        let limits = animatic_core::limits::open_limits(&db_path);
+        let (cover_tx, cover_rx) = crossbeam_channel::unbounded();
+        let cover_db = db_path.clone();
+        let cover_events = event_tx.clone();
+        let cover_shutdown = shutdown.clone();
         let projection = std::thread::Builder::new()
             .name("animatic-projection".into())
             .spawn(move || {
@@ -274,10 +291,15 @@ impl Worker {
             scheduler_stop_rx,
             scheduler::POLL,
         );
+        let main_limits = limits.clone();
         let main = std::thread::Builder::new()
             .name("animatic-worker".into())
-            .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags))
+            .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags, main_limits))
             .expect("start worker");
+        let covers_thread = std::thread::Builder::new()
+            .name("animatic-covers".into())
+            .spawn(move || run_covers(cover_db, cover_rx, cover_events, limits, cover_shutdown))
+            .expect("start cover worker");
         Worker {
             jobs: job_tx,
             events: event_rx,
@@ -286,7 +308,9 @@ impl Worker {
             shutdown,
             pending,
             loads: load_tx,
+            covers: cover_tx,
             projection: Some(projection),
+            covers_thread: Some(covers_thread),
             main: Some(main),
             scan,
             scheduler_stop: Some(scheduler_stop),
@@ -297,6 +321,13 @@ impl Worker {
     /// The channel to the scan scheduler thread.
     pub fn scan_control(&self) -> &ScanControl {
         &self.scan
+    }
+
+    /// Show the cover of an anime: from the cache, else downloaded once (see
+    /// `animatic_core::covers`). Answered by `Event::CoverLoaded`. Runs on its own thread, so a
+    /// long queue run never delays it, but it shares the process-wide request limiter.
+    pub fn load_cover(&self, job: CoverJob) {
+        let _ = self.covers.send(CoverMsg::Load(job));
     }
 
     /// Queue a job. Projection loads are served immediately by their own thread and neither
@@ -373,11 +404,18 @@ impl Worker {
         }
         let _ = self.jobs.send(Job::Stop);
         let _ = self.loads.send(Background::Stop);
+        let _ = self.covers.send(CoverMsg::Stop);
         if let Some(projection) = self.projection.take() {
             let _ = projection.join();
         }
-        if join_main && let Some(main) = self.main.take() {
-            let _ = main.join();
+        if join_main {
+            // Like the main thread, this may be inside a network exchange: restart only.
+            if let Some(covers) = self.covers_thread.take() {
+                let _ = covers.join();
+            }
+            if let Some(main) = self.main.take() {
+                let _ = main.join();
+            }
         }
     }
 }
@@ -469,6 +507,7 @@ fn run(
     events: Sender<Event>,
     loads: Sender<Background>,
     flags: RunFlags,
+    limits: Arc<Limits>,
 ) {
     let RunFlags {
         cancel,
@@ -477,8 +516,9 @@ fn run(
         pending,
     } = flags;
     // One limiter for the whole process: every queue run builds new clients, but they all take
-    // their send slots from here, and the send times are saved so a restart keeps the spacing.
-    let network = Network::new(animatic_core::limits::open_limits(&db_path));
+    // their send slots from here (and so does the cover thread), and the send times are saved
+    // so a restart keeps the spacing.
+    let network = Network::new(limits);
     while let Ok(job) = jobs.recv() {
         let _counted = PendingJob::of(&job, &pending);
         if shutdown.load(Ordering::Relaxed) {
@@ -1698,6 +1738,12 @@ fn process_queue(
             }
         }
     }
+    // The image host of this login, so covers can be fetched later without one.
+    if let Some(host) = &udp.image_server
+        && let Err(e) = db.remember_image_server(host)
+    {
+        log::warn!("could not save the image server: {e}");
+    }
     let _ = udp.logout();
     let _ = events.send(Event::Finished);
 }
@@ -2037,6 +2083,75 @@ mod tests {
         assert!(d.queue_peek().unwrap().is_none());
         assert!(d.sync_cooldown().unwrap().is_none());
         assert!(events.iter().any(|e| matches!(e, Event::Finished)));
+    }
+
+    #[test]
+    fn the_image_host_of_a_login_is_saved_for_later_cover_requests() {
+        let fixture = Fixture::start(|n, _| {
+            if n == 0 {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED\nimg7.example.test".into()
+            } else {
+                "999 NOT A REAL REPLY".into()
+            }
+        });
+        let db = TempDb::new();
+        queue_two(&db.open());
+        assert_eq!(db.open().image_server().unwrap(), None);
+        run_queue(&db, &settings(fixture.addr));
+        assert_eq!(
+            db.open().image_server().unwrap().as_deref(),
+            Some("img7.example.test")
+        );
+    }
+
+    #[test]
+    fn the_worker_answers_cover_requests_from_the_cache_and_offline_without_a_request() {
+        let db = TempDb::new();
+        let dir = animatic_core::covers::covers_dir(&db.path);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(6, 4, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(dir.join("100.png"), png.into_inner()).unwrap();
+        db.open(); // creates the schema
+        let worker = Worker::spawn(db.path.clone());
+        let job = |picname: &str| CoverJob {
+            aid: 100,
+            picname: picname.into(),
+            image_server: "cdn.example.test".into(),
+            download: true,
+            offline: true,
+            client_name: "synthetic".into(),
+            client_version: 1,
+        };
+
+        worker.load_cover(job("100.png"));
+        let Event::CoverLoaded { picname, outcome } =
+            wait_for(&worker, |e| matches!(e, Event::CoverLoaded { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(picname, "100.png");
+        let CoverOutcome::Ready { image, .. } = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!((image.width, image.height), (6, 4));
+
+        // Not cached and offline: no cover, and nothing was attempted.
+        worker.load_cover(job("101.png"));
+        let Event::CoverLoaded { outcome, .. } =
+            wait_for(&worker, |e| matches!(e, Event::CoverLoaded { .. }))
+        else {
+            unreachable!()
+        };
+        assert!(matches!(&outcome, CoverOutcome::Unavailable(why) if why.contains("offline")));
+        assert!(
+            db.open()
+                .request_last_attempt(RequestKind::Cover, 100)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

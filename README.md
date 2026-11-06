@@ -15,6 +15,8 @@ and imports user-supplied AOM databanks without modifying the originals.
   restart-persistent cooldowns; AniDB's request spacing and once-a-day limits hold across
   runs and restarts.
 - HTTP anime metadata and bounded, validated public-title downloads.
+- Anime covers in the detail window: downloaded once on demand, kept on disk for your own
+  display and never downloaded again (switch off with `anidb.download_covers`).
 - Compatible rename expressions with diagnostics, preview and explicit confirmation.
 - Configurable players, AVDump integration and XML/INI statistics exports.
 - Safe settings-backup recovery that starts offline and preserves the original files.
@@ -25,7 +27,7 @@ and imports user-supplied AOM databanks without modifying the originals.
 
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
 There is **no full-account MyList bootstrap, automatic
-renaming, cover-art UI, or media-deletion UI**. See the
+renaming, or media-deletion UI**. See the
 [feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity) and
 [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) before relying on an imported option.
 

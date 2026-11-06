@@ -3,8 +3,8 @@ rehearsal profile that leaves your normal one untouched.
 
 ## Where data lives
 
-Animatic stores two things: a SQLite **database** (library, queue, hashes) and a JSON
-**settings** file. Both parent directories are created when needed. When no override is
+Animatic stores a SQLite **database** (library, queue, hashes), a JSON
+**settings** file and, once you open anime detail windows, a [folder of cover pictures](#cover-pictures). The parent directories are created when needed. When no override is
 given, the locations come from `directories::ProjectDirs::from("net", "AniDB", "Animatic")`
 (`directories` 6.0.0, pinned in `Cargo.lock`):
 
@@ -34,6 +34,7 @@ Companion files you will meet:
 | `animatic.sqlite3.before-restore-YYYYMMDD-HHMMSS` | After **File → Restore library…** | The library that was replaced, kept on purpose and never deleted by Animatic. Delete it yourself once the restored library is confirmed. |
 | `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
 | `animatic.sqlite3.instance` | While Animatic runs | The single-instance lock, next to the database (the canonical database path plus `.instance`). Holds a loopback port and a random token; removed when the window closes. A file left by a crash is detected and replaced; it is safe to delete with Animatic closed. See [Shell entries and the lock file](#shell-entries-and-the-lock-file). |
+| `covers/` | When an anime detail window downloads a cover | Same folder as the database. One file per cover, see [Cover pictures](#cover-pictures). Not part of library backups. |
 
 Credentials are not in these files while the system keystore works: the AniDB password, API key and
 AVDump key live in the **Windows Credential Manager** or the Linux **Secret Service** under the
@@ -47,6 +48,32 @@ control, shared backups and support requests
 Do not run two Animatic processes on the same settings
 file; they share temporary file names and are unsupported. Window size and position are not
 remembered between launches.
+
+## Cover pictures
+
+Anime covers live in a `covers` folder next to the database (so with the default locations
+`%APPDATA%\AniDB\Animatic\data\covers\` on Windows and `$XDG_DATA_HOME/animatic/covers/` or
+`$HOME/.local/share/animatic/covers/` on Linux; with `ANIMATIC_DB` or `--database`, beside that
+file). The folder is created when the first cover is saved.
+
+- One file per picture, named exactly like AniDB's picture name (for example `123456.jpg`).
+  [Animatic downloads a cover once](Library-Pages.md#cover), when you open that anime's detail
+  window, and never downloads the same file again. A new picture name is a new file; Animatic never
+  deletes the old one, so remove files you no longer want yourself (with Animatic closed or not;
+  a removed cover is fetched again the next time its anime is opened, if downloads are on).
+- A file is written whole or not at all. A hidden `.<name>.*` temporary file can remain after a
+  crash and is safe to delete.
+- The covers are **not** in the database, so [library backups](Backups-and-Recovery.md) neither
+  contain nor restore them, and moving to another computer means copying the folder if you want
+  them (or letting Animatic download them again).
+- Covers are for your own display only. AniDB does not license the artwork: do not share or
+  re-host the folder.
+- You can put your own picture in the folder under the anime's picture name (shown in the
+  `picname` column of the `anime` table) and it is shown instead of being downloaded; JPEG, PNG,
+  WebP and GIF are read.
+- To stop downloads altogether, turn off **Download anime covers when a detail window opens** in
+  Options ([setting `anidb.download_covers`](Settings-Reference.md#anidb-account)); covers already
+  in the folder are still shown.
 
 ## Shell entries and the lock file
 
@@ -74,7 +101,8 @@ feature:
 Both overrides together give a self-contained profile anywhere. The examples below create a
 **brand-new, uniquely named** scratch folder in the system temporary directory and put a synthetic
 one-megabyte media file in it, so no real library, credentials or repository file is involved.
-They never contact AniDB unless *you* run the queue. A brand-new settings file has
+They never contact AniDB unless *you* run the queue (or, with *Work offline* off, open an anime
+detail window whose cover is not on disk). A brand-new settings file has
 `updates.auto_check` on, so the first launch of a scratch profile would contact GitHub for an
 update check; [keep a rehearsal local](#avoiding-the-startup-update-check) by pre-seeding the
 settings file as shown below.

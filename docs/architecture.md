@@ -55,6 +55,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
 | `ui_state` | Pure rules for the saved window geometry, per-table column layout and sorting, and status row colours; no window code, so they are unit-tested |
 | `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
+| `covers` | Cover cache folder next to the database, `plan_cover` (the decision: cached, switched off, offline, banned, retried too soon) and `download_cover` (attempt saved first, one request through the shared limiter, atomic cache write); no decoder, no UI |
 | `stats` | Library aggregation (one read transaction) and XML/INI rendering |
 | `maintenance` | Online backup, restore validation and file swap, integrity/foreign-key check, `VACUUM`; blocking file work for the worker and the restore thread |
 | `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
@@ -76,7 +77,7 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `scheduler.rs` (scheduled folder scans).
+projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans).
 The Options row for the file-menu entry is `app/shell_menu.rs`.
 
 ## Runtime model
@@ -87,6 +88,7 @@ The Options row for the file-menu entry is `app/shell_menu.rs`.
 | `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
 | `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; see [Scheduled folder scans](#scheduled-folder-scans) |
+| `animatic-covers` | A fresh `Db::open` per request | `Worker::load_cover` (not a `Job`): cache lookup, at most one image download through the shared limiter, decoding; answers with `Event::CoverLoaded`. Joined, like the worker, only by `stop_and_join` (restore) |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | `animatic-instance` and per-connection threads | none | Accept forwarded media paths from other launches and queue them for the UI (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)); only exists while this process owns the lock |
@@ -101,8 +103,9 @@ commands in a queue run, and between import steps. A cancel request applies to t
 when it is made and is cleared only when the next job starts.
 
 Dropping `Worker` (application exit) sets the shutdown and cancel flags, sends `Stop`, and joins
-only the projection thread, so accepted statistics and hash exports finish. The network thread is not
-joined: it can be inside an exchange of up to the 20 s UDP timeout (or the 60 s HTTP budget) and
+only the projection thread, so accepted statistics and hash exports finish. The network threads
+(the main worker and the cover thread) are not joined: either can be inside an exchange of up to
+the 20 s UDP timeout (or the 60 s HTTP budget) and
 is simply abandoned at process exit. The updater thread is the exception described below: its
 network work is cancelled on drop, and an install in progress is joined.
 
@@ -275,6 +278,23 @@ the dump to once a day is saved before the request, outside that transaction, so
 download counts too. It is a public title list, not an account download: there is no
 full-MyList bootstrap, no resume and no external checksum.
 Limits and exact semantics are in [Title dump](storage-and-network.md#title-dump).
+
+### Anime covers
+
+`anime_detail_window` asks `AnimaticApp::covers` (`app/covers.rs`) for the picture of the anime it
+shows. The first time a `picname` is shown it sends `Worker::load_cover`, which goes to the
+`animatic-covers` thread (not the main worker thread, so a long queue run never delays a cover),
+and draws a placeholder until `Event::CoverLoaded` brings decoded pixels, which the UI uploads as a
+texture. The thread opens a database connection per request, asks `covers::plan_cover` what may be
+done (cached file; downloads switched off; offline; active ban or cooldown; the per-anime retry
+guard), and downloads at most one file through `HttpClient::image`. That client draws its send slot
+from the **same `Limits` as the queue** (`Worker::spawn` creates it once and hands it to both
+threads), so covers cannot exceed the HTTP spacing. A downloaded picture is decoded first and only
+then written to `covers/<picname>` next to the database, atomically; one that does not decode is
+never cached. A ban met by the request sets the shared sync cooldown. The host comes from the
+last `AUTH` (`meta.image_server`, saved when a queue run ends) or the `anidb.image_server` setting.
+Covers are for the user's own display and are never redistributed. Rules and the full contract:
+[Anime covers](storage-and-network.md#anime-covers).
 
 ### Legacy migration
 
@@ -689,5 +709,6 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
 | Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |
+| Anime covers | `crates/animatic-core/src/covers.rs`: `plan_cover`, `download_cover`, `store_cover` (and `validate_picname` in `animatic-anidb`'s `http.rs`); `worker/covers.rs`: `run_covers`, `load_cover`, `decode_cover`; `worker.rs`: `Worker::load_cover`, `Event::CoverLoaded`; `app/covers.rs`: `CoverUi`; `app.rs`: `anime_detail_window` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |
 | Single instance, file-menu entry | `crates/animatic-core/src/instance.rs`: `start`, `Primary`, `Incoming`; `shell_integration.rs`: `ShellIntegration`, `Status`; `crates/animatic/src/app/shell_menu.rs`; `app.rs`: `process_handoff`, `apply_shell_integration`; `main.rs`: `instance::start` |

@@ -172,7 +172,8 @@ hashes, so mind what you paste when asking for support.
 
 ## Anime detail window
 
-Opened from any anime link or title (or a Relations entry). Sections: heading (name, or `Anime N`),
+Opened from any anime link or title (or a Relations entry). Sections: the [cover](#cover) on the
+left, heading (name, or `Anime N`),
 `type · year · N episodes`, description if one is stored, and collapsible **Titles** (language
 code and text), **Episodes** (episode number and name, each with a **Refresh** button that queues `Fetch episode N`), **Genres**, **Relations** (relation
 kind and title; clicking one switches the window to that anime, and shows `No detail record is
@@ -185,5 +186,29 @@ available.` if it is not stored), **Reviews** (author or `Anonymous`, rating, bo
   not) the button queues nothing and the status bar and log say when the refresh is allowed
   ([Request limits](AniDB-Synchronization.md#request-limits)).
 
-The window shows no cover image: picture names are stored, but no image is downloaded or shown.
-Close it with its title-bar button.
+### Cover
+
+The cover sits left of the heading. It comes from a folder on disk, never from a bulk download:
+
+- A picture that is already in the [covers folder](Data-Locations.md#cover-pictures) is shown at
+  once, whatever the network state, *Work offline* or **Download anime covers** say. It is never
+  downloaded again; if AniDB gives the anime a new picture, the new one is a new file.
+- Otherwise, opening the window asks AniDB's image server for that one picture, but only when
+  **Download anime covers when a detail window opens** is on (Options → AniDB account, on by
+  default), *Work offline* is off, no ban or [cooldown](AniDB-Synchronization.md#request-limits)
+  is active, and the last try for this anime is more than an hour ago. It is one request, paced
+  like every AniDB request (the same 2 s spacing as the queue), made in the background: the window
+  shows `Loading cover…` and stays usable. No other picture is ever requested, and nothing
+  downloads covers for the whole library.
+- When no picture is shown the placeholder says why, for example `Cover not downloaded
+  (offline)`, `Cover not downloaded (cover downloads are off in Options)` or `No cover on record`
+  (the anime has no picture name yet; refresh it from AniDB). **Try again** asks once more; closing
+  and reopening the window does too.
+- JPEG, PNG, WebP and GIF pictures are read (large ones are scaled down for display). A download
+  that is not a readable picture is shown as an error and is not kept; a kept file that turns out
+  unreadable is removed and fetched again.
+- Covers are for your own display. AniDB does not give a licence for the artwork, so Animatic keeps
+  covers only on your computer, never uploads, exports or re-hosts them, and library backups do not
+  contain them. Copying the covers folder to share it is not what it is for.
+
+Close the window with its title-bar button.

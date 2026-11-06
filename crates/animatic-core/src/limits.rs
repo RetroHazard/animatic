@@ -44,6 +44,12 @@ pub const ANIME_MIN_AGE: Duration = Duration::from_secs(24 * 3600);
 /// seven days is deliberately conservative.
 pub const KNOWN_FILE_MIN_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
+/// Least time between two attempts to download the cover of the same anime, counted from the
+/// last attempt. A design choice: AniDB publishes no image rules (see "Images" in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)).
+/// A cover that arrived is never requested again; this only spaces out retries after a failure.
+pub const COVER_MIN_AGE: Duration = Duration::from_secs(3600);
+
 /// `meta` key: epoch milliseconds of the last UDP packet sent (saved before sending).
 pub const UDP_LAST_SEND_KEY: &str = "udp_last_send_ms";
 /// `meta` key: epoch milliseconds of the last HTTP request sent (saved before sending).
@@ -62,6 +68,10 @@ pub enum RequestKind {
     Anime,
     /// A file AniDB already knew (UDP `FILE` by id), limited by [`KNOWN_FILE_MIN_AGE`].
     File,
+    /// The cover picture of an anime (image server, by anime id), limited by
+    /// [`COVER_MIN_AGE`]. Covers are cached for good, so only a download that failed is ever
+    /// repeated.
+    Cover,
 }
 
 impl RequestKind {
@@ -69,6 +79,7 @@ impl RequestKind {
         match self {
             RequestKind::Anime => "anime",
             RequestKind::File => "file",
+            RequestKind::Cover => "cover",
         }
     }
 
@@ -77,6 +88,7 @@ impl RequestKind {
         match self {
             RequestKind::Anime => ANIME_MIN_AGE,
             RequestKind::File => KNOWN_FILE_MIN_AGE,
+            RequestKind::Cover => COVER_MIN_AGE,
         }
     }
 }
@@ -183,7 +195,7 @@ impl Db {
                 })
                 .optional()?
                 .filter(|t| *t > 0),
-            RequestKind::File => None,
+            RequestKind::File | RequestKind::Cover => None,
         };
         Ok(attempt.max(fetched))
     }

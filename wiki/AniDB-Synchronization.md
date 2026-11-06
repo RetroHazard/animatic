@@ -75,6 +75,7 @@ so a failed or interrupted request does not allow a quick second one:
 | Anime title list (**Tools → Download anime titles**, full update) | 24 hours |
 | One anime's details (anime detail **Refresh from AniDB**, full update) | 24 hours |
 | One known file (`Fetch file`, full update) | 7 days (Animatic's own conservative choice; AniDB only asks clients to cache file data for long periods) |
+| One anime's cover picture (anime detail window) | Never again once downloaded; 1 hour after a failed try (Animatic's own choice; AniDB publishes no image limits) |
 
 Inside the window the request is not sent and nothing is queued for it: the menu item or **Refresh
 from AniDB** tells you when the next one is allowed (status bar and log). If such a command is
@@ -83,6 +84,13 @@ time it is allowed again) and is neither an error nor a counted attempt. This in
 whose first try failed: the failed try already used the window, so wait for the time shown. Requests
 that are refused before anything is sent (no client name, a login that fails first) are not
 counted.
+
+Anime covers follow the same rules without going through the queue: the
+[detail window](Library-Pages.md#cover) requests one picture from AniDB's image server when it opens
+and the picture is not on disk yet. The request is paced with every other HTTP request (2 s), is not
+sent offline or during a ban or cooldown, is not repeated for the same anime within an hour of a try
+that failed, and a picture that arrived is never requested again. A ban answered to a cover request
+pauses the queue for the same cooldown as any other ban.
 
 ## MyList editing
 

@@ -15,6 +15,8 @@ directories = "6.0.0"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = "0.37.0"
+# Covers only: JPEG, PNG, WebP and GIF decoding, no encoders and no other formats.
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 log = "0.4.35"
 open = "5.4.5"
 parking_lot = "0.13.0"

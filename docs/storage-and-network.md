@@ -68,6 +68,7 @@ AniDB with unregistered client credentials.
 | `titles_dump_attempt` | epoch seconds of the last **attempt** to download the dump, saved before the request is sent, whether or not it succeeded | `sync::execute` (`Db::record_titles_dump_attempt`) | `Db::titles_dump_next_allowed` |
 | `udp_last_send_ms`, `http_last_send_ms` | epoch **milliseconds** of the last UDP packet / HTTP request, saved before sending | `animatic_core::limits::DbLimitStore` for the process-wide limiter | the same store, once per process, when the first request of that protocol is made |
 | `auth_backoff_step` | consecutive `AUTH` attempts without a reply (1 to 6); `0` after a successful login | `DbLimitStore` | `DbLimitStore` |
+| `image_server` | the image host (bare host name, optional port) the last successful `AUTH` announced; anything else is never saved | the worker after a queue run (`Db::remember_image_server`) | cover requests (`Db::image_server`), which prefer it to `anidb.image_server` |
 | `mylist_stats` | JSON `{"fetched": <epoch seconds>, "stats": {…MylistStats fields…}}`: the latest `MYLISTSTATS` result with its arrival time (`StoredMylistStats`) | `Db::store_mylist_stats` (the `MylistStats` executor arm), replacing the previous value | `Db::mylist_stats_snapshot` (an unreadable value reads as absent), `LibraryProjection::account_stats`, Overview "AniDB account figures" |
 | `legacy_import_source`, `legacy_import_date` | databank path, epoch seconds | legacy import | nothing in the application |
 | `legacy_dump_date` | largest dump-date tag found in the databank (`legacy_dump_date_tmp` is a transient staging key) | legacy import | nothing in the application |
@@ -102,7 +103,7 @@ time).
 | `local_hash` | Hashes of local content | PK `id`; **UNIQUE `(ed2k, size)`** | | `add_local_file` (upsert); legacy | Hashing fills only `ed2k, size, crc32, md5, sha1`; the media columns (`fps`, `video_*`, `audio_*`) are populated only by legacy import |
 | `local_file` | Paths of hashed files | PK `id`; **UNIQUE index on `path`** (exact text) | `hash_id` | `add_local_file` (upsert by path), `move_local_file`, legacy | `hash_id` softly references `local_hash.id`. `mtime` = modification time read after hashing. `remove_local_file` also deletes `local_hash` rows left without any path. Scan comparisons use a normalized key (slashes, and lower case on Windows) while the index is exact text |
 | `command_queue` | Persistent outbox of AniDB commands | PK `id` **AUTOINCREMENT** | `(blocked, priority, id)`; `lid`; `payload` | `sync.rs` queue operations, migration | See below |
-| `request_attempt` | When a request for one record was last **sent** to AniDB, successful or not | PK `(kind, id)`; `kind` is `anime` (`id` = `aid`, HTTP record) or `file` (`id` = `fid`, UDP `FILE`); `attempted` = epoch seconds | | `sync::execute` through `Db::record_request_attempt`, before the request | Created by the idempotent schema script, so existing databases gain it on the next open and lose nothing. See [Request guards](#request-guards) |
+| `request_attempt` | When a request for one record was last **sent** to AniDB, successful or not | PK `(kind, id)`; `kind` is `anime` (`id` = `aid`, HTTP record), `file` (`id` = `fid`, UDP `FILE`) or `cover` (`id` = `aid`, the cover download); `attempted` = epoch seconds | | `sync::execute` and `covers::download_cover` through `Db::record_request_attempt`, before the request | Created by the idempotent schema script, so existing databases gain it on the next open and lose nothing. See [Request guards](#request-guards) |
 
 Key relations (all soft):
 
@@ -425,6 +426,10 @@ never on a schedule. `xml-plain-new` is the template meant for building a local 
 | Title dump once a day | Enforced by a saved attempt time (24 h); **Download anime titles**, full updates and queued retries skip it inside the window and say when it is next allowed |
 | `User-Agent` | Sent: `Animatic/VERSION` |
 | `nat=1`, `comp=1`, `imgserver=1` | Sent on `AUTH`; `PING` exists but is unused |
+| Images: on demand only, no crawl, no redistribution | **Anime covers.** A cover is requested only when the anime detail window opens on an anime whose picture is not on disk, one file per request, and a cached cover is never requested again (a new `picname` is a new file). Covers are kept in `<data folder>/covers/` for the user's own display and are never exported, backed up, uploaded or re-hosted. See [Anime covers](#anime-covers) |
+| Image host from `AUTH` | The host of the last login is saved in `meta.image_server` and used for covers; `anidb.image_server` is the fallback until one login has happened |
+| Image pacing | Image requests share the HTTP limiter (2 s between any two HTTP requests of the process, covers included) and a failed cover is not retried within `COVER_MIN_AGE`. They never go out offline, while a ban or cooldown is active, or when cover downloads are switched off (`anidb.download_covers`) |
+| No `Referer` | None is sent (`ureq` adds none) |
 
 ### Where each limit lives
 
@@ -439,6 +444,7 @@ Every limit is a named constant whose doc comment links the rule above.
 | `TITLES_DUMP_MIN_INTERVAL` | 24 h from the last attempt | [`animatic_core::limits`](../crates/animatic-core/src/limits.rs) |
 | `ANIME_MIN_AGE` | 24 h from the last attempt, per anime | same |
 | `KNOWN_FILE_MIN_AGE` | 7 days from the last attempt, per file; a design choice, because AniDB only says "extended periods" | same |
+| `COVER_MIN_AGE` | 1 hour from the last attempt, per anime; a design choice (AniDB publishes no image rules). It only spaces out retries after a failure: a cover that arrived is cached and never requested again | same |
 | `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN` | 30 min, 60 s | [`animatic_anidb::error`](../crates/animatic-anidb/src/error.rs) |
 
 ### Request guards
@@ -456,7 +462,8 @@ a failed, truncated or invalid download cannot be repeated inside the interval e
   a `FILE` request whose login failed first (`UdpClient::ensure_login` runs before the attempt
   is saved), and the local spool of the title dump failing to start. A guard refusal is not an
   attempt either.
-- **Minimum ages.** Title dump 24 h; one anime 24 h; one known file (`FetchFile`) 7 days.
+- **Minimum ages.** Title dump 24 h; one anime 24 h; one known file (`FetchFile`) 7 days; one
+  anime's cover 1 hour (retries only, see [Anime covers](#anime-covers)).
   `titles_dump_date` and `anime.fetched` keep recording only successes; for databases from
   before attempts were saved, a success also counts as an attempt (the later of the two is
   used). A saved time in the future (the clock was set back) is treated as now, so a guard
@@ -473,6 +480,45 @@ a failed, truncated or invalid download cannot be repeated inside the interval e
     available. The executor checks again when the command runs.
 - **Not guarded.** Hash lookups (`Identify`), `FetchEpisode`, `FetchGroup` and the other UDP
   commands have no age guard; they are only subject to the shared spacing.
+
+### Anime covers
+
+The anime detail window shows the picture named by `anime.picname`. Code:
+[`covers.rs`](../crates/animatic-core/src/covers.rs) (cache and decision),
+[`worker/covers.rs`](../crates/animatic/src/worker/covers.rs) (the cover thread and decoding) and
+[`app/covers.rs`](../crates/animatic/src/app/covers.rs) (the window).
+
+- **Terms.** AniDB owns none of the artwork and grants no licence (see *Images* in
+  [AniDB server limits](#anidb-server-limits)), so a cover is kept for the user's own display
+  only. It is never exported, included in a library backup, uploaded or re-hosted, and the
+  cache folder is not part of the library.
+- **On demand.** The window asks the cover thread when it opens on an anime (once per picture
+  name while the answer is kept). Nothing walks the library; opening 30 anime in a row asks for
+  30 covers, and when requests queue up the thread skips the downloads that a newer request has
+  replaced (`CoverOutcome::Superseded`), so only the cover the user stopped on is fetched.
+- **Cache.** `covers/<picname>` next to the database (the data folder of the default profile;
+  beside the file given by `ANIMATIC_DB` otherwise). `picname` must be a bare file name
+  (`validate_picname`: letters, digits, `.`, `-`, `_`; no leading, trailing or doubled dot; no
+  Windows device name; at most 100 bytes), so it can neither leave the folder nor change the
+  request path. The file is written atomically (`atomic::write_atomic`, temporary dot-file in
+  the same folder, flush, rename) and only after it decoded as a picture. A cached cover is
+  shown whatever the settings, the network state or a ban say, and is never requested again; a
+  new `picname` is a new file and the old one stays. A cached file that does not decode is
+  removed and fetched again (inside the retry guard).
+- **Host.** `https://<host>/images/main/<picname>`: the host the last `AUTH` announced
+  (`meta.image_server`, saved after a queue run, validated as a plain host name), else the
+  `anidb.image_server` setting. No `Referer` is sent.
+- **Order of checks** (`plan_cover`): valid name; cached; `anidb.download_covers` on; not
+  offline; no active `sync_cooldown` (ban); the per-anime attempt guard `RequestKind::Cover`
+  (`COVER_MIN_AGE`, saved *before* sending, so a failure cannot be repeated at once). Then the
+  request takes a slot from the worker's one `Limits`, the same limiter the queue uses.
+- **Failures.** A ban or rate limit (`Banned`, `ServerUnavailable`) sets the shared
+  `sync_cooldown` like any other ban. A 404, a network error, a body over 16 MiB, or bytes that
+  do not decode as JPEG, PNG, WebP or GIF show "Cover not downloaded" with the reason and cache
+  nothing.
+- **Decoding** runs on the cover thread with `image` (only the `gif`, `jpeg`, `png` and `webp`
+  decoders): at most 16384 px per side and 256 MiB of memory, scaled down to 1024 px for the
+  texture. The UI thread only uploads the finished pixels (rule 1).
 
 ## UDP API
 
@@ -569,7 +615,7 @@ headers and body) and user agent `Animatic/<version>`; `limits` is the process-w
 | Pacing | **Every** request (`anime()`, `titles_dump`, `image`, `get_bytes`) first takes a send slot from the shared `Limits`: at least 2 s after the previous HTTP request of the process, whichever client sent it. The send time is saved in `meta.http_last_send_ms` before sending, so a restart cannot shorten the gap, and a send time that cannot be saved stops the request |
 | Anime body limit | 32 MiB; gzip is decoded transparently and `decode_maybe_gzip` handles bodies still compressed |
 | Title dump | `GET https://anidb.net/api/anime-titles.xml.gz` (`TITLES_DUMP`), TLS via `ureq`'s default rustls setup |
-| Images | `GET https://<image_server>/images/main/<picname>` (default `cdn.anidb.net`), 16 MiB limit. **No caller uses `HttpClient::image`** and the desktop shows no pictures; the `anidb.image_server` setting is stored only |
+| Images | `GET https://<image_server>/images/main/<picname>` (the host the last `AUTH` announced, else `anidb.image_server`, default `cdn.anidb.net`), 16 MiB limit, no `Referer`. Used only by the anime detail window through the cover thread, see [Anime covers](#anime-covers); `image()` rejects a picture name that is not a bare file name and a host that is not a plain host name before anything is sent |
 | Daily-limit etiquette | AniDB asks clients not to request the same dataset more than once a day (see [AniDB server limits](#anidb-server-limits)). Enforced by the [request guards](#request-guards): an anime is not requested again within 24 h of the last attempt, by the executor, the full update and the detail window |
 
 Error mapping (`transport_error`, `api_error`): HTTP 403 → `Banned`; 429 →
@@ -799,7 +845,8 @@ durable contracts.
 | `sync` | `Command`, `Outcome`, `QueueEntry`, `CommandError`, `MAX_QUEUE_TRIES`, `manager_mylist_edit(&FileManager) -> MylistEdit`, `apply_edit_locally(&Db, i64, &MylistEdit)`, `execute(queue_id: i64, &Command, &Db, &mut UdpClient, &mut HttpClient) -> Result<Outcome, CommandError>`; on `Db`: `queue_push(&Command) -> Result<i64>`, `queue_push_many(&[Command]) -> Result<usize>`, `queue_edit_mylist(i64, &MylistEdit) -> Result<i64>`, `overlay_pending_mylist(&mut MylistEntry)`, `mylist_has_pending_intent(i64) -> Result<bool>`, `queue_peek() -> Result<Option<(i64, Command, i64)>>`, `queue_remove(i64)`, `queue_failed(i64, &str)`, `queue_deferred(i64, &str)`, `queue_block(i64, &str)`, `queue_block_all(&str) -> Result<usize>`, `queue_retry_failed() -> Result<usize>`, `queue_len()`, `queue_blocked_len()`, `queue_list() -> Result<Vec<QueueEntry>>`, `queue_clear()` |
 | `store` | `TITLES_DUMP_DATE_KEY`, `MYLIST_STATS_KEY`, `StoredMylistStats { fetched, stats }`, `TitleImport { titles, added }`; on `Db`: `store_file_info(&FileInfo)`, `store_api_mylist(&MylistEntry)` (anidb type), `upsert_mylist(&library::MylistEntry)`, `delete_mylist(i64)`, `store_mylist_stats(&MylistStats, i64)`, `mylist_stats_snapshot() -> Result<Option<StoredMylistStats>>`, `store_anime_xml(&AnimeXml)`, `store_anime_info`, `store_episode_info`, `store_group_info`, `import_title_dump::<E>(read)`, `add_local_file(&str, &Hashes, i64) -> Result<i64>`, `remove_local_file`, `clear_local_files`, `move_local_file(i64, &str)`, `local_file_id_by_path(&str)` |
 | `library` | Display types (`Anime`, `Episode`, `FileRec`, `Group`, `MylistEntry`, `MylistItem`, `LocalFile` (with `mylist_add_pending`), `MylistPending`, `Review`, `AnimeDetail`), `LibraryProjection::load(&Db) -> Result<LibraryProjection>` (including `account_stats` and `mylist_pending`), `pending_by_lid(&[QueueEntry])`, `LibrarySummary`, `SearchKeys`, name/id helpers (`anime_type_name`, `title_kind_id`, `relation_id`, ...); read queries on `Db` (`all_anime`, `anime`, `anime_detail`, `mylist_entry`, `mylist_items`, `local_files`, `file`, `group`, `genres`, ...) |
-| `limits` | `TITLES_DUMP_MIN_INTERVAL`, `ANIME_MIN_AGE`, `KNOWN_FILE_MIN_AGE`, the `meta` key names, `RequestKind::{Anime, File}`, `DbLimitStore` (the `LimitStore` over `meta`), `open_limits(&Path) -> Arc<Limits>`, `open_limits_with_clock`, message helpers (`titles_dump_wait_message`, `anime_wait_message`, `file_wait_message`); on `Db`: `titles_dump_next_allowed(now) -> Result<Option<i64>>`, `record_titles_dump_attempt(i64)`, `request_next_allowed(RequestKind, i64, now) -> Result<Option<i64>>`, `record_request_attempt(RequestKind, i64, i64)`, `request_last_attempt`, `recent_requests(RequestKind, now) -> Result<HashSet<i64>>` |
+| `limits` | `TITLES_DUMP_MIN_INTERVAL`, `ANIME_MIN_AGE`, `KNOWN_FILE_MIN_AGE`, `COVER_MIN_AGE`, the `meta` key names, `RequestKind::{Anime, File, Cover}`, `DbLimitStore` (the `LimitStore` over `meta`), `open_limits(&Path) -> Arc<Limits>`, `open_limits_with_clock`, message helpers (`titles_dump_wait_message`, `anime_wait_message`, `file_wait_message`); on `Db`: `titles_dump_next_allowed(now) -> Result<Option<i64>>`, `record_titles_dump_attempt(i64)`, `request_next_allowed(RequestKind, i64, now) -> Result<Option<i64>>`, `record_request_attempt(RequestKind, i64, i64)`, `request_last_attempt`, `recent_requests(RequestKind, now) -> Result<HashSet<i64>>` |
+| `covers` | `COVERS_DIR`, `IMAGE_SERVER_KEY`, `covers_dir(&Path)`, `cover_path`, `cached_cover`, `store_cover` (atomic), `discard_cover`, `plan_cover(&Db, &Path, &CoverRequest, now) -> Result<CoverPlan>`, `download_cover(&Db, &Path, &mut HttpClient, aid, picname, host, readable) -> Result<Downloaded, CoverError>`, `CoverPlan::{Cached, Download, Skip(CoverSkip)}`; on `Db`: `image_server()`, `remember_image_server(&str)` |
 | `hash` | `hash_file(&Path, Ed2kVariant, Control) -> Result<Hashes>`, `hash_bytes(&[u8], Ed2kVariant) -> Hashes`, `Control { cancel: &AtomicBool, pause: &AtomicBool, progress: &mut dyn FnMut(u64, u64) }`, `Hashes::{ed2k_link, export}`, `Ed2k`, `Ed2kVariant::{Red, Blue}`, `ED2K_CHUNK` |
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>` (skips entries with the Windows system attribute when `exclude_system`; no effect elsewhere), `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path, MoveControl) -> Result<MoveOutcome>` (same-volume rename, or copy → verify against the stored ED2K → swap → record → remove the source when the rename fails with `CrossesDevices`), `move_file_with(.., &dyn Fn(&Path, &Path) -> io::Result<()>)` (injected rename step), `MoveControl { cancel, pause, progress: &mut dyn FnMut(u64, u64) }`, `MoveMethod::{Renamed, Copied}`, `MoveOutcome { method, source_left }`, `clear_emptied_folders(&FileManagerSettings, &Path) -> ClearedFolders { removed, errors }` (`clear_empty_folders`: removes the folders an Animatic move emptied, strictly below the matching manager root, only while completely empty), `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path`; `Db::local_file_record(i64) -> Result<Option<(String, Hashes)>>` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
@@ -820,7 +867,7 @@ durable contracts.
 |---|---|
 | `udp` | `UdpClient::{new(Config, Arc<Limits>), config(), set_config(Config), is_logged_in(), banned_reason(), auth(), ensure_login(), logout(), request(&str, &[(&str, String)]) -> Result<Response>, ping()}`, public fields `image_server`, `new_version_available`; `Config { server, local_port, client, client_version, username, password, api_key: Option<String>, timeout }` (`Default`: `api.anidb.net:9000`, port 0, version 1, 20 s); `Response::{parse, fields}`, `escape`, `unescape`, `split_fields`, `DEFAULT_SERVER`, `PROTOVER` |
 | `commands` | `file_by_hash(&mut UdpClient, u64, &str)`, `file_by_fid`, `anime`, `episode`, `group`, `mylist_add(&mut UdpClient, &FileRef, &MylistEdit, edit_existing: bool) -> Result<MylistAddResult>`, `mylist_del`, `mylist`, `mylist_stats`; types `FileRef::{Fid, Hash{size, ed2k}, Lid}`, `MylistEdit` (all-`Option` fields, `Default`), `MylistEntry`, `FileInfo`, `AnimeInfo`, `EpisodeInfo`, `GroupInfo`, `MylistStats`, `MylistAddResult`, `EpNo` |
-| `http` | `HttpClient::{new(client, version, Arc<Limits>), check_client(), anime(i64) -> Result<AnimeXml>, titles_dump::<E>(&TitlesLimits, sink), image(&str, &str), get_bytes(&str, u64)}`, `read_titles_dump::<R, E>(R, &TitlesLimits, sink) -> Result<usize, E>`, `parse_anime_xml(&str)`, `decode_maybe_gzip(&[u8])`, `TitlesLimits`, `DumpTitle { aid, kind, lang, name }`, `AnimeXml`, `HTTP_API`, `TITLES_DUMP`, `DEFAULT_IMAGE_SERVER` |
+| `http` | `HttpClient::{new(client, version, Arc<Limits>), check_client(), anime(i64) -> Result<AnimeXml>, titles_dump::<E>(&TitlesLimits, sink), image(&str, &str) -> Result<Vec<u8>> (validates both arguments), get_bytes(&str, u64)}`, `read_titles_dump::<R, E>(R, &TitlesLimits, sink) -> Result<usize, E>`, `parse_anime_xml(&str)`, `decode_maybe_gzip(&[u8])`, `validate_picname(&str)`, `validate_image_host(&str)`, `MAX_IMAGE_BYTES`, `TitlesLimits`, `DumpTitle { aid, kind, lang, name }`, `AnimeXml`, `HTTP_API`, `TITLES_DUMP`, `DEFAULT_IMAGE_SERVER`; with `test-support`, `HttpClient::with_loopback_image_base(&str)` |
 | `limits` | `Limits::{new(Arc<dyn Clock>, Arc<dyn LimitStore>) -> Arc<Limits>, wait_udp(), wait_http(), auth_unanswered() -> Result<Duration>, auth_answered()}`, traits `Clock` (`SystemClock`) and `LimitStore`, `Protocol::{Udp, Http}`, constants `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING`, `UDP_BURST_RESET`, `HTTP_SPACING`, `AUTH_BACKOFF` |
 | `error` | `AnidbError` with `is_transient()`, `is_fatal()`, `retry_after()` (variants include `ClientBanned`, `AuthTimeout(Duration)` and `Storage(String)`); `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN`; `Result<T, E = AnidbError>` |
 | `testing` (feature `test-support`, enabled by the dev-dependencies of `animatic-core` and `animatic` only) | `ManualClock`, `MemoryStore`, `test_limits()`, `HttpFixture`/`HttpReply` (loopback HTTP server), `UdpFixture` (loopback UDP server), and `HttpClient::with_loopback_endpoints` |

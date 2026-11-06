@@ -17,6 +17,8 @@
 //! * [`limits`] — saved AniDB limit state: the send times and `AUTH` backoff step behind the
 //!   process-wide spacing, and the attempt-based guards (title dump once a day, minimum age per
 //!   anime and per file).
+//! * [`covers`] — the permanent on-disk cache of anime cover pictures and the rules for when one
+//!   may be fetched (on demand only, through the shared limiter, never redistributed).
 //! * [`store`] — write side: AniDB records, MyList rows, hashed local files, and the atomic
 //!   title-dump merge (`Db::import_title_dump`, implemented in [`store`]).
 //! * [`library`] — read side: display types, queries and the immutable
@@ -75,6 +77,7 @@
 //! flow: `docs/architecture.md` in the repository.
 
 pub mod atomic;
+pub mod covers;
 pub mod db;
 pub mod error;
 pub mod external;

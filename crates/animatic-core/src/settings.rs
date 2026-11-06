@@ -46,7 +46,11 @@ pub struct AnidbSettings {
     pub client_version: u32,
     pub udp_server: String,
     pub local_port: u16,
+    /// Image host used for covers until a login has announced the host AniDB wants used.
     pub image_server: String,
+    /// Download an anime's cover when its detail window opens. Covers already cached are
+    /// shown whatever this says.
+    pub download_covers: bool,
     /// Refresh cached AniDB data of known files when they are touched ("Auto update known file data").
     pub update_file_information: bool,
     /// Work offline: commands are queued until this is switched off.
@@ -66,6 +70,7 @@ impl Default for AnidbSettings {
             udp_server: "api.anidb.net:9000".into(),
             local_port: 29_456,
             image_server: "cdn.anidb.net".into(),
+            download_covers: true,
             update_file_information: false,
             offline: false,
             idle_logout_minutes: 10,
