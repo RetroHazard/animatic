@@ -8,6 +8,7 @@ use animatic_core::db::Db;
 use animatic_core::format;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::rename::plan::{self, PatternKind, Plan};
+use animatic_core::secrets::{CredentialStorage, Credentials};
 use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
 use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedUpdate};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
@@ -378,6 +379,8 @@ pub struct Startup {
     pub installation: Option<Arc<InstallationTarget>>,
     /// Raised when the user restarts after an update; `main` relaunches once the window closed.
     pub restart: Arc<AtomicBool>,
+    /// Keystore for the AniDB password and API keys; tests pass an in-memory one.
+    pub credentials: Credentials,
 }
 
 /// Longest the window waits for a running library restore when it closes.
@@ -510,6 +513,10 @@ pub struct AnimaticApp {
     compact_confirm: bool,
     /// Latest backup made in this session, named when a library check fails.
     last_backup: Option<PathBuf>,
+    /// Keystore the settings' credential fields are saved to and loaded from.
+    credentials: Credentials,
+    /// Where the credentials are kept, as of the last load or save; shown in Options.
+    credential_storage: CredentialStorage,
 }
 
 impl AnimaticApp {
@@ -521,12 +528,14 @@ impl AnimaticApp {
             full_update,
             installation,
             restart,
+            credentials,
         } = startup;
         let db = Db::open(&db_path)?;
         // The worker may hold the write lock for long stretches; small UI writes must fail
         // visibly instead of freezing the window for the default 30 seconds.
         db.conn().busy_timeout(UI_DB_BUSY_TIMEOUT)?;
-        let loaded = Settings::load_with_recovery(&settings_path)?;
+        let (loaded, credential_storage) =
+            Settings::load_with_credentials(&settings_path, &credentials)?;
         let settings_guard = SettingsGuard {
             recovered: loaded.recovered_from_backup,
             user_saved: false,
@@ -569,6 +578,8 @@ impl AnimaticApp {
             pattern_editor: PatternEditor::default(),
             settings_guard,
             settings_notice,
+            credentials,
+            credential_storage,
             settings_open: false,
             about_open: false,
             import_source: String::new(),
@@ -952,7 +963,7 @@ impl AnimaticApp {
             self.update.error = Some(reason.into());
             return;
         }
-        if let Err(e) = self.settings.save(&self.settings_path) {
+        if let Err(e) = self.write_settings() {
             let message = format!("Could not save settings, so Animatic was not restarted: {e}");
             self.error(message.clone());
             self.update.error = Some(message);
@@ -1197,8 +1208,9 @@ impl AnimaticApp {
             let mut imported = *self.imported_settings.take().expect("reviewed settings");
             imported.keep_preferences_unknown_to_legacy(&self.settings);
             imported.anidb.offline = true;
-            match imported.save(&self.settings_path) {
-                Ok(()) => {
+            match imported.save(&self.settings_path, &self.credentials) {
+                Ok(storage) => {
+                    self.credential_storage = storage;
                     self.settings_guard.user_saved = true;
                     self.settings = imported;
                     self.worker.cancel.store(true, Ordering::Relaxed);
@@ -1647,8 +1659,15 @@ impl AnimaticApp {
         });
     }
 
+    /// Saves the settings file; the credential fields go to the system keystore when it works.
+    /// Records where they ended up for Options.
+    fn write_settings(&mut self) -> animatic_core::Result<()> {
+        self.credential_storage = self.settings.save(&self.settings_path, &self.credentials)?;
+        Ok(())
+    }
+
     fn save_settings(&mut self) {
-        match self.settings.save(&self.settings_path) {
+        match self.write_settings() {
             Ok(()) => {
                 self.settings_guard.user_saved = true;
                 self.settings_notice = None;
@@ -1665,7 +1684,7 @@ impl AnimaticApp {
         if !self.settings_guard.allows_exit_save() {
             return;
         }
-        if let Err(e) = self.settings.save(&self.settings_path) {
+        if let Err(e) = self.write_settings() {
             self.error(format!("Could not save settings: {e}"));
         }
     }
@@ -2812,6 +2831,9 @@ impl AnimaticApp {
                     });
                     field(ui, "API key", &mut self.settings.anidb.api_key);
                     field(ui, "Client name", &mut self.settings.anidb.client_name);
+                    if let Some(notice) = self.credential_storage.notice() {
+                        ui.colored_label(Color32::YELLOW, notice);
+                    }
                     ui.checkbox(
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",
@@ -3738,7 +3760,7 @@ impl eframe::App for AnimaticApp {
     fn on_exit(&mut self) {
         self.finish_restore_before_exit();
         if self.settings_guard.allows_exit_save() {
-            let _ = self.settings.save(&self.settings_path);
+            let _ = self.write_settings();
         } else {
             log::warn!(
                 "Settings were recovered from a backup and not saved by the user; the original settings file was left unchanged on exit"

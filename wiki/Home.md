@@ -39,7 +39,7 @@ Coming from AOM? Read [Migrating from AOM](Migrating-from-AOM.md) before the fir
 | Page | Read it for |
 |---|---|
 | [Settings reference](Settings-Reference.md) | Every `settings.json` key: type, default, Options control and whether it does anything |
-| [Settings files](Settings-Files.md) | Loading, saving, backup recovery, plain-text credentials and the AOM settings import |
+| [Settings files](Settings-Files.md) | Loading, saving, backup recovery, credentials in the system keystore and the AOM settings import |
 | [Rename language](Rename-Language.md) | Syntax, values and coercion, variables and user functions |
 | [Rename functions and objects](Rename-Functions-and-Objects.md) | Every built-in function and object property |
 | [Rename targets and apply](Rename-Targets-and-Apply.md) | How a result becomes a path, blocking rules and the stable default pattern |

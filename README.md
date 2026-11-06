@@ -125,7 +125,9 @@ research limits; it is not a claim of complete AOM parity or exhaustive forum co
 
 ## Privacy and license
 
-Settings and backups can contain plaintext credentials. Library databases, exports and
+The AniDB password and API keys are kept in the operating-system keystore (Windows Credential
+Manager, Linux Secret Service); when none is available they stay in the settings file as plain
+text, which Options says. Settings backups can then contain plaintext credentials. Library databases, exports and
 logs can expose viewing history and filesystem paths. Keep runtime data outside this
 repository; use synthetic fixtures for development and redact support reports.
 Original AOM binaries, databanks and extraction artifacts are not part of this project.

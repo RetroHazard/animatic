@@ -70,6 +70,7 @@ fn main() -> anyhow::Result<()> {
         full_update,
         installation: installation.clone(),
         restart: restart.clone(),
+        credentials: animatic_core::secrets::Credentials::system(),
     })
     .with_context(|| {
         format!(

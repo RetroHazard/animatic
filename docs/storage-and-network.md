@@ -676,8 +676,15 @@ replacing the test harness executable.
   signed (see [GitHub update transport](#github-update-transport)).
 - **Title dump and images use HTTPS** with `ureq`'s default rustls configuration; there is no
   pinning.
-- **At rest**, the username, password and API key are plain text in `settings.json` and its
-  `.bak` copy; the database holds viewing history and local paths. Neither is encrypted.
+- **At rest**, the password, the UDP API key and the AVDump key are kept in the operating-system
+  keystore (Windows Credential Manager, Linux Secret Service; service `animatic`, account
+  `<path digest>/<field>`), and `settings.json` and its `.bak` hold empty strings plus
+  `secrets_in_keystore: true`. Only when no keystore is available, or a write to it fails, are
+  they plain text in those two files; Options says so, and the next save retries. The keystore
+  does not stop code running as the same user from reading the entries. The username is always
+  in `settings.json`; the database holds viewing history and local paths. The database and the
+  settings file are not otherwise encrypted. The credential flow is described in
+  [Architecture](architecture.md#credentials-and-the-system-keystore).
 - Automated tests use local fixtures only. Never contact AniDB with fabricated or unregistered
   client credentials.
 

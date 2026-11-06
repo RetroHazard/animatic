@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::secrets::{CredentialStorage, Credentials};
 
 /// The rename script AniDB O'Matic used when none was configured (literal at 0x7d4078).
 pub const DEFAULT_RENAME_PATTERN: &str = include_str!("rename/default_pattern.txt");
@@ -530,6 +531,10 @@ pub struct Settings {
     /// True until the first-run assistant has been completed.
     pub first_launch: bool,
     pub updates: UpdateSettings,
+    /// Set by [`Settings::save`] when the credential fields (see [`crate::secrets::FIELDS`]) were
+    /// moved to the system keystore and are stored empty here. Loading then reads the empty
+    /// fields back from the keystore. Never decides anything else; do not set it by hand.
+    pub secrets_in_keystore: bool,
 }
 
 impl Default for Settings {
@@ -546,6 +551,7 @@ impl Default for Settings {
             ed2k_space_replacement: None,
             first_launch: true,
             updates: UpdateSettings::default(),
+            secrets_in_keystore: false,
         }
     }
 }
@@ -701,17 +707,41 @@ impl Settings {
         }
     }
 
+    /// [`Settings::load_with_recovery`] followed by reading the credentials the settings file
+    /// left to the keystore ([`Credentials::restore`]).
+    ///
+    /// Only reads: recovery from a backup never writes to the keystore, and a keystore failure
+    /// is reported in the returned [`CredentialStorage`] instead of failing the load. Errors
+    /// contain no secret values.
+    pub fn load_with_credentials(
+        path: &Path,
+        credentials: &Credentials,
+    ) -> Result<(SettingsLoad, CredentialStorage)> {
+        let mut loaded = Self::load_with_recovery(path)?;
+        let storage = credentials.restore(&mut loaded.settings, path);
+        Ok((loaded, storage))
+    }
+
     /// Write the settings atomically (temp file + rename).
     ///
+    /// The credential fields go to the keystore of `credentials` and are stored empty in the file
+    /// (`secrets_in_keystore`). When the keystore is missing or refuses a write, nothing is
+    /// blanked: the file keeps the values and the returned [`CredentialStorage::SettingsFile`]
+    /// carries the reason. Plaintext values of an older file are moved by the first successful
+    /// save.
+    ///
     /// An existing primary file that still parses is copied to the backup first; an invalid
-    /// primary never replaces the backup. If writing or renaming fails the original primary stays
-    /// in place.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    /// primary never replaces the backup. A copy of a primary that still holds plaintext
+    /// credentials is blanked when they now live in the keystore, so the migration leaves no
+    /// plaintext behind in the backup either. If writing or renaming fails the original primary
+    /// stays in place.
+    pub fn save(&self, path: &Path, credentials: &Credentials) -> Result<CredentialStorage> {
         use std::io::Write;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_string_pretty(self)?;
+        let (document, storage) = credentials.seal(self, path);
+        let json = serde_json::to_string_pretty(&document)?;
         let tmp = path.with_extension("json.tmp");
         let written = std::fs::File::create(&tmp).and_then(|mut f| {
             f.write_all(json.as_bytes())?;
@@ -721,9 +751,17 @@ impl Settings {
             let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
         }
-        if let Ok(previous) = std::fs::read(path)
-            && parse_settings(&previous).is_ok()
+        if let Ok(mut previous) = std::fs::read(path)
+            && let Ok(previous_settings) = parse_settings(&previous)
         {
+            if storage == CredentialStorage::Keystore && previous_settings.holds_secrets() {
+                let mut scrubbed = previous_settings;
+                scrubbed.clear_secrets();
+                scrubbed.secrets_in_keystore = true;
+                if let Ok(text) = serde_json::to_string_pretty(&scrubbed) {
+                    previous = text.into_bytes();
+                }
+            }
             let backup = Self::backup_path(path);
             let backup_tmp = path.with_extension("json.bak.tmp");
             let copied = std::fs::write(&backup_tmp, &previous)
@@ -736,7 +774,30 @@ impl Settings {
             let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
         }
-        Ok(())
+        Ok(storage)
+    }
+
+    /// The credential fields, in the order of [`crate::secrets::FIELDS`].
+    pub(crate) fn secrets(&self) -> [&String; 3] {
+        [&self.anidb.password, &self.anidb.api_key, &self.avdump.key]
+    }
+
+    pub(crate) fn secrets_mut(&mut self) -> [&mut String; 3] {
+        [
+            &mut self.anidb.password,
+            &mut self.anidb.api_key,
+            &mut self.avdump.key,
+        ]
+    }
+
+    fn holds_secrets(&self) -> bool {
+        self.secrets().iter().any(|s| !s.is_empty())
+    }
+
+    pub(crate) fn clear_secrets(&mut self) {
+        for secret in self.secrets_mut() {
+            secret.clear();
+        }
     }
 
     fn fixup(&mut self) {
@@ -1219,6 +1280,11 @@ x</renamingPattern>
         result.expect_err("load must fail").to_string()
     }
 
+    /// Keeps the secrets in the file so the byte-exact backup assertions stay meaningful.
+    fn no_keystore() -> Credentials {
+        Credentials::unavailable("test without a keystore")
+    }
+
     #[test]
     fn valid_primary_loads_without_recovery() {
         let dir = TestDir::new("valid");
@@ -1362,7 +1428,7 @@ x</renamingPattern>
             .unwrap()
             .settings;
         recovered.anidb.username = "edited-user".into();
-        recovered.save(&dir.primary()).unwrap();
+        recovered.save(&dir.primary(), &no_keystore()).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.backup()).unwrap(),
             backup,
@@ -1385,7 +1451,7 @@ x</renamingPattern>
             .unwrap()
             .settings;
         s.anidb.username = "new-user".into();
-        s.save(&dir.primary()).unwrap();
+        s.save(&dir.primary(), &no_keystore()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), previous);
         assert_eq!(
             Settings::load_with_recovery(&dir.primary())
@@ -1406,7 +1472,11 @@ x</renamingPattern>
         std::fs::write(dir.backup(), &backup).unwrap();
         // A directory occupying the temp path makes the write step fail.
         std::fs::create_dir(dir.primary().with_extension("json.tmp")).unwrap();
-        assert!(Settings::default().save(&dir.primary()).is_err());
+        assert!(
+            Settings::default()
+                .save(&dir.primary(), &no_keystore())
+                .is_err()
+        );
         assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), primary);
         assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), backup);
     }
@@ -1420,7 +1490,7 @@ x</renamingPattern>
             .unwrap()
             .settings;
         assert_eq!(recovered.renaming_pattern, CUSTOM_PATTERN);
-        recovered.save(&dir.primary()).unwrap();
+        recovered.save(&dir.primary(), &no_keystore()).unwrap();
         let reloaded = Settings::load_with_recovery(&dir.primary())
             .unwrap()
             .settings;
@@ -1438,7 +1508,9 @@ x</renamingPattern>
             let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
             assert!(loaded.recovered_from_backup, "{document}");
             assert_eq!(loaded.settings.anidb.username, "backup-user", "{document}");
-            Settings::default().save(&dir.primary()).unwrap();
+            Settings::default()
+                .save(&dir.primary(), &no_keystore())
+                .unwrap();
             assert_eq!(
                 std::fs::read_to_string(dir.backup()).unwrap(),
                 backup,
@@ -1479,7 +1551,10 @@ x</renamingPattern>
         assert!(!loaded.settings.updates.auto_check);
         assert_eq!(loaded.settings.anidb, Settings::default().anidb);
 
-        loaded.settings.save(&dir.primary()).unwrap();
+        loaded
+            .settings
+            .save(&dir.primary(), &no_keystore())
+            .unwrap();
         let again = Settings::load_with_recovery(&dir.primary()).unwrap();
         assert!(!again.settings.updates.auto_check);
 

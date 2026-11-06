@@ -32,7 +32,11 @@ is always dark at normal scale (`Theme: System` never changes the look).
 Not in Options (JSON only): client version, UDP server, local port, image server, idle logout,
 tray, window and column state, row colors, `ed2k_space_replacement`, folder-scan delays.
 The full list with active/stored-only status is the [settings reference](Settings-Reference.md).
-Credentials are stored in plain text, including in the backup copy.
+The password, API key and AVDump key are saved to the system keystore (Windows Credential Manager,
+Linux Secret Service) when one is available, and then are not in `settings.json` or its backup. When
+none is, a yellow line under the AniDB account section says so ("Credentials are stored in the
+settings file because no system keystore is available: …") and the values stay in the file in plain
+text. See [Credentials and the system keystore](Settings-Files.md#credentials-and-the-system-keystore).
 
 If a **"Settings recovered"** window appears at startup, the primary file was missing or invalid and
 the backup was loaded **offline**; the original file was not touched. Review the values, then

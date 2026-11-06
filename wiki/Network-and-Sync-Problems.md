@@ -60,7 +60,8 @@ After a fatal credential or client error the status bar shows **N blocked** and 
 options**, then **Queue → Retry failed**, then **Synchronize now**. A wrong password that you
 keep retrying will keep failing; stop and fix it first.
 
-Settings credentials are stored in plain text. Do not paste them into bug reports; see
+Credentials live in the system keystore, or in plain text in the settings file when Options says no
+keystore is available. Do not paste them into bug reports; see
 [Privacy-safe support](Reporting-Problems.md).
 
 ## Cooldowns and bans

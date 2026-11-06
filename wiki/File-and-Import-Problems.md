@@ -194,8 +194,8 @@ leaves your active settings unchanged and releases the lock on other actions. **
 settings** saves first and forces offline mode; if the save fails you see `Could not save
 settings: …`, your old settings stay active, and the review remains open. The import starts
 from defaults and replaces whole sections, so settings the XML does not mention are replaced
-by the importer's fallbacks rather than kept. The imported values include the AOM password
-in plain text; review managed folders, players, credentials and the registered client name
+by the importer's fallbacks rather than kept. The imported values include the AOM password;
+it is saved to the system keystore, or in plain text when none is available. Review managed folders, players, credentials and the registered client name
 before going online (see the [Settings reference](Settings-Reference.md)).
 
 ## External tools and exports

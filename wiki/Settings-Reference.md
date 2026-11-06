@@ -52,6 +52,7 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 | `avdump` | object | disabled | [AVDump](#avdump-avdump) |
 | `ed2k_space_replacement` | string or `null` | `null` | [Top-level keys](#top-level-keys) |
 | `first_launch` | boolean | `true` | [Top-level keys](#top-level-keys) |
+| `secrets_in_keystore` | boolean | `false` | [Top-level keys](#top-level-keys) |
 | `updates` | object | `{ "auto_check": true }` | [Updates](#updates) |
 
 ## AniDB account
@@ -64,8 +65,8 @@ moment, so edits apply from the next run. (Update checks contact GitHub, not Ani
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
 | `username` | string | `""` | Username | **Active.** UDP login; `{user}` in AVDump arguments; written into statistics exports. |
-| `password` | string | `""` | Password (masked) | **Active.** UDP login. Stored in clear text, see [Credentials](Settings-Files.md#credentials-are-stored-in-plain-text). |
-| `api_key` | string | `""` | API key | **Active.** When non-empty the UDP session is encrypted with this key (profile UDP API key on anidb.net). Empty means an unencrypted session. Clear text on disk. |
+| `password` | string | `""` | Password (masked) | **Active.** UDP login. Kept in the system keystore and stored empty in the file; clear text in the file only while no keystore is available, see [Credentials](Settings-Files.md#credentials-and-the-system-keystore). |
+| `api_key` | string | `""` | API key | **Active.** When non-empty the UDP session is encrypted with this key (profile UDP API key on anidb.net). Empty means an unencrypted session. Stored like `password`. |
 | `client_name` | string | `""` | Client name | **Active.** Sent as `client` to both the UDP and HTTP APIs. Empty makes UDP login and HTTP anime requests fail with "no AniDB client name configured". Must be an identifier registered with AniDB for your client; Animatic ships none. |
 | `client_version` | integer (u32) | `1` | none | **Active, JSON only.** Sent as `clientver` (UDP and HTTP). Not imported from AOM. |
 | `udp_server` | string | `api.anidb.net:9000` | none | **Active, JSON only.** `host:port` of the UDP API. |
@@ -312,7 +313,7 @@ Object `avdump`.
 | `enabled` | boolean | `false` | "Enable AVDump integration" | **Active.** Enables the AVDump button on Hashed files (also checked again before launching). |
 | `executable` | string | `""` | Executable | **Active.** Program to start (for example an AVDump command-line build). Empty is rejected. |
 | `arguments` | string | `--Consumers=ED2K --Auth={user}:{key} --LPort={port} --PrintEd2kLink "{path}"` | Arguments | **Active.** Template, see below. |
-| `key` | string | `""` | "AVDump API key" | **Active.** Value of `{key}`. Clear text on disk; separate from `anidb.api_key`. |
+| `key` | string | `""` | "AVDump API key" | **Active.** Value of `{key}`. Kept in the system keystore, or in clear text on disk when none is available ([Credentials](Settings-Files.md#credentials-and-the-system-keystore)); separate from `anidb.api_key`. |
 
 Animatic only starts the program for the selected file and does not read its output or wait for it.
 
@@ -323,6 +324,7 @@ Animatic only starts the program for the selected file and does not read its out
 | `renaming_pattern` | string | the stable built-in pattern (33 lines, `crates/animatic-core/src/rename/default_pattern.txt`) | "Renaming pattern" editor | **Active.** Pattern used by the rename preview. The editor classifies it as Empty, Stable default or Custom, reports syntax errors, offers "Use stable default", "Restore previous text" and "Validate on selected file". Saving does not validate the pattern; an empty or invalid pattern simply blocks renames. Custom text is never modified by the application. Language: [Rename language](Rename-Language.md). |
 | `ed2k_space_replacement` | string or `null` | `null` | none | **Stored only.** No consumer; ED2K links are always built with the file name as is. |
 | `first_launch` | boolean | `true` | "Dismiss first-run card" on Overview | **Active.** While true the Overview page shows the first-run card; dismissing sets it false and saves. After an AOM settings import it is set to whether the imported username is empty. |
+| `secrets_in_keystore` | boolean | `false` | none (shown as a notice in Options) | **Active, written by Animatic.** `true` after a save that moved `anidb.password`, `anidb.api_key` and `avdump.key` into the operating-system keystore and stored them empty here; loading then fills empty credential fields from the keystore. Do not edit by hand; a file with real values in those keys and `true` uses the file's values. See [Credentials and the system keystore](Settings-Files.md#credentials-and-the-system-keystore). |
 
 ## Updates
 

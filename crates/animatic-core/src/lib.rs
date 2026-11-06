@@ -28,6 +28,9 @@
 //! * [`legacy`] — decryption and per-collection import of an AniDB O'Matic databank.
 //! * [`rename`] — the AOM-compatible rename language and validated path planning.
 //! * [`settings`] — serializable settings, backup-aware loading and AOM settings import.
+//! * [`secrets`] — the system keystore (Windows Credential Manager, Linux Secret Service) for the
+//!   AniDB password and API keys, the in-memory test store and the visible settings-file
+//!   fallback used by [`settings::Settings::save`].
 //! * [`stats`] — library statistics and XML/INI rendering.
 //! * [`external`] — launching external players and AVDump without a shell.
 //! * [`update`] — GitHub release check, verified download and in-place installation of a newer
@@ -67,6 +70,7 @@ pub mod legacy;
 pub mod library;
 pub mod maintenance;
 pub mod rename;
+pub mod secrets;
 pub mod settings;
 pub mod stats;
 pub mod store;

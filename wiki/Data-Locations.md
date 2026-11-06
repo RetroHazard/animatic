@@ -34,10 +34,16 @@ Companion files you will meet:
 | `animatic.sqlite3.before-restore-YYYYMMDD-HHMMSS` | After **File → Restore library…** | The library that was replaced, kept on purpose and never deleted by Animatic. Delete it yourself once the restored library is confirmed. |
 | `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
 
-Runtime files store your AniDB password and API key in plain text, and the `.bak` copy holds the
-*previous* valid settings (possibly credentials you have since removed). Nothing is encrypted at
-rest. Keep them out of version control, shared backups and support requests
-([troubleshooting](Troubleshooting.md)). Do not run two Animatic processes on the same settings
+Credentials are not in these files while the system keystore works: the AniDB password, API key and
+AVDump key live in the **Windows Credential Manager** or the Linux **Secret Service** under the
+service name `animatic`, in entries named after a short digest of the settings file's absolute path
+(so each `ANIMATIC_SETTINGS` profile has its own), and `settings.json` stores them empty. A copy of
+the profile folder therefore does not carry them. When no keystore is available, Options says so and
+the values stay in `settings.json` in plain text; the `.bak` copy holds the *previous* valid settings
+(possibly credentials in that state that you have since removed). Keep the files out of version
+control, shared backups and support requests
+([troubleshooting](Troubleshooting.md); [details](Settings-Files.md#credentials-and-the-system-keystore)).
+Do not run two Animatic processes on the same settings
 file; they share temporary file names and are unsupported. Window size and position are not
 remembered between launches.
 
@@ -111,6 +117,10 @@ Remove-Item Env:ANIMATIC_DB, Env:ANIMATIC_SETTINGS
 Environment variables set with `$env:` last for the PowerShell session; remove them as
 shown or start a new session, otherwise a later launch silently reuses the rehearsal
 profile.
+
+A rehearsal profile that you save credentials into also creates **system keystore** entries (see
+below). Deleting the folder does not remove them; delete them in the Windows Credential Manager or
+your Linux Secret Service front end, or save no credentials in a rehearsal profile.
 
 ### Avoiding the startup update check
 

@@ -59,12 +59,14 @@ is in progress.
 | Data | Files | Sensitivity |
 |---|---|---|
 | Library and queue | `animatic.sqlite3` plus its `-wal` and `-shm` files if present | Viewing history, file paths, hashes, queued edits |
-| Settings | `settings.json` and `settings.json.bak` | **Plain-text AniDB password, API key and AVDump key** |
+| Settings | `settings.json` and `settings.json.bak` | No credentials while the system keystore holds them; **plain-text AniDB password, API key and AVDump key** when Options reports that no keystore is available |
+| Credentials | Windows Credential Manager or Linux Secret Service, entries named `animatic` | Not in any file copy; back them up with your operating system's tools. Moving a settings file changes its entry names, so credentials must then be entered again |
 
-Treat every backup of either as a secret. Store it somewhere only you can read. Animatic does
-not encrypt anything; if you need an encrypted backup, use your own encryption tooling.
-`settings.json.bak` holds the **previous** valid settings, so it can still contain a password
-or key you have since changed or removed.
+Treat every backup of the library as a secret, and of the settings as one too whenever they may
+hold credentials. Store it somewhere only you can read. Animatic does
+not encrypt anything itself; if you need an encrypted backup, use your own encryption tooling.
+`settings.json.bak` holds the **previous** valid settings, so in the plain-text fallback it can
+still contain a password or key you have since changed or removed.
 
 ### A consistent copy by hand
 
@@ -157,7 +159,8 @@ verified their output against its schema, so work on a copy and re-check the res
   a sync client can copy the main file without its `-wal`.
 - Prefer a fixed local disk, for example by setting `ANIMATIC_DB` (or `--database`) to a path
   outside synchronized folders on every launch.
-- Do not synchronize the settings file between machines: it contains credentials, and two
+- Do not synchronize the settings file between machines: it can contain credentials (and the
+  keystore entries do not travel with it), and two
   machines saving at once will overwrite each other (the save is atomic per machine, with no
   merge).
 - Do not run two Animatic processes on the same settings file either. Saves share the same
@@ -255,7 +258,7 @@ place as a recovery step; it may be incomplete.
 ### Resetting settings deliberately
 
 Move `settings.json` and `settings.json.bak` into a backup folder (a copy that still holds
-credentials) and start Animatic: with neither file present it uses defaults and creates no
+credentials if no system keystore was available) and start Animatic: with neither file present it uses defaults and creates no
 file until you save. A fresh configuration has `offline` set to `false` and no client
 name, so the first thing to do is open **Tools → Options…**, tick **Work offline**, and save.
 

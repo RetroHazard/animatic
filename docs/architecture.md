@@ -328,19 +328,49 @@ the current settings, so a value the XML does not mention reverts to its default
 
 ### Settings persistence
 
-`Settings::save` writes `settings.json.tmp`, flushes it with `sync_all`, copies a still-valid
-previous primary to `settings.json.bak` (through its own `.bak.tmp` and a rename), then renames
-the temporary file over the primary. A failed write leaves the previous primary in place, but a
-failure of the backup rotation is ignored, so the primary can be replaced while the `.bak` is
+`Settings::save(path, &Credentials)` first runs the credential fields through the keystore
+(`secrets.rs`, below), then writes `settings.json.tmp`, flushes it with `sync_all`, copies a
+still-valid previous primary to `settings.json.bak` (through its own `.bak.tmp` and a rename), then
+renames the temporary file over the primary. A failed write leaves the previous primary in place,
+but a failure of the backup rotation is ignored, so the primary can be replaced while the `.bak` is
 stale or absent. The parent directory is not synced. The `.bak` holds the *previous* valid
-settings, so it can retain credentials that were since changed or removed. Credentials are
-stored as plain text in both files. Two Animatic processes sharing one settings file are
+settings; its credentials are blanked in the copy when the keystore now holds them (the migration
+of an older plain-text file), and otherwise it can retain credentials that were since changed or
+removed. Two Animatic processes sharing one settings file are
 unsupported: they share the `.tmp` names, so saves can fail or cross-write rather than follow a
 clean last-writer-wins rule. `load_with_recovery` reads the backup only when the primary is missing or invalid,
 forces offline mode, and the UI then blocks the exit-time autosave until an explicit Save. On a
 normal exit the application otherwise saves the current in-memory settings (Options edits are
 live), so the file can change without pressing Save. See
 the [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) for fields.
+
+### Credentials and the system keystore
+
+`secrets.rs` keeps `anidb.password`, `anidb.api_key` and `avdump.key` (`secrets::FIELDS`) out of
+the settings file. `SecretStore` is a flat account-to-secret trait with two implementations:
+`OsSecretStore` (Windows Credential Manager through `windows-native-keyring-store`, Linux Secret
+Service through `zbus-secret-service-keyring-store`, both on `keyring-core`, built directly so no
+global default store exists) and `MemorySecretStore` for tests, which never reach the real keystore.
+`Credentials` wraps one store, or a recorded reason why none is available
+(`Credentials::system()` opens the OS store once at startup; `main.rs` hands it to the app in
+`Startup`). Accounts are `<digest of the absolute, normalized settings path>/<field>` under service
+`animatic`, so `ANIMATIC_SETTINGS` profiles do not collide.
+
+* **Save.** `Credentials::seal` writes each non-empty secret to the keystore and deletes the entry
+  of an empty one; on full success the document written to disk has empty strings and
+  `secrets_in_keystore: true`. On any failure, or without a keystore, the document keeps every
+  value, so a secret is never lost, and the returned `CredentialStorage::SettingsFile { reason }`
+  becomes the Options notice. Entries whose read failed at load are never deleted by an empty
+  field. The backup copy of a previous primary that still holds plaintext is blanked on
+  success.
+* **Load.** `load_with_recovery(path)` stays file-only (rule 17: offline, no secret values in
+  errors). `Settings::load_with_credentials` additionally *reads* the keystore for empty credential
+  fields when `secrets_in_keystore` is set; values present in the file win. It never writes, so
+  recovery from a backup writes nothing to the keystore until an explicit Save.
+* **App.** The app keeps the last `CredentialStorage` and shows its notice under the AniDB
+  section of Options. Every save call site goes through `AnimaticApp::write_settings`; applying
+  an AOM settings import (rule 12) uses the same `Settings::save`. Keystore calls run on the
+  UI thread with the file write; a Linux keystore that prompts to unlock can pause the window.
 
 ### Updater thread
 
@@ -435,7 +465,7 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
 | Library backup and restore | A backup is a consistent snapshot, written to a temporary file and renamed into place; a restore validates the file twice, keeps a byte-for-byte copy of the replaced library and swaps the database file with one rename, after removing the old `-wal`/`-shm`, so the database path is the old or the new library; a refused file changes nothing | That the restored queue matches what AniDB already received; settings (not part of the database); a crash between removing the old `-wal` and the rename (the kept copy is then the way back); automatic or rolling backups; repair |
 | `move_file` | The database path changes only after `fs::rename` succeeded; an existing destination is refused first | See below |
-| Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. `.bak` may retain old or removed credentials. Directory-entry durability. Encryption (plain text). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
+| Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary; a secret is never blanked in the file unless the keystore accepted it | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. In the plain-text fallback `.bak` may retain old or removed credentials. Directory-entry durability. Encryption of the file itself; the keystore's own protection (it guards against copied files, not code running as the user). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
 | Statistics and hash export | Both run on the projection thread (the UI only opens the file dialog) and replace the target through `atomic::write_atomic`: a uniquely named temporary file in the target folder, flushed with `sync_all`, then renamed over the target; on any failure the temporary file is removed and the previous target stays. `Db::library_stats` reads every figure in one read transaction and returns an error, never zeros, when a query fails. `Db::export_local_hashes` reads the hashed files from the database, not the UI projection | Directory-entry durability (the parent folder is not synced), so a power loss right after the rename can still lose the new file; a crash between create and rename can leave a hidden `.<name>.<pid>.<n>.tmp` file. `Settings::save` keeps its own tmp+rename sequence (it must rotate the backup between writing and renaming) and does not use the helper |
 | Hashing | One read pass; cancel/pause per 4 MiB block | Detecting a file that changes while it is read |
@@ -505,7 +535,8 @@ Worked examples with real signatures, including a compilable offline snippet, ar
 
 ## Security and privacy
 
-Settings contain AniDB credentials and an optional API key in plain text; libraries and
+Settings keep AniDB credentials and the API keys in the operating-system keystore, or in plain
+text in the settings file when none is available (shown in Options); libraries and
 statistics reveal viewing habits and filesystem layout. Keep runtime data outside the repository,
 out of logs and out of tests, and preserve the `.gitignore` protections. The UDP protocol is
 not TLS: see [Transport security](storage-and-network.md#transport-security). The update check and

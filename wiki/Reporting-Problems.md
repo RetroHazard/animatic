@@ -5,7 +5,8 @@ Sanitize first, then use the
 ## What is sensitive
 
 - **Settings and backups:** `settings.json`, `settings.json.bak` and any `.tmp` copy hold the
-  AniDB password, API key and AVDump key in plain text. Never attach or paste them.
+  AniDB password, API key and AVDump key in plain text whenever Options reports that no system
+  keystore is available (otherwise they are empty there). Never attach or paste them.
 - **The database** (`animatic.sqlite3` and its `-wal`/`-shm`), exports (statistics XML/INI,
   hash lists) and `animatic-legacy-import-*` temporary folders are personal data: viewing history, file paths and
   names, hashes, AniDB identifiers.

@@ -1,4 +1,4 @@
-How `settings.json` is loaded, saved, backed up and recovered, what it holds in plain text, a
+How `settings.json` is loaded, saved, backed up and recovered, where credentials are kept, a
 minimal offline configuration, and how AOM settings are imported. Each key is described in the
 [Settings reference](Settings-Reference.md).
 
@@ -50,12 +50,15 @@ immediately.
 
 ### How a save works
 
-`Settings::save` serializes to pretty-printed JSON and then:
+`Settings::save` first hands the credential fields to the keystore (see
+[Credentials and the system keystore](#credentials-and-the-system-keystore); on failure they stay in
+the document), then serializes to pretty-printed JSON and:
 
 1. Creates parent folders if needed.
 2. Writes the new content to a sibling temporary file `settings.json.tmp` and flushes it to disk.
 3. If the existing primary file still parses as a settings object, tries to copy it to
-   `settings.json.bak.tmp` and rename that over `settings.json.bak`. An invalid existing primary
+   `settings.json.bak.tmp` and rename that over `settings.json.bak` (credentials that now live in
+   the keystore are blanked in that copy). An invalid existing primary
    never replaces a good backup. **A failure in this step is ignored**: the save carries on, so the
    new primary can be installed while the backup stays stale or absent.
 4. Renames the temporary file over `settings.json`.
@@ -73,7 +76,9 @@ File names are derived with "replace the extension": for `settings.json` they ar
 and `settings.json.tmp`. For an override such as `ANIMATIC_SETTINGS=/x/custom.cfg` they become
 `/x/custom.json.bak` and `/x/custom.json.tmp`; for a path without extension, `name.json.bak`.
 The `.tmp` files are transient (a crash during a save can leave one behind); the `.bak` file persists
-and holds the previous valid settings, including whatever credentials they contained.
+and holds the previous valid settings, including whatever credentials they contained when they were
+written (none once the keystore holds them; see
+[Credentials and the system keystore](#credentials-and-the-system-keystore)).
 
 ### Recovery matrix
 
@@ -94,29 +99,67 @@ count as an empty-defaults file and never replace a backup).
 After a backup recovery the guard keeps the unreadable original untouched: the exit save and the
 first-run-card save are skipped, so recovered settings survive only in memory until you use
 **Save options** (or apply an AOM import). That explicit save writes the recovered values, including
-`offline: true`, over the primary; untick the offline option afterwards if you want to go online.
+`offline: true`, over the primary (and, when the keystore works, writes the recovered credentials to
+it); untick the offline option afterwards if you want to go online.
 Step-by-step recovery and support guidance: [Troubleshooting](Troubleshooting.md).
 
-## Credentials are stored in plain text
+## Credentials and the system keystore
 
-`anidb.password`, `anidb.api_key` and `avdump.key` are written to `settings.json` as ordinary JSON
-strings. Animatic does not encrypt them or use an operating-system credential store. Copies also
-exist in `settings.json.bak` (see below) and, briefly, in the `.tmp` file during a save. Consequences:
+`anidb.password`, `anidb.api_key` and `avdump.key` are kept in the operating-system keystore: the
+**Windows Credential Manager** or, on Linux, the **Secret Service** (GNOME Keyring, KWallet and
+compatible). A successful save writes them there and stores them as empty strings in `settings.json`
+together with `"secrets_in_keystore": true`; loading reads the empty fields back from the keystore.
+Entries use the service name `animatic` and an account made of a short digest of the settings file's
+absolute path plus the field name (for example `3f9c1a7d2b4e6a80/anidb.password`), so two portable
+profiles ([`ANIMATIC_SETTINGS`](Data-Locations.md)) never share or overwrite each other's credentials.
+Moving or renaming a settings file therefore also changes its keystore account: the stored credentials
+are not found and must be entered again (the old entries remain in the keystore; delete them there).
 
-- Anyone who can read your profile folder (or a backup of it) can read them.
-- **The backup can hold a different secret than the current file.** A save copies the *previous*
-  valid primary into `settings.json.bak`, so after you change or remove a credential the backup
-  keeps the old value until a later save replaces it (and after a first save there may be no
-  backup yet). Removing a secret from `settings.json` does not remove it from `settings.json.bak`;
-  check and delete both files before sharing or discarding a configuration.
-- Do not copy settings files into bug reports, forum posts, repositories or screenshots. If you
-  need to share a configuration, remove the three keys first. The repository's `.gitignore`
-  excludes `settings.json` but not `settings.json.bak`, so be careful with portable setups kept
-  inside a checkout.
+- **Migration.** A settings file written by an older version still holds the three values in plain
+  text. Loading it changes nothing on disk. The first successful **Save options** (or any other
+  save) moves them into the keystore, writes empty strings, and also blanks them in the
+  `settings.json.bak` copy it creates from the old file, so no plain-text copy stays behind. If
+  that backup step fails (it is ignored, as for every save), an older plain-text backup can
+  remain: delete it yourself.
+- **Fallback, never a lost secret.** If the keystore is unavailable (for example a headless Linux
+  session without a Secret Service) or refuses a write, Animatic keeps the values **in
+  `settings.json` exactly as before** and Options shows, under the AniDB account section, a yellow
+  line: *Credentials are stored in the settings file because no system keystore is available:
+  `<reason>`* (the reason is the keystore's own message). Every later save tries the keystore
+  again and moves the values as soon as it works.
+  In this state all the cautions below about plain text apply.
+- **Unreadable credentials.** If the file says the credentials are in the keystore but reading them
+  fails (locked or removed keystore), the fields stay empty and Options says so. Saving without
+  typing new values leaves the stored entries untouched; typing a value replaces it. Clearing a
+  field you did read and saving deletes its entry.
+- **Recovery stays offline and read-only.** Loading the backup after a damaged primary only *reads* the
+  keystore; nothing is written to it (or to either file) until you use **Save options**. Error
+  messages never include credential values.
+- **Imports.** The AOM settings review shows only whether credentials were detected, never their
+  values; applying the import saves through the same path, so imported credentials go to the
+  keystore too.
+- **Writes happen on the interface thread.** A keystore that asks to be unlocked can pause the
+  window during a save.
+
+What a settings file can still expose:
+
+- With the keystore working, `settings.json` and its backup contain no credentials. Anyone who can
+  run programs as you can still read the keystore; it protects against copying files, not against
+  malware running in your session. Credentials in the keystore are **not** part of a copy of your
+  profile folder, so back them up with your operating system's own tools.
+- In the fallback state, anyone who can read your profile folder (or a backup of it) can read the
+  values. **The backup can hold a different secret than the current file.** A save copies the
+  *previous* valid primary into `settings.json.bak`, so after you change or remove a credential
+  the backup keeps the old value until a later save replaces it. Check and delete both files before
+  sharing or discarding a configuration.
+- Do not copy settings files into bug reports, forum posts, repositories or screenshots. The
+  repository's `.gitignore` excludes `settings.json` but not `settings.json.bak`, so be careful with
+  portable setups kept inside a checkout.
 - The Options password field is masked, but the API key fields are not.
-- An AOM settings import copies the AOM username, password and AVDump password verbatim and saves
-  them.
-- Animatic does not log credentials in its error messages for malformed settings files.
+- To inspect or delete the entries: Windows Credential Manager (*Control Panel → Credential
+  Manager → Windows Credentials*, or `cmdkey /list` and look for targets ending in `.animatic`),
+  or on Linux the Secret Service front end of your desktop (for example Seahorse or KWalletManager;
+  the items carry the attributes `service` = `animatic` and `username` = the account).
 
 ## Minimal offline configuration
 

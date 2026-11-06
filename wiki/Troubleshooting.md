@@ -19,8 +19,9 @@ Know the limits before you rely on a recovery path:
   [Settings problems](Backups-and-Recovery.md#settings-problems).
 - **No checksums or verification of copies.** Nothing records or checks a checksum of your
   database, settings or any backup you make.
-- **Plain-text secrets.** The settings file and its backup hold your AniDB password, API key
-  and AVDump key in plain text. Nothing is encrypted at rest.
+- **Credentials.** The password, API key and AVDump key are kept in the operating-system keystore
+  when one is available; if Options shows the settings-file notice, the settings file and its
+  backup hold them in plain text instead. The database and backups are not encrypted.
 - **Personal data in the database.** The SQLite library holds your viewing history, file
   paths, hashes and queued edits.
 - **No media deletion, no trash.** Animatic never deletes media files, and the interface has

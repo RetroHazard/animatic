@@ -112,7 +112,8 @@ configuration. Everything the XML does not mention (client name, client version,
 server and port, theme, scale, current folder rules when the XML has none, …) reverts to the default,
 and applying overwrites your settings file. A save first tries to copy your previous valid file to
 `settings.json.bak` (a failed copy is ignored, so the backup can be stale or absent); the backup
-holds the *previous* settings, including credentials you may have since removed, and is only loaded
+holds the *previous* settings, including credentials you may have since removed (blanked once the
+keystore holds credentials), and is only loaded
 automatically when the primary is missing or invalid. Copy your settings file yourself first if you
 may want it back. The one exception is `updates.auto_check`: AOM has no such preference, so applying an
 import keeps your current value.
@@ -121,6 +122,8 @@ What is read: username and password, image server, file-information flag, hashin
 list, hash export template, rename pattern, statistics export settings, AVDump enable and key, last
 folder, folder rules (with their MyList policy), players, window/tray/tree preferences and row
 colors, folder-scan delays. Several of those have no effect in Animatic (see the
-[settings reference](Settings-Files.md#aom-settings-import)). Credentials are stored in plain text. After
+[settings reference](Settings-Files.md#aom-settings-import)). Applying saves the credentials like any
+save: into the system keystore when one is available, otherwise in plain text in the settings file
+([details](Settings-Files.md#credentials-and-the-system-keystore)). After
 applying: open Options, set the **Client name**, review folder rules and players, check
 *Remove missing*/*Add to mylist*, then clear **Work offline** only when ready.
