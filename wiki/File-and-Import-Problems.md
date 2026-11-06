@@ -195,5 +195,6 @@ before going online (see the [Settings reference](Settings-Reference.md)).
   substituted inside its own argument, so spaces or quotes in it cannot split it. A template
   that uses `{key}` places that key on the child process's command line.
 - `Hash export failed: …`, `Automatic statistics export failed: …` or a manual statistics
-  export error: the destination is not writable or the path is invalid. These write to the path
-  you chose; they reveal your library, so keep them out of the repository.
+  export error: the destination is not writable, is a folder, the disk is full or the path is
+  invalid, or (statistics) a database query failed. The previous file is left unchanged; see
+  [Exports](Exports.md#safe-replacement). These write to the path you chose; they reveal your library, so keep them out of the repository.

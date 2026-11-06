@@ -52,7 +52,8 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `legacy` | Databank discovery, page decryption, record decoding, per-collection import |
 | `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning |
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
-| `stats` | Library aggregation and XML/INI rendering |
+| `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
+| `stats` | Library aggregation (one read transaction) and XML/INI rendering |
 | `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
 | `format` | Size, date, duration and count formatting |
 | `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
@@ -73,21 +74,21 @@ projection bookkeeping, the Software updates window), `worker.rs` (jobs, events,
 
 | Thread | Database connection | Work |
 |---|---|---|
-| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); rename apply; hash-export file write; settings save |
+| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); rename apply; settings save |
 | `animatic-worker` | A fresh `Db::open` per job (hashing: per file) | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate` |
-| `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins) and `Job::ExportStatistics` |
+| `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics` and `Job::ExportHashes` |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
 
 The UI sends `Job`s over an unbounded crossbeam channel and drains `Event`s every frame.
-`Worker::submit` routes `LoadLibrary` and `ExportStatistics` to the projection thread so a long
+`Worker::submit` routes `LoadLibrary`, `ExportStatistics` and `ExportHashes` to the projection thread so a long
 queue run or hash never delays a refresh. `cancel` and `pause` are shared atomics checked
 cooperatively: per 4 MiB block while hashing, between planned actions in a scan, between
 commands in a queue run, and between import steps. A cancel request applies to the job running
 when it is made and is cleared only when the next job starts.
 
 Dropping `Worker` (application exit) sets the shutdown and cancel flags, sends `Stop`, and joins
-only the projection thread, so accepted statistics exports finish. The network thread is not
+only the projection thread, so accepted statistics and hash exports finish. The network thread is not
 joined: it can be inside an exchange of up to the 20 s UDP timeout (or the 60 s HTTP budget) and
 is simply abandoned at process exit. The updater thread is the exception described below: its
 network work is cancelled on drop, and an install in progress is joined.
@@ -361,7 +362,7 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 | `move_file` | The database path changes only after `fs::rename` succeeded; an existing destination is refused first | See below |
 | Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. `.bak` may retain old or removed credentials. Directory-entry durability. Encryption (plain text). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
-| Statistics and hash export | Hash export uses the UI's loaded projection; statistics run on the projection thread | Atomic replace: both use `fs::write` (truncate then write) on the destination. `library_stats` is several separate queries, not one read transaction, so concurrent writes can be mixed into one report, and a failed scalar total is reported as 0 |
+| Statistics and hash export | Both run on the projection thread (the UI only opens the file dialog) and replace the target through `atomic::write_atomic`: a uniquely named temporary file in the target folder, flushed with `sync_all`, then renamed over the target; on any failure the temporary file is removed and the previous target stays. `Db::library_stats` reads every figure in one read transaction and returns an error, never zeros, when a query fails. `Db::export_local_hashes` reads the hashed files from the database, not the UI projection | Directory-entry durability (the parent folder is not synced), so a power loss right after the rename can still lose the new file; a crash between create and rename can leave a hidden `.<name>.<pid>.<n>.tmp` file. `Settings::save` keeps its own tmp+rename sequence (it must rotate the backup between writing and renaming) and does not use the helper |
 | Hashing | One read pass; cancel/pause per 4 MiB block | Detecting a file that changes while it is read |
 | Local-record removal | Only after affirmative absence under a reachable manager root | Atomic against a disconnect between planning and execution |
 
@@ -456,7 +457,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
 | Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `move_file`; `settings.rs`: `FileManagerSettings::matching_manager_for` |
 | Rename | `crates/animatic-core/src/rename/plan.rs`, `rename/mod.rs` (`target_path`), `app.rs`: `preview_rename`, `rename_window`, `pattern_editor_ui` |
-| Exports | `crates/animatic-core/src/stats.rs`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` |
+| Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs` |
 | Migration | `crates/animatic-core/src/legacy/{crypto,blob,import}.rs`, `settings.rs`: `import_legacy_settings`, `app.rs`: `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |

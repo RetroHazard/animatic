@@ -53,7 +53,7 @@ Jobs and what the controls do:
 | Synchronizing with AniDB | Run command queue / Synchronize now | No effect | Stops before the next command; a request already in flight finishes or times out (UDP 20 s, HTTP 60 s) |
 | Queueing full update | `--full-update` | No effect | – |
 
-Jobs run one at a time in submission order. Library snapshots and statistics exports run on
+Jobs run one at a time in submission order. Library snapshots and the statistics and hash exports run on
 their own thread and do not show a progress bar or take part in Cancel.
 
 **NOT saved yet.** Identify, title-download, statistics-fetch and anime-refresh commands are

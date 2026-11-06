@@ -47,6 +47,13 @@ pub enum Job {
         username: String,
         format: StatFormat,
     },
+    /// Build and write the hash export of every hashed local file on the projection thread
+    /// (no started/finished events).
+    ExportHashes {
+        path: PathBuf,
+        template: String,
+        copy_length_as_minutes: bool,
+    },
     Stop,
 }
 #[derive(Debug, Clone)]
@@ -177,6 +184,17 @@ impl Worker {
                     format,
                 });
             }
+            Job::ExportHashes {
+                path,
+                template,
+                copy_length_as_minutes,
+            } => {
+                let _ = self.loads.send(Background::ExportHashes {
+                    path,
+                    template,
+                    copy_length_as_minutes,
+                });
+            }
             job => {
                 self.pending.fetch_add(1, Ordering::SeqCst);
                 if self.jobs.send(job).is_err() {
@@ -221,7 +239,10 @@ impl PendingJob {
     /// requests are never counted.
     fn of(job: &Job, pending: &Arc<AtomicUsize>) -> PendingJob {
         match job {
-            Job::Stop | Job::LoadLibrary { .. } | Job::ExportStatistics { .. } => PendingJob(None),
+            Job::Stop
+            | Job::LoadLibrary { .. }
+            | Job::ExportStatistics { .. }
+            | Job::ExportHashes { .. } => PendingJob(None),
             _ => PendingJob(Some(pending.clone())),
         }
     }
@@ -289,13 +310,28 @@ fn run(
                 });
                 continue;
             }
+            Job::ExportHashes {
+                path,
+                template,
+                copy_length_as_minutes,
+            } => {
+                let _ = loads.send(Background::ExportHashes {
+                    path,
+                    template,
+                    copy_length_as_minutes,
+                });
+                continue;
+            }
             other => other,
         };
         // A cancel request applies to the job that is running when it is made. It is only
         // cleared here, when the next job starts, so a following `submit` cannot swallow it.
         cancel.store(false, Ordering::Relaxed);
         match job {
-            Job::Stop | Job::LoadLibrary { .. } | Job::ExportStatistics { .. } => {
+            Job::Stop
+            | Job::LoadLibrary { .. }
+            | Job::ExportStatistics { .. }
+            | Job::ExportHashes { .. } => {
                 unreachable!("handled before dispatch")
             }
             Job::Hash(paths) => {
@@ -782,9 +818,14 @@ enum Background {
         username: String,
         format: StatFormat,
     },
+    ExportHashes {
+        path: PathBuf,
+        template: String,
+        copy_length_as_minutes: bool,
+    },
 }
 
-/// Serve library projections and statistics exports on a thread of their own so that an
+/// Serve library projections and the statistics and hash exports on a thread of their own so that an
 /// hours-long AniDB queue or a big hashing job never delays the UI. SQLite's WAL mode lets this
 /// connection read while the main worker writes. Of several pending loads only the newest runs;
 /// every export that was accepted runs, even during shutdown (`Background::Stop` is queued
@@ -815,12 +856,57 @@ fn run_projections(
                     username,
                     format,
                 } => export_statistics(&db_path, &mut slot, &path, &username, format),
+                Background::ExportHashes {
+                    path,
+                    template,
+                    copy_length_as_minutes,
+                } => export_hashes(
+                    &db_path,
+                    &mut slot,
+                    &path,
+                    &template,
+                    copy_length_as_minutes,
+                ),
             };
             let _ = events.send(event);
         }
         if stopping {
             return;
         }
+    }
+}
+
+/// Run `export` on the projection thread's connection and keep that connection afterwards.
+fn with_projection_db<T>(
+    db_path: &Path,
+    slot: &mut Option<Db>,
+    export: impl FnOnce(&Db) -> animatic_core::error::Result<T>,
+) -> animatic_core::error::Result<T> {
+    let db = match slot.take() {
+        Some(db) => db,
+        None => Db::open(db_path)?,
+    };
+    let result = export(&db);
+    *slot = Some(db);
+    result
+}
+
+fn export_hashes(
+    db_path: &Path,
+    slot: &mut Option<Db>,
+    path: &Path,
+    template: &str,
+    copy_length_as_minutes: bool,
+) -> Event {
+    let result = with_projection_db(db_path, slot, |db| {
+        db.export_local_hashes(path, template, copy_length_as_minutes)
+    });
+    match result {
+        Ok(count) => Event::Synced {
+            description: format!("Exported {count} hashes to {}", path.display()),
+            changed: false,
+        },
+        Err(e) => Event::Error(format!("Hash export failed: {e}")),
     }
 }
 
@@ -831,17 +917,10 @@ fn export_statistics(
     username: &str,
     format: StatFormat,
 ) -> Event {
-    let db = match slot.take() {
-        Some(db) => db,
-        None => match Db::open(db_path) {
-            Ok(db) => db,
-            Err(e) => return Event::Error(format!("Statistics export failed: {e}")),
-        },
-    };
-    let result = db
-        .library_stats()
-        .and_then(|stats| stats.write(path, username, format));
-    *slot = Some(db);
+    let result = with_projection_db(db_path, slot, |db| {
+        db.library_stats()
+            .and_then(|stats| stats.write(path, username, format))
+    });
     match result {
         Ok(()) => Event::Synced {
             description: format!("Exported statistics to {}", path.display()),
@@ -1460,6 +1539,52 @@ mod tests {
             "{event:?}"
         );
         assert!(target.exists());
+        assert!(worker.events.try_recv().is_err());
+    }
+
+    #[test]
+    fn hash_export_runs_in_the_background_and_a_failure_keeps_the_previous_file() {
+        let db = TempDb::new();
+        db.open()
+            .conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/synthetic/animatic-test-user/a.mkv');",
+            )
+            .unwrap();
+        let target = db.dir.join("hashes.txt");
+        let worker = Worker::spawn(db.path.clone());
+        worker.submit(Job::ExportHashes {
+            path: target.clone(),
+            template: "%filename%".into(),
+            copy_length_as_minutes: false,
+        });
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::Synced { .. } | Event::Error(_))
+        });
+        assert!(
+            matches!(&event, Event::Synced { changed: false, description } if description.contains("Exported 1 hashes")),
+            "{event:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "a.mkv\r\n");
+
+        // A directory cannot be replaced by a file: the export reports it and the old file stays.
+        let blocked = db.dir.join("blocked.txt");
+        std::fs::create_dir(&blocked).unwrap();
+        worker.submit(Job::ExportHashes {
+            path: blocked.clone(),
+            template: "%filename%".into(),
+            copy_length_as_minutes: false,
+        });
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::Synced { .. } | Event::Error(_))
+        });
+        assert!(
+            matches!(&event, Event::Error(m) if m.starts_with("Hash export failed")),
+            "{event:?}"
+        );
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "a.mkv\r\n");
         assert!(worker.events.try_recv().is_err());
     }
 

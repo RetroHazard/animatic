@@ -1042,6 +1042,47 @@ impl Db {
         Ok(v)
     }
 
+    /// Expand `template` once per hashed local file (in path order), one line each, in a single
+    /// read of the database. Returns the text and the number of files.
+    pub fn local_hashes_export_text(
+        &self,
+        template: &str,
+        copy_length_as_minutes: bool,
+    ) -> Result<(String, usize)> {
+        let files = self.local_files()?;
+        let mut text = String::new();
+        for f in &files {
+            let hashes = crate::hash::Hashes {
+                size: f.size as u64,
+                ed2k: f.ed2k.clone(),
+                crc32: f.crc32.clone().unwrap_or_default(),
+                md5: f.md5.clone().unwrap_or_default(),
+                sha1: f.sha1.clone().unwrap_or_default(),
+            };
+            text.push_str(&hashes.export(
+                std::path::Path::new(&f.path),
+                template,
+                copy_length_as_minutes,
+            ));
+            text.push_str("\r\n");
+        }
+        Ok((text, files.len()))
+    }
+
+    /// Write the hash export for every hashed local file to `path`, replacing it atomically
+    /// (see [`crate::atomic::write_atomic`]): on failure the previous file stays intact.
+    /// Returns the number of files exported.
+    pub fn export_local_hashes(
+        &self,
+        path: &std::path::Path,
+        template: &str,
+        copy_length_as_minutes: bool,
+    ) -> Result<usize> {
+        let (text, count) = self.local_hashes_export_text(template, copy_length_as_minutes)?;
+        crate::atomic::write_atomic(path, text.as_bytes())?;
+        Ok(count)
+    }
+
     /// Local paths of a file (by fid) that are known on disk.
     pub fn local_paths_of_fid(&self, fid: i64) -> Result<Vec<String>> {
         let v = self
@@ -1277,6 +1318,39 @@ mod tests {
             )
             .unwrap();
         db
+    }
+
+    #[test]
+    fn hash_export_writes_one_line_per_local_file_and_keeps_the_old_file_on_failure() {
+        let db = sample_db();
+        let dir =
+            std::env::temp_dir().join(format!("animatic-hash-export-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("animatic-hashes.txt");
+        std::fs::write(&target, "previous").unwrap();
+        let count = db
+            .export_local_hashes(&target, "%filename% %crc32%", false)
+            .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "unknown.mkv X\r\nx.mkv DEADBEEF\r\n"
+        );
+
+        let blocked = dir.join("blocked.txt");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(db.export_local_hashes(&blocked, "%ed2k%", false).is_err());
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read_to_string(&target).unwrap().lines().count(), 2);
+
+        db.conn().execute_batch("DROP TABLE local_file;").unwrap();
+        assert!(db.export_local_hashes(&target, "%ed2k%", false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap().lines().count(),
+            2,
+            "a failed read must not replace the previous export"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

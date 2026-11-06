@@ -1469,30 +1469,13 @@ impl AnimaticApp {
         else {
             return;
         };
-        let mut text = String::new();
-        for f in &self.projection.local {
-            let hashes = animatic_core::hash::Hashes {
-                size: f.size as u64,
-                ed2k: f.ed2k.clone(),
-                crc32: f.crc32.clone().unwrap_or_default(),
-                md5: f.md5.clone().unwrap_or_default(),
-                sha1: f.sha1.clone().unwrap_or_default(),
-            };
-            text.push_str(&hashes.export(
-                std::path::Path::new(&f.path),
-                &self.settings.hashing.export_template,
-                self.settings.ui.copy_length_as_minutes,
-            ));
-            text.push_str("\r\n");
-        }
-        match std::fs::write(&path, text) {
-            Ok(()) => self.log(format!(
-                "Exported {} hashes to {}",
-                self.projection.local.len(),
-                path.display()
-            )),
-            Err(e) => self.error(format!("Hash export failed: {e}")),
-        }
+        // The projection thread reads the hashed files, expands the template and writes the file
+        // atomically; the outcome returns as a log or error event.
+        self.worker.submit(Job::ExportHashes {
+            path,
+            template: self.settings.hashing.export_template.clone(),
+            copy_length_as_minutes: self.settings.ui.copy_length_as_minutes,
+        });
     }
 
     fn save_settings(&mut self) {

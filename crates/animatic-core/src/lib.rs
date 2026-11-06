@@ -10,6 +10,8 @@
 //!
 //! # Modules
 //!
+//! * [`atomic`] — crash-safe file replacement (temporary file, flush, rename) used by the
+//!   hash and statistics exports.
 //! * [`db`] — SQLite connection setup (WAL), idempotent schema creation, the command-queue
 //!   upgrade, and the persisted sync cooldown. [`db::Db`] is one connection; open one per thread.
 //! * [`store`] — write side: AniDB records, MyList rows, hashed local files, and the atomic
@@ -43,11 +45,16 @@
 //!   deleted.
 //! * [`file_manager::move_file`] updates the stored path only after `std::fs::rename`
 //!   succeeded; it does not copy across volumes and is not an atomic no-overwrite operation.
+//! * Exports ([`stats::LibraryStats::write`], [`db::Db::export_local_hashes`]) replace their
+//!   target through [`atomic::write_atomic`]: a failed write leaves the previous file intact.
+//!   [`db::Db::library_stats`] reads every figure in one read transaction and returns an error
+//!   instead of zeros when a query fails.
 //! * Credentials in [`settings::Settings`] are stored as plain text.
 //!
 //! Table-level and protocol-level reference: `docs/storage-and-network.md`; threads and data
 //! flow: `docs/architecture.md` in the repository.
 
+pub mod atomic;
 pub mod db;
 pub mod error;
 pub mod external;

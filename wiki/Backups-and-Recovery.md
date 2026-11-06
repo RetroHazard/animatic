@@ -26,7 +26,7 @@ recent changes or is inconsistent. Do not copy an open database "blind".
    finish or press **Cancel**. Do not quit while it shows **N commands NOT saved yet**
    (see [Database busy and unsaved commands](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands)).
 2. **Close Animatic** with **File → Quit** and make sure the process has ended. Quitting
-   cancels a running job, drains accepted statistics exports and writes settings (unless
+   cancels a running job, drains accepted statistics and hash exports and writes settings (unless
    the [recovery guard](#settings-problems) holds).
 3. **Copy the files as one set into a new folder**, for example one dated folder per backup:
    `animatic.sqlite3` and, **if they exist, `animatic.sqlite3-wal` and `animatic.sqlite3-shm`**,

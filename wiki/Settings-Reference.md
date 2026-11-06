@@ -297,7 +297,7 @@ Object `stat_whore` (the AOM name for the statistics feature).
 |---|---|---|---|---|
 | `enabled` | boolean | `false` | "Write statistics after library updates" | **Active.** With a non-empty `file`, the statistics file is rewritten every time the library view reloads in the background (after hashing, queue activity, imports and similar events). |
 | `format` | `"Xml"` or `"Ini"` | `"Xml"` | Format combo | **Active.** Format of the automatic file and of the suggested type for File → Export statistics…. Values are case-sensitive. |
-| `file` | string | `""` | Output file | **Active.** Target of the automatic export; missing parent folders are created and the file is overwritten in place. |
+| `file` | string | `""` | Output file | **Active.** Target of the automatic export; missing parent folders are created and the file is replaced atomically (temporary file, flush, rename), so a failed write keeps the previous file. |
 
 File → Export statistics… always asks for a path and ignores `enabled` and `file`. Both exports
 include the AniDB username (not the password) in the `anidb` block; treat exported statistics as
@@ -344,7 +344,7 @@ Applying an AOM settings import keeps your current `updates` object because AOM 
 ## Hash export template tokens
 
 Used by **File → Export hashes…** (it exports every hashed file in the library, in list order, to
-the file you choose, default name `animatic-hashes.txt`). `hashing.export_template` is expanded once
+the file you choose, default name `animatic-hashes.txt`; built and written on the background projection thread, replacing the file atomically). `hashing.export_template` is expanded once
 per file and followed by a CRLF line ending. An empty template is treated as `%fulled2k%`; `\n`
 inside the template is written as CRLF. There is no automatic export and no other UI entry for this
 feature.
