@@ -32,7 +32,7 @@ which is a research log and not a specification.
 | Advanced search | Desktop | Title (or exact id), year, type, MyList-only, watched-only filters over the local cache | Local data only |
 | Groups and genres | Desktop | Searchable lists with library counts | |
 | Add/edit MyList | Desktop | **Hashed files → Add to MyList…** queues adds for the selected files (identified files by file id, others by hash) with state, watched, view date, storage, source and other. **My list** edits State and Watched in the row and every field, including clearing a text field and the view date, in **Edit…**; **Remove from MyList…** (with confirmation) and **Refresh entry** queue a removal and a refresh. Edits are merged per entry, saved with the optimistic local change in one transaction and synchronized by the queue; the folder policy can still add files automatically (`Identify` with an add) | Adds start from hashed local files only: there is no add by AniDB id and no bulk edit of existing entries. A queued add shows as `Add queued` on Hashed files but creates no My list row until AniDB answers, because the entry id comes from AniDB. A removal deletes the local row only after AniDB acknowledges it and never deletes a media file. A FILE reply that explicitly reports "not in MyList" removes the matching *local* entry unless a command for it is queued |
-| AniDB session | Desktop | UDP login, optional encrypted session (API key), compressed replies, session re-authentication, typed replies, offline mode, persisted cooldowns, blocked failures with explicit retry; AniDB's request limits hold across runs and restarts: program-wide UDP (2 s, then 4 s after five) and HTTP (2 s) spacing with the send time saved before each request, a fixed local port (a busy port is an error, never another port), a banned client version (504) blocks the queue until corrected, and an unanswered login backs off 30 s, 2 min, 5 min, 10 min, 30 min, then 2 h ([Request limits](AniDB-Synchronization.md#request-limits)) | The queue runs only on request. The client version is a settings-file/import value with no Options field. The UDP channel is not TLS ([Transport security](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#transport-security)). Keep-alive `PING` and idle logout (`idle_logout_minutes`) are not used; every queue run still logs in and out |
+| AniDB session | Desktop | UDP login, optional encrypted session (API key), compressed replies, session re-authentication, typed replies, offline mode, persisted cooldowns, blocked failures with explicit retry; AniDB's request limits hold across runs and restarts: program-wide UDP (2 s, then 4 s after five) and HTTP (2 s) spacing with the send time saved before each request, a fixed local port (a busy port is an error, never another port), a banned client version (504) blocks the queue until corrected, and an unanswered login backs off 30 s, 2 min, 5 min, 10 min, 30 min, then 2 h ([Request limits](AniDB-Synchronization.md#request-limits)) | The queue runs only on request. The registered **Client version** has an Options field next to **Client name** (a whole number of 1 or more); Animatic releases never change it, and the AOM import does not set it. The UDP channel is not TLS ([Transport security](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#transport-security)). Keep-alive `PING` and idle logout (`idle_logout_minutes`) are not used; every queue run still logs in and out |
 | Full update | Desktop | **Tools > Full update...** (after a confirmation showing the counts, the number left out and when the title dump is next allowed) or `--full-update` queues the title dump, a `FetchFile` for each file id and a `FetchAnime` for each anime id found among the *identified hashed local files* (idempotent), leaving out what AniDB's limits do not allow yet: the title dump inside 24 h, an anime inside 24 h and a known file inside 7 days of the last request, successful or not; **Tools > Download anime titles** and the anime detail **Refresh** queue single items and refuse inside those windows (saying when the request is allowed); **Fetch mylist statistics**, the per-episode **Refresh**, **Groups > Refresh** and **My list > Refresh entry** queue single items (UDP, subject only to the shared spacing) | It does not refresh every cached entity or your whole MyList. With **Update known file information** on, hashing an identified file again queues a `FetchFile` for it, subject to the 7-day file window. The statistics result is stored and shown on Overview, apart from the local figures |
 | Statistics export | Desktop | **File > Export statistics...** and optional automatic export, XML or INI, computed on the projection thread | The figures are read in one database snapshot and a failed query is an error, not zeros. The file is replaced atomically (temporary file, flush, rename); a failed write leaves the previous file intact. A hard crash can leave a hidden `.<name>.*.tmp` file |
 | HTTP API and images | Partial | Anime XML and the public title dump are fetched through queued commands | Image download (`HttpClient::image`) and the image-server setting are **Core only / Stored only**; no picture is displayed |
@@ -46,7 +46,8 @@ which is a research log and not a specification.
 | Local cache recovery tooling | Partial | **File > Back up library...** (online backup, atomic file), **File > Restore library...** (validated, confirmed, keeps a timestamped copy of the replaced library), **Tools > Check library** (`integrity_check` and `foreign_key_check`) and **Tools > Compact library...** (`VACUUM`), all in the background; settings backup recovery | No repair, no automatic or rolling backups, no scheduled checks; a backup holds the database only (not `settings.json`); restore and compaction wait for an idle worker |
 | Full-account MyList bootstrap | Not implemented | Entries arrive through legacy import, FILE replies for hashed local files, queued adds/edits | Local state is not equivalent to a complete account download; there is no reconciliation of the whole MyList |
 | Scheduled folder scanning | Desktop | Optional **scan at start** and **scan every N minutes** (5 minutes to 1 week, off by default) in Options → Managed folders, run by a worker-side timer that submits the ordinary scan; it never overlaps another task, an import or settings review, a restore or unsaved commands | Polling only: there is no filesystem watcher. No tray icon |
-| Tray icon, colour-coded rows, saved columns | Not implemented | Settings fields exist | See below |
+| Colour-coded rows, saved columns, sorting, window state, system theme | Desktop | **Use status colors** tints Hashed files, Anime, Advanced search and My list rows by status (CRC mismatch, unidentified, watched, in MyList), always with the status also written in the row; headers sort, a right click chooses columns, and widths, hidden columns and sort order are remembered; the window's size, position and maximized state are restored; **Theme: System** follows the operating system | Colors have no Options editor (`ui.colors`, AOM palette imported); the AOM tree-specific slots (folder, root, episode, duplicate, CRC ok) have no table to color. Positions on a disconnected monitor are not detected before the window exists. Linux runtime is not verified |
+| Tray icon | Not implemented | Settings fields exist | See below |
 
 ## Core-only capabilities
 
@@ -64,7 +65,7 @@ Available to code that links the crates, covered by tests where noted in the sou
 
 ## Settings persisted without runtime effect
 
-Nothing reads these fields. Five have an Options control, shown disabled with a "Not active yet" hover text; the stored value is kept.
+Nothing reads these fields. Four have an Options control, shown disabled with a "Not active yet" hover text; the stored value is kept.
 A saved setting is not proof of behavior. The [settings reference](Settings-Reference.md) has
 the complete per-field table.
 
@@ -72,9 +73,9 @@ the complete per-field table.
 - Hashing: `autostart` (disabled checkbox), `priority`, `ed2k_space_replacement`.
 - File managers: per folder `auto_rename` (disabled checkbox), `clear_empty_folders`,
   `exclude_system`.
-- UI: `colored_rows` ("Use status colors", disabled checkbox) and `colors`, `columns`, `window`,
-  `maximized`, tree expand/collapse, local folder size, root folder hiding, tray options.
-  `Theme::System` applies no visuals of its own.
+- UI: tree expand/collapse, local folder size, root folder hiding, tray options. The window
+  state, column layouts, row colors, theme and scale are applied; see the
+  [settings reference](Settings-Reference.md#ui).
 
 `hashing.use_extensions` only filters the **Add files** picker; folder scans always use the
 extension list, and paths given on the command line are hashed unfiltered.
@@ -117,7 +118,7 @@ Verified absent from the application (some exist in `animatic-core` or are store
 - Adding a MyList entry by AniDB id or editing several entries at once; editing anime metadata
   (the Edit AniDB data menu opens web pages).
 - Images and covers (the HTTP image function is unused; no image UI); system tray and
-  minimize-to-tray; row coloring; saved columns, sorting and window state.
+  minimize-to-tray.
 - Queue or player *open/enqueue* actions;
   resumable downloads; hashing a folder from the shell file menu.
 - Linux runtime and production AniDB verification (the Linux Secret Service keystore path is

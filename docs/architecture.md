@@ -53,6 +53,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `legacy` | Databank discovery, page decryption, record decoding, per-collection import |
 | `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`) |
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
+| `ui_state` | Pure rules for the saved window geometry, per-table column layout and sorting, and status row colours; no window code, so they are unit-tested |
 | `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
 | `stats` | Library aggregation (one read transaction) and XML/INI rendering |
 | `maintenance` | Online backup, restore validation and file swap, integrity/foreign-key check, `VACUUM`; blocking file work for the worker and the restore thread |
@@ -75,7 +76,7 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `scheduler.rs` (scheduled folder scans).
+projection bookkeeping, the Software updates window), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `scheduler.rs` (scheduled folder scans).
 The Options row for the file-menu entry is `app/shell_menu.rs`.
 
 ## Runtime model
@@ -388,7 +389,12 @@ unsupported: they share the `.tmp` names, so saves can fail or cross-write rathe
 clean last-writer-wins rule. `load_with_recovery` reads the backup only when the primary is missing or invalid,
 forces offline mode, and the UI then blocks the exit-time autosave until an explicit Save. On a
 normal exit the application otherwise saves the current in-memory settings (Options edits are
-live), so the file can change without pressing Save. See
+live), so the file can change without pressing Save. The window geometry (`ui.window`,
+`ui.maximized`) and the table layouts (`ui.columns`) are kept current in memory by `track_window`
+and `DataTable` and travel with these saves; they are never saved on a timer, so recovery mode
+(rule 17) skips them like every other autosave. Startup applies them: `AnimaticApp::viewport` builds the
+window from `ui_state::placement_from_saved` and `apply_visuals` sets the theme (`System`
+follows the operating system through egui's theme preference) and scale before the first frame. See
 the [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) for fields.
 
 ### Credentials and the system keystore
@@ -663,6 +669,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
 | MyList editor, add, remove, refresh, account figures | `crates/animatic/src/app/mylist_editor.rs`: `MylistForm::build`, `mylist_toolbar`, `entry_editor_window`, `open_add_dialog`/`add_window`, `remove_window`, `click_selection`, `account_figures`; `library.rs`: `pending_by_lid`, `mark_pending_adds`; `store.rs`: `store_mylist_stats`, `mylist_stats_snapshot` |
 | Full update menu action, update known file information | `crates/animatic/src/app/refresh.rs`: `after_hash` (what hashing queues: identify, refresh a known file inside the 7-day window, nothing), `start_full_update_preview`/`full_update_window`; `worker.rs`: `plan_full_update` (shared by `preview_full_update` and `queue_full_update`, so the preview counts equal what is queued) |
+| Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals`, `client_version_field` |
 | Search filters | `app.rs`: `filter_anime`, `filter_search`, `matches_anime`, `aid_query`; `library.rs`: `SearchKeys`, `LibraryProjection::assemble` |
 | Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan` |
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |

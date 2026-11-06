@@ -18,6 +18,11 @@ and tables, and the menus. The individual pages are described in [Library pages]
   [Software updates](Updating-Animatic.md) window and "About Animatic" (the build's version from
   `Cargo.toml`, an AniDB link and the license buttons).
 
+The window opens with the size, position and maximized state it had when you last used
+Animatic (first start: 1280 × 800, minimum 900 × 600); see
+[window and layout state](Settings-Reference.md#window-and-layout-state) for what is ignored
+as unsafe.
+
 All data on screen comes from a **snapshot** of the local database that a background thread
 loads and swaps in whole. Changes appear after the next snapshot (requests are coalesced, at
 most one every 250 ms). **File → Refresh** and the Overview "Refresh data" button request one
@@ -26,8 +31,9 @@ snapshot stays.
 
 Tables share a few behaviors: columns can be resized, rows are striped, text is truncated
 instead of wrapped, and a horizontal scrollbar appears when the window is narrower than the
-columns. Column headers are labels only; there is no click-to-sort, column chooser or saved
-layout. The window has no keyboard shortcuts and does not accept drag-and-drop of files;
+columns. [Headers sort, a right click chooses columns, and rows are tinted by
+status](#sorting-columns-and-row-colors); column widths, hidden columns and the sort order are
+remembered. The window has no keyboard shortcuts and does not accept drag-and-drop of files;
 add files with **File → Add files…**, the Hashed files page, or the command line.
 
 ## Status bar, progress and the Log
@@ -104,6 +110,40 @@ Semantics (from `app.rs` and `library.rs`):
   `03` is treated as plain text and does not.
 - Rows without a name display as `aid N`; My list rows whose anime is missing display `Unknown anime`.
 - Empty query shows everything.
+
+## Sorting, columns and row colors
+
+**Sorting.** Click a column header to sort by it: first ascending (`▲`), then descending (`▼`),
+then back to the default order. Text sorts case-insensitively with numbers read by value
+(`Ep2` before `Ep10`); rows that compare equal keep the default order, and a missing value
+(for example an unidentified file's AniDB id) sorts before any present one. The **Queue** table
+is not sortable because its order is the order commands run in.
+
+**Columns.** Right-click a header to open the **Columns** menu and hide or show columns; at least
+one stays visible, and hiding the sorted column returns the table to its default order.
+Drag a header edge to resize. The last visible column fills the remaining width. Sorting and hiding do not change a selection (it follows the row, not its position), but the column you click to select a row (**File** on Hashed files, **Episode** on My list) is the only click target: keep it visible, or on Hashed files use **Select all shown**.
+
+**Remembered.** Widths, hidden columns and the sort order of every table are kept with the
+settings (`ui.columns`, see the [settings reference](Settings-Reference.md#window-and-layout-state)):
+written by **Save options** and when Animatic exits normally, not while
+[recovered settings](Settings-Files.md#recovery-matrix) are unsaved.
+
+**Row colors.** With **Use status colors** on (Options → Appearance) rows are tinted by status:
+
+| Table | Status | Written in the row as |
+|---|---|---|
+| Hashed files | CRC mismatch | CRC column `Mismatch` |
+| | Not identified | AniDB column `Unknown` |
+| | Watched | Mylist column `lid N · watched` |
+| | In MyList | Mylist column `lid N` |
+| Anime, Advanced search | Fully watched | Mylist column `… · all watched` |
+| | In MyList | Mylist column `N eps / M …` |
+| My list | Watched | Watched checkbox ticked |
+
+Color is never the only signal: every status is also text or a control state. The text on a
+tinted row is black or white, whichever reads better on the color. The colors come from
+`ui.colors` (see [row colors](Settings-Reference.md#row-colors-uicolors)); plain rows stay
+uncolored unless you set a color for them.
 
 ## Menus
 

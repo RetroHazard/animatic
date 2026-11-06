@@ -1,5 +1,6 @@
 mod app;
 mod scheduler;
+mod table;
 mod worker;
 
 use std::path::{Path, PathBuf};
@@ -91,10 +92,7 @@ fn main() -> anyhow::Result<()> {
         )
     })?;
     let native = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Animatic — AniDB library manager")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 600.0]),
+        viewport: app.viewport(),
         ..Default::default()
     };
     // The app (and with it the worker and database connections) is dropped when this returns.
@@ -102,7 +100,7 @@ fn main() -> anyhow::Result<()> {
         "Animatic",
         native,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(eframe::egui::Visuals::dark());
+            app.apply_visuals(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )

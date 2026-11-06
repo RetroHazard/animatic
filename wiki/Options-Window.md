@@ -8,16 +8,18 @@ its title-bar button does not revert them: the edited values stay in effect (for
 queue run) and are written when the application exits normally. Only **Save options** writes
 immediately. Exceptions: when settings were **recovered from a backup**, exit and the Overview
 dismiss button do not write; only **Save options** or an applied import do (a recovery notice says so).
-Theme and scale are applied on **Save options** or an applied import; at launch the window
-is always dark at normal scale (`Theme: System` never changes the look).
+Theme and scale are applied at launch, on **Save options** and on an applied import (`Theme: System`
+follows the operating system's light or dark mode). The window's size, position and maximized state
+and the table column layouts are not Options controls: they are kept as you use the window and
+written with the settings.
 
 | Section | Controls | Status |
 |---|---|---|
-| AniDB account | Username, Password (masked), API key (shown in clear), Client name | Used by sync and AVDump |
+| AniDB account | Username, Password (masked), API key (shown in clear), Client name, Client version | Used by sync and AVDump. *Client version* is the version registered with AniDB for your client name: a whole number of 1 or more, shown red with an explanation (and **Save options** disabled) while the text is not one. Animatic updates never change it |
 | | Work offline | Active |
 | | Update known file information | Active: re-hashing an identified file queues a refresh of its AniDB record (at most every 7 days per file); off by default |
-| Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Dark/Light and scale apply on Save; System does nothing |
-| | Use status colors | Shown disabled ("Not active yet"); value kept, no row coloring exists |
+| Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Active; applied at launch and on Save |
+| | Use status colors | Active: tints table rows by status (CRC mismatch, unidentified, watched, in MyList); each status is also written in the row. Applies immediately. See [Main window](Main-Window.md#sorting-columns-and-row-colors) |
 | Hashing | Start hashing automatically | Shown disabled ("Not active yet"); value kept |
 | | Identify files with AniDB after hashing | Active |
 | | Add "Hash with Animatic" to the file menu | Active, off by default; applied by **Save options**, see [File-menu entry](#file-menu-entry) |
@@ -31,8 +33,8 @@ is always dark at normal scale (`Theme: System` never changes the look).
 | Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
-Not in Options (JSON only): client version, UDP server, local port, image server, idle logout,
-tray, window and column state, row colors, `ed2k_space_replacement`.
+Not in Options (JSON only): UDP server, local port, image server, idle logout,
+tray, row colors, `ed2k_space_replacement`.
 The full list with active/stored-only status is the [settings reference](Settings-Reference.md).
 The password, API key and AVDump key are saved to the system keystore (Windows Credential Manager,
 Linux Secret Service) when one is available, and then are not in `settings.json` or its backup. When

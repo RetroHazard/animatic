@@ -43,6 +43,8 @@
 //! * [`shell_integration`] — the optional per-user "Hash with Animatic" file-menu entry
 //!   (Windows registry or Linux desktop file) that only an Options save creates.
 //! * [`mod@format`] — shared size/date/duration formatting.
+//! * [`ui_state`] — pure rules for the saved window geometry, per-table column layout and
+//!   sorting, and status row colours.
 //!
 //! # Guarantees worth knowing
 //!
@@ -88,6 +90,7 @@ pub mod shell_integration;
 pub mod stats;
 pub mod store;
 pub mod sync;
+pub mod ui_state;
 pub mod update;
 
 pub use error::{Error, Result};

@@ -41,6 +41,8 @@ pub struct AnidbSettings {
     pub api_key: String,
     /// Registered client name (<https://anidb.net/software/add>); both APIs refuse unregistered clients.
     pub client_name: String,
+    /// Registered client version (`clientver`), at least 1. It identifies the registered client
+    /// to AniDB and is never changed by an Animatic release; see [`parse_client_version`].
     pub client_version: u32,
     pub udp_server: String,
     pub local_port: u16,
@@ -68,6 +70,21 @@ impl Default for AnidbSettings {
             offline: false,
             idle_logout_minutes: 10,
         }
+    }
+}
+
+/// Parses the text of the client version field: a whole number of at least 1 (`u32`).
+///
+/// The error text is meant to be shown next to the field.
+pub fn parse_client_version(text: &str) -> std::result::Result<u32, &'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Enter the registered client version, a whole number of 1 or more.");
+    }
+    match text.parse::<u32>() {
+        Ok(0) => Err("The client version must be at least 1."),
+        Ok(n) => Ok(n),
+        Err(_) => Err("The client version must be a whole number of 1 or more."),
     }
 }
 
@@ -315,10 +332,14 @@ pub enum ColorSlot {
     FileCrcInvalid = 23,
     FileInMylist = 25,
     LocalFileDuplicate = 27,
+    /// Animatic-only slot (no legacy tag): an anime that is in MyList.
+    AnimeInMylist = 101,
+    /// Animatic-only slot (no legacy tag): a watched file, MyList entry or fully watched anime.
+    Watched = 103,
 }
 
 impl ColorSlot {
-    pub const ALL: [ColorSlot; 14] = [
+    pub const ALL: [ColorSlot; 16] = [
         ColorSlot::LocalRoot,
         ColorSlot::LocalFolder,
         ColorSlot::LocalFile,
@@ -333,6 +354,8 @@ impl ColorSlot {
         ColorSlot::FileCrcOk,
         ColorSlot::FileCrcInvalid,
         ColorSlot::FileInMylist,
+        ColorSlot::AnimeInMylist,
+        ColorSlot::Watched,
     ];
 
     pub fn label(self) -> &'static str {
@@ -351,7 +374,24 @@ impl ColorSlot {
             ColorSlot::FileCrcOk => "AniDB: file CRC ok",
             ColorSlot::FileCrcInvalid => "AniDB: file CRC invalid",
             ColorSlot::FileInMylist => "AniDB: file in mylist",
+            ColorSlot::AnimeInMylist => "AniDB: anime in mylist",
+            ColorSlot::Watched => "Watched",
         }
+    }
+
+    /// Slots that describe the plain, unremarkable row: they tint a row only when the user
+    /// customised them, because their legacy defaults are light greys that would glare in a
+    /// dark theme and carry no status.
+    pub fn is_neutral(self) -> bool {
+        matches!(
+            self,
+            ColorSlot::LocalRoot
+                | ColorSlot::LocalFolder
+                | ColorSlot::LocalFile
+                | ColorSlot::Anime
+                | ColorSlot::Episode
+                | ColorSlot::File
+        )
     }
 
     /// Legacy default background as 0xRRGGBB.
@@ -366,6 +406,8 @@ impl ColorSlot {
             ColorSlot::LocalFileDuplicate => 0xFF8000,
             ColorSlot::EpisodeInMylist => 0x7070D0,
             ColorSlot::FileCrcOk => 0x80FF80,
+            ColorSlot::AnimeInMylist => 0x70A0FF,
+            ColorSlot::Watched => 0x90E090,
         }
     }
 
@@ -387,11 +429,23 @@ pub struct SlotColor {
     pub text: Option<u32>,
 }
 
+/// Sort direction of a table column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+/// One column of a table: its id (the lower-case header text, see `ui_state::column_id`), its
+/// width in points, whether it is shown and whether the table is sorted by it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ColumnState {
     pub id: String,
     pub width: f32,
     pub visible: bool,
+    /// Set on at most one column of a table. Absent in files written before sorting existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SortDirection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -855,6 +909,9 @@ impl Settings {
         self.file_managers.clamp_timing();
         if self.ui.zoom <= 0.3 {
             self.ui.zoom = 1.0;
+        }
+        if self.anidb.client_version == 0 {
+            self.anidb.client_version = 1;
         }
     }
 
@@ -1655,5 +1712,96 @@ x</renamingPattern>
         let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
         assert_eq!(loaded.settings.anidb.username, "old-user");
         assert!(loaded.settings.updates.auto_check);
+    }
+
+    #[test]
+    fn client_version_text_must_be_a_whole_number_of_one_or_more() {
+        assert_eq!(parse_client_version("1"), Ok(1));
+        assert_eq!(parse_client_version("  42 "), Ok(42));
+        assert_eq!(parse_client_version("4294967295"), Ok(u32::MAX));
+        for text in [
+            "",
+            "   ",
+            "0",
+            "00",
+            "-1",
+            "1.5",
+            "abc",
+            "1e3",
+            "+",
+            "4294967296",
+        ] {
+            let message = parse_client_version(text).expect_err(text);
+            assert!(!message.is_empty(), "{text:?} needs an explanation");
+        }
+        // "+3" is what u32::from_str accepts; the field accepts it too.
+        assert_eq!(parse_client_version("+3"), Ok(3));
+    }
+
+    #[test]
+    fn a_client_version_of_zero_in_the_file_is_read_as_one() {
+        let dir = TestDir::new("client-version-zero");
+        std::fs::write(dir.primary(), r#"{"anidb":{"client_version":0}}"#).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert_eq!(loaded.settings.anidb.client_version, 1);
+        std::fs::write(dir.primary(), r#"{"anidb":{"client_version":7}}"#).unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert_eq!(loaded.settings.anidb.client_version, 7);
+    }
+
+    #[test]
+    fn column_layouts_from_before_sorting_still_load_and_round_trip() {
+        let dir = TestDir::new("columns-without-sort");
+        std::fs::write(
+            dir.primary(),
+            r#"{"ui":{"columns":{"groups":[{"id":"name","width":210.5,"visible":true},{"id":"votes","width":60.0,"visible":false}]}}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        let columns = &loaded.settings.ui.columns["groups"];
+        assert_eq!(columns.len(), 2);
+        assert_eq!((columns[0].width, columns[0].visible), (210.5, true));
+        assert_eq!(columns[0].sort, None);
+        assert!(!columns[1].visible);
+
+        let mut settings = loaded.settings;
+        settings.ui.columns.get_mut("groups").unwrap()[1].sort = Some(SortDirection::Descending);
+        let json = serde_json::to_value(&settings).unwrap();
+        let written = &json["ui"]["columns"]["groups"];
+        assert!(written[0].get("sort").is_none(), "no sort is not written");
+        assert_eq!(written[1]["sort"], "Descending");
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.ui.columns, settings.ui.columns);
+    }
+
+    #[test]
+    fn a_column_missing_a_required_field_still_makes_the_file_invalid() {
+        let dir = TestDir::new("column-missing-field");
+        std::fs::write(
+            dir.primary(),
+            r#"{"ui":{"columns":{"groups":[{"id":"name","width":210.5}]}}}"#,
+        )
+        .unwrap();
+        assert!(Settings::load_with_recovery(&dir.primary()).is_err());
+    }
+
+    #[test]
+    fn animatic_only_color_slots_do_not_collide_with_legacy_tags() {
+        for slot in [ColorSlot::AnimeInMylist, ColorSlot::Watched] {
+            let tag = slot as u32;
+            assert!(tag > 28, "{slot:?} must stay clear of the legacy tag range");
+            assert_eq!(ColorSlot::from_tag(tag), Some((slot, true)));
+            assert_eq!(ColorSlot::from_tag(tag + 1), Some((slot, false)));
+        }
+        // Every legacy tag still maps to the slot it always did.
+        assert_eq!(
+            ColorSlot::from_tag(25),
+            Some((ColorSlot::FileInMylist, true))
+        );
+        assert_eq!(
+            ColorSlot::from_tag(28),
+            Some((ColorSlot::LocalFileDuplicate, false))
+        );
+        assert_eq!(ColorSlot::from_tag(29), None);
     }
 }

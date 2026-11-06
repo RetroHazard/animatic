@@ -13,7 +13,7 @@ minimal offline configuration, and how AOM settings are imported. Each key is de
 - A key with the wrong JSON type, a number out of range for its type (for example a negative
   `local_port`, a `local_port` above 65535, or a non-integer where an integer is expected),
   an unknown `theme` / `format` spelling, a `null` for a non-nullable key, or a `columns` entry
-  missing one of its three fields makes the **whole file invalid**. Invalid is handled by the
+  missing `id`, `width` or `visible` (`sort` is optional) makes the **whole file invalid**. Invalid is handled by the
   recovery matrix below; Animatic does not repair a file field by field.
 - Error messages report the kind of failure and the line and column only, never the offending text,
   so a credential in a malformed file is not echoed.
@@ -29,6 +29,7 @@ After a successful parse (also after an AOM import) these corrections apply in m
 | `file_managers.sleep_time_ms` > 10000 (a value stored when the key meant a pause between scans) | set to 0 |
 | `file_managers.scan_interval_minutes` < 5 or > 10080 | set to 5 or 10080 |
 | `ui.zoom` <= 0.3 | set to 1.0 |
+| `anidb.client_version` = 0 | set to 1 |
 
 No other value is validated. In particular Animatic adds no new validation of paths, ports,
 templates or credentials on load or save.
@@ -41,7 +42,7 @@ templates or credentials on load or save.
 | Applying reviewed AOM settings | Yes, immediately (see [AOM import](#aom-settings-import)) |
 | Help → Check for updates…, Download and verify, Install | No; none of these writes the settings file. Only **Save options** (including the `updates.auto_check` checkbox) does |
 | Overview → "Dismiss first-run card" | Yes, unless the [recovery guard](#recovery-matrix) holds |
-| Closing the application | Yes, unless the guard holds; a failed exit save is silent |
+| Closing the application | Yes, unless the guard holds; a failed exit save is silent. This is also when the window size, position and maximized state and the table column layouts reach the file |
 | Starting with neither file present | No; defaults are used and no file is created until the first save |
 
 Options edits change the in-memory settings as you type. Closing the Options window with the title

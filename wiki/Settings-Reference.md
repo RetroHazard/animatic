@@ -68,7 +68,7 @@ moment, so edits apply from the next run. (Update checks contact GitHub, not Ani
 | `password` | string | `""` | Password (masked) | **Active.** UDP login. Kept in the system keystore and stored empty in the file; clear text in the file only while no keystore is available, see [Credentials](Settings-Files.md#credentials-and-the-system-keystore). |
 | `api_key` | string | `""` | API key | **Active.** When non-empty the UDP session is encrypted with this key (profile UDP API key on anidb.net). Empty means an unencrypted session. Stored like `password`. |
 | `client_name` | string | `""` | Client name | **Active.** Sent as `client` to both the UDP and HTTP APIs. Empty makes UDP login and HTTP anime requests fail with "no AniDB client name configured". Must be an identifier registered with AniDB for your client; Animatic ships none. |
-| `client_version` | integer (u32) | `1` | none | **Active, JSON only.** Sent as `clientver` (UDP and HTTP). Not imported from AOM. |
+| `client_version` | integer (u32) | `1` | Client version | **Active.** Sent as `clientver` (UDP and HTTP). The control accepts a whole number of 1 or more; other text is refused (the field shows why, and **Save options** stays disabled until it is corrected). A file that holds `0` is read as `1`. This is the version you registered for your client together with the client name; it identifies the registration, not the program release, so Animatic updates never change it. Not imported from AOM. |
 | `udp_server` | string | `api.anidb.net:9000` | none | **Active, JSON only.** `host:port` of the UDP API. |
 | `local_port` | integer (u16) | `29456` | none | **Active, JSON only.** Local UDP port to bind (all interfaces). AniDB bans clients that use many different source ports, so Animatic uses exactly this port and **never falls back to another one**: if it cannot be bound (another program uses it) the run stops with an error naming `anidb.local_port`, nothing is sent and the commands stay queued; free the port or choose another above 1024. Also passed to AVDump as `{port}`. `0` asks the operating system for a port, a different one every run, which is meant for tests and risks that ban. |
 | `image_server` | string | `cdn.anidb.net` | none | **Import only.** The HTTP client has an image-download method, but nothing calls it; no image feature exists in the UI. |
@@ -114,26 +114,26 @@ The ED2K variant is fixed (the "red" variant AniDB expects); there is no setting
 
 ## UI
 
-Object `ui`. Most of this object mirrors AOM's interface options and is **not** read by the
-desktop application.
+Object `ui`. Theme, scale, window geometry, column layouts and status row colors are applied by
+the desktop application; the remaining keys mirror AOM's interface options and are **not** read.
 
 ### Appearance and paths
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `theme` | `"Dark"`, `"Light"` or `"System"` | `"Dark"` | Theme combo | **Partly active.** `Dark`/`Light` set egui visuals; `System` changes nothing (it leaves whatever visuals are current). Applied only by **Save options** or **Apply imported settings**. At startup the window always starts with dark visuals (`main.rs`); the saved value is not applied until one of those actions runs in the session. Values are case-sensitive. |
-| `zoom` | number (f32) | `1.0` | "UI scale" slider 0.75-2.0 | **Partly active.** Applied (clamped to 0.75-2.0) at the same moments as `theme`, not at startup. Load-time fixup resets values `<= 0.3` to `1.0`; other out-of-range values are kept in the file and clamped when applied. |
+| `theme` | `"Dark"`, `"Light"` or `"System"` | `"Dark"` | Theme combo | **Active.** Applied at startup and by **Save options** or **Apply imported settings**. `System` follows the operating system's light or dark mode and changes with it while Animatic runs (where the platform does not report a mode, it is dark). Values are case-sensitive. |
+| `zoom` | number (f32) | `1.0` | "UI scale" slider 0.75-2.0 | **Active.** Applied (clamped to 0.75-2.0) at startup and at the same moments as `theme`. Load-time fixup resets values `<= 0.3` to `1.0`; other out-of-range values are kept in the file and clamped when applied. |
 | `last_directory` | string | `""` | none | **Active.** Start folder for the Add files picker and the AOM settings XML picker; updated to the folder of the files you last added. |
-| `colored_rows` | boolean | `true` | "Use status colors" | **Inert control.** Shown disabled ("Not active yet": planned status tinting of table rows); the stored value is kept and never read. |
+| `colored_rows` | boolean | `true` | "Use status colors" | **Active.** Tints table rows by status with the [row colors](#row-colors-uicolors) below; `false` draws every row plainly. Every status is also written in the row, so the color is never the only signal. Takes effect immediately, no save needed. |
 | `copy_length_as_minutes` | boolean | `false` | "Export %length% in minutes" | **Active but nearly empty.** Read by hash export, but `%length%` has no real data behind it; see [token table](#hash-export-template-tokens). |
 
-### Window and layout state (all stored only)
+### Window and layout state
 
 | Key | Type | Default | Status and effect |
 |---|---|---|---|
-| `window` | `null` or `[left, top, width, height]` (four numbers) | `null` | **Import only.** Never applied: the window opens at 1280 x 800 (minimum 900 x 600). The importer fills it only when the values look sane (position above -100000, size above 200). |
-| `maximized` | boolean | `false` | **Import only.** Not applied. |
-| `columns` | object: table id to array of `{ "id": string, "width": number, "visible": boolean }` | `{}` | **Stored only.** No table reads or writes it; no table-id names are defined. If you add entries, all three fields of every column object are required. |
+| `window` | `null` or `[left, top, width, height]` (four numbers) | `null` | **Active.** Outer position and inner size of the window in points at UI scale 1, restored at startup and kept current while the window is neither maximized, minimized nor fullscreen. `null` opens at 1280 x 800 and lets the system place the window. A saved size is raised to the minimum (900 x 600) and lowered to the monitor; a position that is not finite, lies beyond +-32000, leaves less than 100 points of the window right of the desktop's left edge or puts the title bar more than 50 points above the desktop is ignored (the size is still restored). Monitors are not known before the window exists, so a position on a monitor that is no longer connected is left to the operating system. The AOM importer fills it only when the values look sane (position above -100000, size above 200). |
+| `maximized` | boolean | `false` | **Active.** The window starts maximized when `true`; the last normal `window` geometry stays what un-maximizing returns to. Kept current while Animatic runs. |
+| `columns` | object: table id to array of `{ "id": string, "width": number, "visible": boolean, "sort": "Ascending" or "Descending" }` | `{}` | **Active.** Layout of every data table: width, visibility and sort order of each column, written back when you resize a column, hide or show it in the header's right-click **Columns** menu, or click a header to sort. `id`, `width` and `visible` are required in every column object; `sort` may be omitted (no sort) and is written only on the sorted column. Table and column ids are listed below. Unknown tables and columns are dropped and missing ones added when a table is shown; a width is kept between 40 and 4000 points; if every column of a table is hidden, all are shown; only the first `sort` of a table counts. |
 | `tree_auto_expand` | boolean | `false` | **Import only.** No consumer. |
 | `tree_auto_collapse` | boolean | `false` | **Import only.** No consumer. |
 | `show_local_folder_size` | boolean | `true` | **Import only.** No consumer. |
@@ -141,14 +141,35 @@ desktop application.
 | `show_tray_icon` | boolean | `true` | **Import only.** No tray icon exists. |
 | `minimize_to_tray` | boolean | `true` | **Import only.** No tray icon exists. |
 
-### Row colors (`ui.colors`, stored only)
+The window geometry and column layouts are kept in memory while Animatic runs and reach the
+file with the normal settings save: **Save options** and a normal exit (not when settings were
+[recovered from a backup](Settings-Files.md#recovery-matrix) and not yet saved by you).
+
+Column ids are the header text in lower case with other characters replaced by `_`. Table ids and
+their columns (all sortable except the queue, whose order is the run order):
+
+| Table id | Page | Column ids |
+|---|---|---|
+| `anime_table` | Anime | `title`, `type`, `year`, `episodes`, `rating`, `mylist` |
+| `advanced-results` | Advanced search | same as `anime_table` |
+| `mylist_table` | My list | `anime`, `episode`, `group`, `state`, `watched`, `size`, `queue` |
+| `local_table` | Hashed files | `file`, `size`, `anidb`, `mylist`, `crc`, `path` |
+| `groups` | Groups | `name`, `short_name`, `rating`, `votes`, `website` |
+| `genres` | Genres | `genre`, `anime` |
+| `queue_table` | Queue | `id`, `command`, `status`, `last_error` (no sorting) |
+
+### Row colors (`ui.colors`)
 
 `colors` is an object whose keys are color-slot names and whose values are
 `{ "background": number, "text": number or null }`. Numbers are `0xRRGGBB` written as decimal
 integers (JSON has no hex literals); `text` may be omitted or `null` (no text override), but
 `background` is required in every entry. An absent slot uses the default background below.
-Nothing in the desktop application reads these values; they exist so an AOM palette survives
-import and save. Unknown slot names are not rejected and are kept on save.
+With `colored_rows` on, the table rows take these colors (no Options control edits them; an AOM
+import fills them). Without a `text` color the row text is black or white, whichever contrasts
+more with the background; the defaults all reach a contrast ratio of at least 4.5. Slots marked
+*plain* describe an unremarkable row and are only drawn when you set them, because their default
+light greys would glare in the dark theme. Unknown slot names are not rejected and are kept on
+save.
 
 | JSON key (slot) | Label | Default background | AOM tags (background / text) |
 |---|---|---|---|
@@ -166,6 +187,26 @@ import and save. Unknown slot names are not rejected and are kept on save.
 | `FileCrcOk` | AniDB: file CRC ok | `#80FF80` | 21 / 22 |
 | `FileCrcInvalid` | AniDB: file CRC invalid | `#FF7070` | 23 / 24 |
 | `FileInMylist` | AniDB: file in mylist | `#70A0FF` | 25 / 26 |
+| `AnimeInMylist` | AniDB: anime in mylist | `#70A0FF` | none (Animatic only; 101 / 102) |
+| `Watched` | Watched | `#90E090` | none (Animatic only; 103 / 104) |
+
+Where Animatic uses a slot (first match wins):
+
+| Table | Status (also written in the row) | Slot |
+|---|---|---|
+| Hashed files | CRC `Mismatch` | `LocalFileInvalidCrc` |
+| | AniDB `Unknown` (not identified) | `LocalFileUnknown` |
+| | Mylist `lid N · watched` | `Watched` |
+| | Mylist `lid N` | `LocalFileInMylist` |
+| | otherwise | `LocalFile` (plain) |
+| Anime, Advanced search | Mylist `... · all watched` | `Watched` |
+| | Mylist `N eps / M files` | `AnimeInMylist` |
+| | otherwise | `Anime` (plain) |
+| My list | Watched checkbox ticked | `Watched` |
+| | otherwise | `File` (plain) |
+
+The other slots (`LocalRoot`, `LocalFolder`, `LocalFileDuplicate`, `Episode`, `EpisodeInMylist`,
+`FileCrcOk`, `FileCrcInvalid`) are stored for AOM compatibility and no table uses them yet.
 
 Importing converts AOM's color integers (Windows BGR order) to RGB; an AOM text color of `0` means
 "no override". An entry equal to the default background with no text color is dropped.
@@ -419,8 +460,9 @@ Practical notes that follow from this order:
 ## Options controls and keys at a glance
 
 Controls that do nothing: **Start hashing automatically**,
-**Use status colors**, **Auto rename** (per folder), and the player **Name** field. Keys that work but have no control:
-`anidb.client_version`, `udp_server`, `local_port`, per-folder `exclude_hidden`, `can_edit_path`
-and `default`, extra `players` entries, `players[].open`/`enqueue` (core only), and `ui.columns`
-(stored only). Keys that exist only for AOM compatibility and are never read: everything marked
-**Stored only** or **Import only** above.
+**Auto rename** (per folder), and the player **Name** field. Keys that work but have no control:
+`anidb.udp_server`, `local_port`, per-folder `exclude_hidden`, `can_edit_path`
+and `default`, extra `players` entries, `players[].open`/`enqueue` (core only), the window and
+column state (`ui.window`, `ui.maximized`, `ui.columns`, changed by using the window) and the row
+colors (`ui.colors`). Keys that exist only for AOM compatibility and are never read: everything
+marked **Stored only** or **Import only** above.

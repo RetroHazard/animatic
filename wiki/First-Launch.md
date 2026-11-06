@@ -39,9 +39,10 @@ with AniDB after hashing* on, file-extension restriction off, hash export templa
 AniDB refuses unregistered API clients on both the UDP and HTTP APIs. The settings source
 points registration at <https://anidb.net/software/add>. Rules that follow from the code:
 
-- Options shows **Client name** only. The **client version** number sent to AniDB is the
-  `anidb.client_version` JSON field (default `1`); Options has no control for it. If your
-  registration uses another version, edit the settings file while Animatic is closed
+- Options has **Client name** and **Client version** side by side. The version is the number
+  you registered together with the name (`anidb.client_version`, default `1`, a whole number
+  of 1 or more). It identifies your registered client, not the Animatic release, so updating
+  Animatic never changes it; set it once to what your registration says
   ([settings reference](Settings-Reference.md)).
 - The local UDP port (`anidb.local_port`, default 29456) and UDP server are likewise
   JSON-only. If the port cannot be bound, the run stops with an error that names the setting;

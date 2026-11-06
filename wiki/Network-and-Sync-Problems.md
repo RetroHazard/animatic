@@ -40,11 +40,11 @@ pauses for 60 seconds (see [Cooldowns and bans](#cooldowns-and-bans)).
 ## Credentials and client registration
 
 Both AniDB APIs require a registered **client name**; the project ships none and its tests use
-only synthetic local fixtures. Credentials and the client name live in **Tools → Options… →
-AniDB account**. The Options window has no client-version field; `anidb.client_version`
-defaults to `1` and can be changed only by editing the JSON file; AOM settings import does not
-set it (see the [Settings reference](Settings-Reference.md)). For registration rules see
-[AniDB client registration](First-Launch.md#anidb-client-registration).
+only synthetic local fixtures. Credentials, the client name and the client version live in
+**Tools → Options… → AniDB account**. The client version is the number you registered with the
+name (a whole number of 1 or more, default `1`); Animatic updates never change it, and AOM
+settings import does not set it (see the [Settings reference](Settings-Reference.md)). For
+registration rules see [AniDB client registration](First-Launch.md#anidb-client-registration).
 
 The queue never runs on its own. **Tools → Run command queue** and **Queue → Synchronize now**
 take a snapshot of the **current in-memory options** (saved or not) at the moment you click.

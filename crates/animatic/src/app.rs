@@ -9,11 +9,17 @@ use animatic_core::format;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
 use animatic_core::secrets::{CredentialStorage, Credentials};
-use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
+use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme, parse_client_version};
+use animatic_core::ui_state::{
+    self, anime_slot, local_file_slot, mylist_slot, row_colors, window_to_save,
+};
 use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedUpdate};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
-use egui_extras::{Column, TableBuilder};
 
+use crate::table::{
+    SortKey, data_table, row_height, sort_anime, sort_genres, sort_groups, sort_key, sort_local,
+    sort_mylist,
+};
 use crate::worker::{
     Event, Job, RenameItem, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
 };
@@ -96,12 +102,12 @@ impl<K: PartialEq + Clone> IndexCache<K> {
 
 #[derive(Default)]
 struct TableViews {
-    anime: IndexCache<(u64, String)>,
-    search: IndexCache<(u64, String, String, i64, bool, bool)>,
-    mylist: IndexCache<(u64, String)>,
-    local: IndexCache<(u64, String)>,
-    groups: IndexCache<(u64, String)>,
-    genres: IndexCache<(u64, String)>,
+    anime: IndexCache<(u64, String, SortKey)>,
+    search: IndexCache<(u64, String, String, i64, bool, bool, SortKey)>,
+    mylist: IndexCache<(u64, String, SortKey)>,
+    local: IndexCache<(u64, String, SortKey)>,
+    groups: IndexCache<(u64, String, SortKey)>,
+    genres: IndexCache<(u64, String, SortKey)>,
 }
 
 /// Anime detail shown in the detail window, fetched once per (anime, projection version).
@@ -482,6 +488,10 @@ pub struct AnimaticApp {
     projection: LibraryProjection,
     loader: ProjectionLoader,
     views: TableViews,
+    /// Text of the Options "Client version" field while Options is open.
+    client_version_text: Option<String>,
+    /// Zoom factor the last tracked window geometry was measured with.
+    window_zoom: f32,
     detail: Option<DetailCache>,
     mylist_overlay: HashMap<i64, MylistOverlay>,
     mylist_ui: mylist_editor::MylistUi,
@@ -592,6 +602,8 @@ impl AnimaticApp {
                 version: 0,
             },
             views: TableViews::default(),
+            client_version_text: None,
+            window_zoom: 1.0,
             detail: None,
             mylist_overlay: HashMap::new(),
             mylist_ui: mylist_editor::MylistUi::default(),
@@ -2350,19 +2362,24 @@ impl AnimaticApp {
 
     fn anime_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Anime database", true);
-        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let sort = sort_key(&self.settings.ui.columns, "anime_table");
+        let key = (self.loader.version, self.query.to_ascii_lowercase(), sort);
         {
             let Self {
                 projection,
                 views,
                 selected_aid,
+                settings,
                 ..
             } = self;
-            views
-                .anime
-                .refresh(&key, || filter_anime(projection, &key.1));
+            views.anime.refresh(&key, || {
+                let mut rows = filter_anime(projection, &key.1);
+                sort_anime(projection, &mut rows, &key.2);
+                rows
+            });
             let rows = &views.anime.rows;
             let row_height = row_height(ui);
+            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
             data_table(
                 ui,
                 "anime_table",
@@ -2374,11 +2391,13 @@ impl AnimaticApp {
                     ("Rating", 80.0),
                     ("Mylist", 160.0),
                 ],
+                &mut settings.ui.columns,
             )
             .body(|body| {
                 body.rows(row_height, rows.len(), |mut row| {
                     let a = &projection.anime[rows[row.index()]];
                     let state = projection.states.get(&a.aid);
+                    row.tint(row_colors(colored, overrides, anime_slot(a, state)));
                     row.col(|ui| {
                         let title = anime_title(a);
                         if ui
@@ -2403,7 +2422,18 @@ impl AnimaticApp {
                     row.col(|ui| {
                         ui.label(
                             state
-                                .map(|s| format!("{} eps / {} files", s.eps, s.files))
+                                .map(|s| {
+                                    format!(
+                                        "{} eps / {} files{}",
+                                        s.eps,
+                                        s.files,
+                                        if s.all_watched(a) {
+                                            " · all watched"
+                                        } else {
+                                            ""
+                                        }
+                                    )
+                                })
                                 .unwrap_or_default(),
                         );
                     });
@@ -2461,16 +2491,18 @@ impl AnimaticApp {
             self.search_type,
             self.search_mylist_only,
             self.search_watched_only,
+            sort_key(&self.settings.ui.columns, "advanced-results"),
         );
         {
             let Self {
                 projection,
                 views,
                 selected_aid,
+                settings,
                 ..
             } = self;
             views.search.refresh(&key, || {
-                filter_search(
+                let mut rows = filter_search(
                     projection,
                     &SearchFilter {
                         query: &key.1,
@@ -2479,10 +2511,13 @@ impl AnimaticApp {
                         mylist_only: key.4,
                         watched_only: key.5,
                     },
-                )
+                );
+                sort_anime(projection, &mut rows, &key.6);
+                rows
             });
             let rows = &views.search.rows;
             let row_height = row_height(ui);
+            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
             data_table(
                 ui,
                 "advanced-results",
@@ -2494,11 +2529,13 @@ impl AnimaticApp {
                     ("Rating", 80.0),
                     ("Mylist", 160.0),
                 ],
+                &mut settings.ui.columns,
             )
             .body(|body| {
                 body.rows(row_height, rows.len(), |mut row| {
                     let a = &projection.anime[rows[row.index()]];
                     let state = projection.states.get(&a.aid);
+                    row.tint(row_colors(colored, overrides, anime_slot(a, state)));
                     row.col(|ui| {
                         let title = anime_title(a);
                         if ui.link(title.as_ref()).clicked() {
@@ -2520,7 +2557,18 @@ impl AnimaticApp {
                     row.col(|ui| {
                         ui.label(
                             state
-                                .map(|s| format!("{} eps / {} watched", s.eps, s.watched_eps))
+                                .map(|s| {
+                                    format!(
+                                        "{} eps / {} watched{}",
+                                        s.eps,
+                                        s.watched_eps,
+                                        if s.all_watched(a) {
+                                            " · all watched"
+                                        } else {
+                                            ""
+                                        }
+                                    )
+                                })
                                 .unwrap_or_default(),
                         );
                     });
@@ -2533,7 +2581,11 @@ impl AnimaticApp {
     fn mylist_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "My list", true);
         self.mylist_toolbar(ui);
-        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let key = (
+            self.loader.version,
+            self.query.to_ascii_lowercase(),
+            sort_key(&self.settings.ui.columns, "mylist_table"),
+        );
         // (lid, edit, resulting state, resulting watched flag)
         let mut edits: Vec<(i64, animatic_anidb::commands::MylistEdit, i64, bool)> = Vec::new();
         {
@@ -2543,13 +2595,17 @@ impl AnimaticApp {
                 selected_aid,
                 mylist_overlay,
                 mylist_ui,
+                settings,
                 ..
             } = self;
-            views
-                .mylist
-                .refresh(&key, || filter_mylist(projection, &key.1));
+            views.mylist.refresh(&key, || {
+                let mut rows = filter_mylist(projection, &key.1);
+                sort_mylist(projection, &mut rows, &key.2);
+                rows
+            });
             let rows = &views.mylist.rows;
             let row_height = row_height(ui);
+            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
             data_table(
                 ui,
                 "mylist_table",
@@ -2562,6 +2618,7 @@ impl AnimaticApp {
                     ("Size", 100.0),
                     ("Queue", 140.0),
                 ],
+                &mut settings.ui.columns,
             )
             .body(|body| {
                 body.rows(row_height, rows.len(), |mut row| {
@@ -2576,6 +2633,7 @@ impl AnimaticApp {
                         });
                     let mut state = shown_state;
                     let mut watched = shown_viewed;
+                    row.tint(row_colors(colored, overrides, mylist_slot(shown_viewed)));
                     row.col(|ui| {
                         if ui.link(projection.mylist_title(i)).clicked() {
                             *selected_aid = Some(item.entry.aid);
@@ -2673,7 +2731,11 @@ impl AnimaticApp {
 
     fn hashed_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Hashed files", true);
-        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let key = (
+            self.loader.version,
+            self.query.to_ascii_lowercase(),
+            sort_key(&self.settings.ui.columns, "local_table"),
+        );
         {
             let Self {
                 projection,
@@ -2682,10 +2744,11 @@ impl AnimaticApp {
                 mylist_ui,
                 ..
             } = self;
-            if views
-                .local
-                .refresh(&key, || filter_local(projection, &key.1))
-            {
+            if views.local.refresh(&key, || {
+                let mut rows = filter_local(projection, &key.1);
+                sort_local(projection, &mut rows, &key.2);
+                rows
+            }) {
                 if let Some(id) = *selected_local
                     && !views
                         .local
@@ -2798,10 +2861,12 @@ impl AnimaticApp {
                 views,
                 selected_local,
                 mylist_ui,
+                settings,
                 ..
             } = self;
             let rows = &views.local.rows;
             let row_height = row_height(ui);
+            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
             data_table(
                 ui,
                 "local_table",
@@ -2809,14 +2874,16 @@ impl AnimaticApp {
                     ("File", 300.0),
                     ("Size", 90.0),
                     ("AniDB", 90.0),
-                    ("Mylist", 90.0),
+                    ("Mylist", 140.0),
                     ("CRC", 90.0),
                     ("Path", 400.0),
                 ],
+                &mut settings.ui.columns,
             )
             .body(|body| {
                 body.rows(row_height, rows.len(), |mut row| {
                     let f = &projection.local[rows[row.index()]];
+                    row.tint(row_colors(colored, overrides, local_file_slot(f)));
                     row.col(|ui| {
                         let chosen = mylist_ui.marked_locals.contains(&f.id)
                             || *selected_local == Some(f.id);
@@ -2845,6 +2912,7 @@ impl AnimaticApp {
                     });
                     row.col(|ui| {
                         ui.label(match (f.lid, f.mylist_add_pending) {
+                            (Some(id), _) if f.viewed => format!("lid {id} · watched"),
                             (Some(id), _) => format!("lid {id}"),
                             (None, true) => "Add queued".to_string(),
                             (None, false) => "—".to_string(),
@@ -2872,14 +2940,23 @@ impl AnimaticApp {
 
     fn groups_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Groups", true);
-        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let key = (
+            self.loader.version,
+            self.query.to_ascii_lowercase(),
+            sort_key(&self.settings.ui.columns, "groups"),
+        );
         let Self {
-            projection, views, ..
+            projection,
+            views,
+            settings,
+            ..
         } = self;
         let mut refresh_groups: Vec<i64> = Vec::new();
-        views
-            .groups
-            .refresh(&key, || filter_groups(projection, &key.1));
+        views.groups.refresh(&key, || {
+            let mut rows = filter_groups(projection, &key.1);
+            sort_groups(projection, &mut rows, &key.2);
+            rows
+        });
         let rows = &views.groups.rows;
         let row_height = row_height(ui);
         data_table(
@@ -2893,6 +2970,7 @@ impl AnimaticApp {
                 ("Website", 100.0),
                 ("Refresh", 90.0),
             ],
+            &mut settings.ui.columns,
         )
         .body(|body| {
             body.rows(row_height, rows.len(), |mut row| {
@@ -2936,16 +3014,31 @@ impl AnimaticApp {
 
     fn genres_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "Genres", true);
-        let key = (self.loader.version, self.query.to_ascii_lowercase());
+        let key = (
+            self.loader.version,
+            self.query.to_ascii_lowercase(),
+            sort_key(&self.settings.ui.columns, "genres"),
+        );
         let Self {
-            projection, views, ..
+            projection,
+            views,
+            settings,
+            ..
         } = self;
-        views
-            .genres
-            .refresh(&key, || filter_genres(projection, &key.1));
+        views.genres.refresh(&key, || {
+            let mut rows = filter_genres(projection, &key.1);
+            sort_genres(projection, &mut rows, &key.2);
+            rows
+        });
         let rows = &views.genres.rows;
         let row_height = row_height(ui);
-        data_table(ui, "genres", &[("Genre", 300.0), ("Anime", 100.0)]).body(|body| {
+        data_table(
+            ui,
+            "genres",
+            &[("Genre", 300.0), ("Anime", 100.0)],
+            &mut settings.ui.columns,
+        )
+        .body(|body| {
             body.rows(row_height, rows.len(), |mut row| {
                 let (_, name, count) = &projection.genres[rows[row.index()]];
                 row.col(|ui| {
@@ -3032,7 +3125,9 @@ impl AnimaticApp {
                 ("Status", 110.0),
                 ("Last error", 300.0),
             ],
+            &mut self.settings.ui.columns,
         )
+        .fixed_order()
         .body(|body| {
             body.rows(row_height, queue.len(), |mut row| {
                 let entry = &queue[row.index()];
@@ -3214,6 +3309,7 @@ impl AnimaticApp {
         let exe = self.executable_path().map(Path::to_path_buf);
         self.shell.ensure_probed(exe.as_deref());
         let mut save = false;
+        let mut client_version_error = None;
         egui::Window::new("Options")
             .open(&mut open)
             .resizable(true)
@@ -3234,6 +3330,12 @@ impl AnimaticApp {
                     if let Some(notice) = self.credential_storage.notice() {
                         ui.colored_label(Color32::YELLOW, notice);
                     }
+                    client_version_error = client_version_field(
+                        ui,
+                        self.client_version_text
+                            .get_or_insert_with(|| self.settings.anidb.client_version.to_string()),
+                        &mut self.settings.anidb.client_version,
+                    );
                     ui.checkbox(
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",
@@ -3262,9 +3364,11 @@ impl AnimaticApp {
                     ui.add(
                         egui::Slider::new(&mut self.settings.ui.zoom, 0.75..=2.0).text("UI scale"),
                     );
-                    not_active_yet(ui, "table rows will be tinted by status.", |ui| {
-                        ui.checkbox(&mut self.settings.ui.colored_rows, "Use status colors")
-                    });
+                    ui.checkbox(&mut self.settings.ui.colored_rows, "Use status colors")
+                        .on_hover_text(
+                            "Tint table rows by status: CRC mismatch, unidentified, watched and in MyList. \
+                             Each status is also written in the row, so the color is never the only cue.",
+                        );
                     ui.separator();
                     ui.heading("Hashing");
                     not_active_yet(
@@ -3506,7 +3610,14 @@ impl AnimaticApp {
                     ui.heading("Mylist states");
                     ui.label(MYLIST_STATES.join(" · "));
                     ui.add_space(12.0);
-                    if ui.button("Save options").clicked() {
+                    if ui
+                        .add_enabled(
+                            client_version_error.is_none(),
+                            egui::Button::new("Save options"),
+                        )
+                        .on_disabled_hover_text("Correct the client version first")
+                        .clicked()
+                    {
                         save = true;
                     }
                 });
@@ -3522,6 +3633,7 @@ impl AnimaticApp {
         }
         if !self.settings_open {
             self.shell.options_closed();
+            self.client_version_text = None;
         }
     }
 
@@ -3746,13 +3858,82 @@ impl AnimaticApp {
         }
     }
 
-    fn apply_visuals(&self, ctx: &egui::Context) {
-        match self.settings.ui.theme {
-            Theme::Dark => ctx.set_visuals(egui::Visuals::dark()),
-            Theme::Light => ctx.set_visuals(egui::Visuals::light()),
-            Theme::System => {}
-        }
+    pub fn apply_visuals(&self, ctx: &egui::Context) {
+        // `System` follows the operating system's light or dark mode, also while running.
+        ctx.set_theme(match self.settings.ui.theme {
+            Theme::Dark => egui::ThemePreference::Dark,
+            Theme::Light => egui::ThemePreference::Light,
+            Theme::System => egui::ThemePreference::System,
+        });
         ctx.set_zoom_factor(self.settings.ui.zoom.clamp(0.75, 2.0));
+    }
+
+    /// The window to open: restored size, position and maximized state from `ui.window` and
+    /// `ui.maximized` (validated, see `ui_state::placement_from_saved`).
+    pub fn viewport(&self) -> egui::ViewportBuilder {
+        let placement = ui_state::placement_from_saved(self.settings.ui.window);
+        let mut viewport = egui::ViewportBuilder::default()
+            .with_title("Animatic — AniDB library manager")
+            .with_inner_size(placement.size)
+            .with_min_inner_size(ui_state::MIN_WINDOW_SIZE)
+            .with_maximized(self.settings.ui.maximized);
+        if let Some(position) = placement.position {
+            viewport = viewport.with_position(position);
+        }
+        viewport
+    }
+
+    /// Keeps `ui.window` and `ui.maximized` current in memory. They reach the file with the
+    /// normal settings save (Options, exit), which the recovery guard already controls.
+    ///
+    /// The window's normal size and position are only recorded while it is neither maximized,
+    /// minimized nor fullscreen, so restoring a maximized window keeps its normal geometry.
+    /// Values are stored at UI scale 1, so they stay valid when the UI scale changes.
+    fn track_window(&mut self, ctx: &egui::Context) {
+        let zoom = ctx.zoom_factor();
+        if (zoom - self.window_zoom).abs() > f32::EPSILON {
+            // Measured with the old scale for this frame; wait for the next one.
+            self.window_zoom = zoom;
+            return;
+        }
+        let (outer, inner, content, minimized, maximized, fullscreen) = ctx.input(|i| {
+            let viewport = i.viewport();
+            (
+                viewport.outer_rect,
+                viewport.inner_rect,
+                i.content_rect(),
+                viewport.minimized,
+                viewport.maximized,
+                viewport.fullscreen,
+            )
+        });
+        if minimized == Some(true) || fullscreen == Some(true) {
+            return;
+        }
+        let maximized = maximized.unwrap_or(false);
+        self.settings.ui.maximized = maximized;
+        if maximized {
+            return;
+        }
+        let size = inner.map_or(content.size(), |rect| rect.size()) * zoom;
+        // Where the platform hides the position (Wayland), keep the one that was saved.
+        let position = match outer {
+            Some(rect) => [rect.min.x * zoom, rect.min.y * zoom],
+            None => self
+                .settings
+                .ui
+                .window
+                .map_or([0.0, 0.0], |window| [window[0], window[1]]),
+        };
+        if let Some(window) = window_to_save(position, [size.x, size.y])
+            && self
+                .settings
+                .ui
+                .window
+                .is_none_or(|old| old.iter().zip(window).any(|(a, b)| (a - b).abs() > 0.5))
+        {
+            self.settings.ui.window = Some(window);
+        }
     }
 
     fn bottom_bar(&mut self, root: &mut egui::Ui) {
@@ -4175,6 +4356,7 @@ impl eframe::App for AnimaticApp {
 
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
+        self.track_window(&ctx);
         self.process_events(&ctx);
         self.process_update_events(&ctx);
         self.poll_shell(&ctx);
@@ -4301,70 +4483,6 @@ fn metric(ui: &mut egui::Ui, label: &str, value: String) {
         ui.label(RichText::new(value).size(24.0).strong());
         ui.label(RichText::new(label).weak());
     });
-}
-
-/// Height of every table row: tall enough for the combo boxes and checkboxes in the My list.
-fn row_height(ui: &egui::Ui) -> f32 {
-    ui.spacing().interact_size.y
-}
-
-/// Virtualized table: a fixed header and a body that only lays out the visible rows. Cells
-/// truncate instead of wrapping so every row keeps the height the body was told. The columns
-/// have a combined minimum width; when the page is narrower the whole table (header and rows
-/// together) scrolls horizontally so every column stays reachable.
-struct DataTable<'a, 'c> {
-    ui: &'a mut egui::Ui,
-    id: &'c str,
-    columns: &'c [(&'c str, f32)],
-}
-
-fn data_table<'a, 'c>(
-    ui: &'a mut egui::Ui,
-    id: &'c str,
-    columns: &'c [(&'c str, f32)],
-) -> DataTable<'a, 'c> {
-    DataTable { ui, id, columns }
-}
-
-impl DataTable<'_, '_> {
-    fn body(self, add_body: impl FnOnce(egui_extras::TableBody<'_>)) {
-        let Self { ui, id, columns } = self;
-        let header_height = row_height(ui);
-        let spacing = ui.spacing().item_spacing.x;
-        let minimum: f32 = columns.iter().map(|(_, width)| width + spacing).sum();
-        let width = ui.available_width().max(minimum);
-        let last = columns.len().saturating_sub(1);
-        egui::ScrollArea::horizontal()
-            .id_salt((id, "horizontal"))
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.set_width(width);
-                let mut table = TableBuilder::new(ui)
-                    .id_salt(id)
-                    .striped(true)
-                    .resizable(true)
-                    .cell_layout(Layout::left_to_right(Align::Center))
-                    .auto_shrink([false, false])
-                    .min_scrolled_height(0.0);
-                for (i, (_, column_width)) in columns.iter().enumerate() {
-                    let column = if i == last {
-                        Column::remainder().at_least(*column_width)
-                    } else {
-                        Column::initial(*column_width).at_least(40.0)
-                    };
-                    table = table.column(column.clip(true));
-                }
-                table
-                    .header(header_height, |mut header| {
-                        for (name, _) in columns {
-                            header.col(|ui| {
-                                ui.strong(*name);
-                            });
-                        }
-                    })
-                    .body(add_body);
-            });
-    }
 }
 
 fn is_busy(e: &animatic_core::Error) -> bool {
@@ -4528,6 +4646,39 @@ fn batch_rename_line(
         }
         show_plan(ui, &row.plan);
     });
+}
+
+/// The "Client version" control. The setting always holds the last valid number; text that is
+/// not a whole number of 1 or more is reported (and returned) until it is corrected or the
+/// field loses focus, which restores the last valid number.
+fn client_version_field(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    version: &mut u32,
+) -> Option<&'static str> {
+    let id = ui.make_persistent_id("options-client-version");
+    if !ui.memory(|memory| memory.has_focus(id)) && parse_client_version(text) != Ok(*version) {
+        *text = version.to_string();
+    }
+    ui.horizontal(|ui| {
+        ui.label("Client version");
+        ui.add(egui::TextEdit::singleline(text).id(id).desired_width(80.0))
+            .on_hover_text(
+                "The version registered with AniDB together with the client name: a whole \
+                 number of 1 or more. It identifies your registered client, not this program \
+                 release, so Animatic updates never change it. Keep the number you registered.",
+            );
+    });
+    match parse_client_version(text) {
+        Ok(number) => {
+            *version = number;
+            None
+        }
+        Err(message) => {
+            ui.colored_label(Color32::LIGHT_RED, message);
+            Some(message)
+        }
+    }
 }
 
 /// Warnings and errors of a rename plan; warnings block applying it just like errors do.

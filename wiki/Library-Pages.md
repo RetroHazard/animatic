@@ -70,7 +70,8 @@ as 0–4). The closed combo box abbreviates some labels (`On CD`, `Shared`) and 
 Columns: **Title** (click to select and open the detail window), **Type** (`TV Series`, `OVA`,
 `Movie`, `Other`, `Web`, `TV Special`, `Music Video`, else `Unknown`), **Year**, **Episodes**
 (total count; 0 if unknown), **Rating** (two decimals, blank when none), **Mylist**
-(`N eps / M files` when any of its files are in MyList).
+(`N eps / M files` when any of its files are in MyList, followed by ` · all watched` when every
+episode is watched).
 
 Search is described in [Searching and tables](Main-Window.md#searching-and-tables).
 
@@ -87,13 +88,14 @@ Fields, combined with AND:
 | Fully watched | Watched regular episodes ≥ the anime's episode count (total, else highest known number); requires a known count |
 
 Result columns match the Anime page, but the Mylist column reads `N eps / M watched`
-(distinct episodes in MyList / watched episodes). Clicking a title opens the detail window.
+(distinct episodes in MyList / watched episodes, followed by ` · all watched` when every
+episode is watched). Clicking a title opens the detail window.
 
 ## Hashed files
 
-Local files Animatic has hashed, sorted by path. Columns: **File** (click to select; Ctrl+click
+Local files Animatic has hashed, by default sorted by path. Columns: **File** (click to select; Ctrl+click
 toggles a file and Shift+click selects the range from the first selected file),
-**Size**, **AniDB** (`fid N` or `Unknown`), **Mylist** (`lid N`, `Add queued` while an add waits in
+**Size**, **AniDB** (`fid N` or `Unknown`), **Mylist** (`lid N`, `lid N · watched` once watched, `Add queued` while an add waits in
 the queue, or `—`), **CRC** (local CRC32
 in upper-case hex, or `Mismatch`), **Path** (double-click opens the file with the operating
 system's default program). The row count reads `N files` or `M of N files` under a filter.

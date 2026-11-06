@@ -28,10 +28,11 @@ From a built executable:
 
 Facts about the window, taken from `crates/animatic/src/main.rs`:
 
-- Title: "Animatic — AniDB library manager". Initial size 1280×800, minimum 900×600.
-- The window starts with egui's dark visuals. A stored light theme or UI scale is applied
-  when you press **Save options** or apply imported settings, not at launch (see
-  [Options window](Options-Window.md)).
+- Title: "Animatic — AniDB library manager". The first start opens 1280×800, minimum 900×600;
+  later starts restore the size, position and maximized state you left it with (see
+  [window and layout state](Settings-Reference.md#window-and-layout-state)).
+- The saved theme (Dark, Light or System, which follows the operating system) and UI scale are
+  applied at launch (see [Options window](Options-Window.md)).
 - The source sets no Windows GUI-subsystem attribute, so a console window is expected
   next to the GUI when the executable is started from Explorer [not observed]. No logger is
   installed; the in-app **Log** page is the activity record and is not written to disk.
