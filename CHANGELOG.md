@@ -135,6 +135,12 @@ the generated line for that pull request's squash commit.
   players with those argument templates, a chooser by player *Name* when several players exist,
   and an Options editor for every player's name and open, play and enqueue arguments, with add,
   remove and a single default.
+- **Tools → Request MyList export…** and **File → Import MyList export…**: AniDB prepares your
+  whole MyList on request (up to 24 hours, downloaded from AniDB's export page); Animatic requests
+  it at most once a day, never on a schedule. The downloaded `.tgz`, `.zip`, `.gz` or `.xml` file
+  is read with strict size and structure limits and merged in one step: a damaged file changes
+  nothing, queued local changes win, and entries missing from the export are never deleted. The
+  accepted layout is inferred and not yet checked against a real AniDB export.
 
 ### Changed
 

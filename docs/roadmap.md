@@ -79,7 +79,7 @@ flowchart LR
 | M3.5 | Keep and show MyList statistics | Done |
 | M4.1 | Full update menu action | Done |
 | M4.2 | Update known file information | Done |
-| M4.3 | Full-account MyList import through MyList export | Planned |
+| M4.3 | Full-account MyList import through MyList export | Done (export file layout unverified against a real AniDB export) |
 | M5.1 | Scheduler for folder scans | Done |
 | M5.2 | Settle delay for files being written | Done |
 | M5.3 | `exclude_system` and `clear_empty_folders` | Done |
