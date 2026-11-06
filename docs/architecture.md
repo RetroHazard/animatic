@@ -738,8 +738,11 @@ so tests force the cross-volume path on one volume):
 - Returns early when `old == new`. It refuses when the library no longer records `old` for
   `local_id`, when `new` exists (including a dangling link), and creates missing parent
   directories (kept if the move then fails).
-- **Same volume:** `std::fs::rename`, then `local_file.path` is updated; if that update fails the
-  rename is reverted (best effort) so the record does not name a missing file.
+- **Same volume:** `file_manager::rename_no_replace` (Windows `MoveFileExW` without
+  `MOVEFILE_REPLACE_EXISTING`; Linux `renameat2(RENAME_NOREPLACE)`, or a hard link followed by
+  removing the source where the file system lacks it), then `local_file.path` is updated; if that
+  update fails the rename is reverted (best effort, also no-replace) so the record does not name a
+  missing file.
 - **Cross volume:** the stored hash must exist and the source size must equal the stored size
   (otherwise "hash it again"). The file is copied in 4 MiB blocks (cancel and pause honoured,
   progress reported over copy plus verification) to a hidden `.animatic-move-*.tmp` file in the
@@ -755,9 +758,9 @@ so tests force the cross-volume path on one volume):
 - Cancellation is checked while copying and verifying, not during the final swap. A crash
   during the copy can leave a hidden `.animatic-move-*.tmp` file; the source and the record are
   untouched, and a scan ignores it (hidden, not a media extension).
-- The check for an existing target and the same-volume `rename` are separate calls, so a file
-  created at the destination in between can still be replaced by a same-volume rename (on
-  Windows and on Linux alike); only the cross-volume swap is no-clobber.
+- The existence check is only for a clear message: both the same-volume rename and the
+  cross-volume swap refuse atomically to replace a file that appeared at the destination in the
+  meantime.
 - [INFERENCE: untested] On case-insensitive filesystems a case-only rename is refused because
   the target "exists" (it is the same file).
 - Only the local file and its `local_file` row change; AniDB MyList `storage` text is not touched.

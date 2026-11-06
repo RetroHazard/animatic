@@ -59,12 +59,11 @@ Renaming is deliberately split so that nothing touches the file system until the
 
 Details worth knowing about apply (read from `move_file`; not exercised):
 
-- Folders created by `create_dir_all` stay even if the following `fs::rename` fails.
-- **The existence check and the rename are two separate steps, not one atomic operation.** If
-  another process creates a file at the destination between them, `std::fs::rename` can
-  replace it: on Linux/POSIX `rename(2)` overwrites an existing file, so the check protects
-  against ordinary collisions only, not against this race. Do not run other tools that write
-  to the destination folder while confirming a rename.
+- Folders created by `create_dir_all` stay even if the following rename fails.
+- **An existing destination is never replaced**, even one another program creates between the
+  existence check and the rename: the rename itself refuses atomically (Windows `MoveFileExW`
+  without replace; Linux `renameat2` with `RENAME_NOREPLACE`, or a hard link where the file
+  system lacks it) and the file stays where it was.
 - It is a rename on the same volume. When the operating system refuses because the target is on
   another volume, the file is copied, verified against the stored ED2K, swapped in and only
   then removed from the old place (see [Renaming files](Renaming-Files.md#what-applying-does)).
