@@ -27,7 +27,7 @@ use crate::settings::{Settings, normalize_path};
 /// Service name of every keystore entry written by Animatic.
 pub const SERVICE: &str = "animatic";
 
-/// Names of the credential fields, in the order [`Settings::secrets`] lists them.
+/// Names of the credential fields, in the order `Settings::secrets` lists them.
 pub const FIELDS: [&str; 3] = ["anidb.password", "anidb.api_key", "avdump.key"];
 
 /// A failed keystore operation. The text names the platform failure and never a secret value.
