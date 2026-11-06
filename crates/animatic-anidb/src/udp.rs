@@ -7,7 +7,7 @@
 //! with tags. It binds the configured local port and never silently uses another one.
 
 use std::io::Read;
-use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -202,7 +202,14 @@ impl UdpClient {
             // Never another port than the configured one: many different source ports from one
             // address within an hour get it banned. Port 0 is chosen by the caller (tests).
             let port = self.cfg.local_port;
-            let sock = UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
+            // A loopback server (the test fixtures) is reached from the loopback interface, so
+            // no socket listens on the network and no firewall prompt appears.
+            let ip = if self.addr.is_some_and(|a| a.ip().is_loopback()) {
+                Ipv4Addr::LOCALHOST
+            } else {
+                Ipv4Addr::UNSPECIFIED
+            };
+            let sock = UdpSocket::bind((ip, port)).map_err(|e| {
                 AnidbError::Network(if port == 0 {
                     format!("cannot open a UDP socket: {e}")
                 } else {
@@ -634,7 +641,7 @@ mod tests {
 
     #[test]
     fn a_busy_local_port_is_an_error_and_never_replaced_by_another_port() {
-        let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let port = held.local_addr().unwrap().port();
         let server = UdpFixture::start(|_, _| "300 PONG".into());
         let t = test_limits();

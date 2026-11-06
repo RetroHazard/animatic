@@ -2907,7 +2907,7 @@ mod tests {
 
     #[test]
     fn a_busy_local_port_stops_the_run_with_an_error_naming_the_setting() {
-        let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let port = held.local_addr().unwrap().port();
         let fixture = Fixture::start(|_, _| "200 session 127.0.0.1:1 LOGIN ACCEPTED".into());
         let db = TempDb::new();
