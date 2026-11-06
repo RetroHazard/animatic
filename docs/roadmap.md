@@ -67,7 +67,7 @@ flowchart LR
 | M1.4 | Disable controls whose feature is not built yet | Done |
 | M1.5 | Legacy import target and leftovers | Done |
 | M1.6 | Remove unused dependencies | Done |
-| M1.7 | Linux runtime and production AniDB verification | Planned |
+| M1.7 | Linux runtime and production AniDB verification | Partial: Linux tests and a WSLg run done; production AniDB check needs a maintainer with a registered client |
 | M1.8 | Honour AniDB server limits across runs and restarts | Done |
 | M2.1 | Database backup | Done |
 | M2.2 | Database restore | Done |

@@ -104,8 +104,13 @@ discontinued protocols and Windows-only COM dependencies.
 ## Verification status
 
 Windows and Linux are supported targets and CI builds and tests both. Local runtime exercise
-so far was on Windows with synthetic data; **Linux runtime behavior and production AniDB
-synchronization have not been exercised**. Test counts in older documents are historical.
+was on Windows with synthetic data. On 2026-11-06 the workspace tests and Clippy also passed
+natively on Debian 13 (WSL), and the application ran under WSLg with synthetic data: it started,
+hashed a file given on the command line, showed the Hashed files page, opened Options (keystore
+fallback and the "no tray host" notice shown, because WSLg has neither a Secret Service nor a
+StatusNotifierItem host) and quit cleanly. A real KDE or GNOME desktop, the Linux tray icon and
+keystore, and **production AniDB synchronization have not been exercised**. Test counts in older
+documents are historical.
 
 ## Not implemented
 
