@@ -94,8 +94,15 @@ were not hashed yet queued; they are hashed by the next run (autostart, **Resume
 next scan) without being discovered again.
 
 Hashes found by a scan follow the normal [identification](Hashing-and-Identification.md) path.
-The rule field `auto_rename` has no effect; the **Auto rename** checkbox exists but renaming is
-only manual ([Manual renaming](Renaming-Files.md)).
+**Auto rename** is a three-mode setting per rule (Off, Dry run, On; off by default). A scan
+itself never moves files, but a file that a scan hashed and that the library already knows as
+identified makes the next background step plan its rename when its folder has the mode on or on
+dry run; so does an AniDB identify reply applied after you run the queue. Dry run only logs the
+plan; On renames through the same verified worker job as a [manual rename](Renaming-Files.md),
+skips and logs collisions, and only ever touches files inside a folder rule with a path (never
+through the built-in Default fallback). Details, the confirmation shown before a folder is
+turned On and what is logged:
+[Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder).
 
 **Which rule applies to a file** (`FileManagerSettings::manager_for`): rules with a non-empty
 path are candidates; one applies if the file is below its folder (any depth when *Subfolders*
@@ -111,8 +118,9 @@ for [manual renames](Renaming-Files.md); empty keeps files where they are.
 ## Removing folders a rename emptied
 
 **Remove emptied folders** (`clear_empty_folders`, off by default) is the only place Animatic
-deletes a folder, and it is not part of a scan. After a [manual rename](Renaming-Files.md) (single
-or batch) has moved files, each folder a moved file left is removed when **all** hold:
+deletes a folder, and it is not part of a scan. After a [manual rename](Renaming-Files.md) (single,
+batch or [automatic](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder)) has moved files,
+each folder a moved file left is removed when **all** hold:
 
 - the old path is under an explicit rule with the option on (the same longest-path matching as
   *Remove missing*; a rule without *Subfolders* only covers its own folder, which is never removed),

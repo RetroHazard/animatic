@@ -27,9 +27,12 @@ If a scan hashes nothing:
    Symbolic links are not followed. **Include
    subdirectories** controls depth: a non-recursive rule sees only its own folder.
 4. Unreadable subfolders are skipped silently; they produce no hash actions.
-5. Other settings in the rule (`auto_rename`, the delay fields) are stored but not used by scans;
-   nothing renames automatically. A scan never deletes folders (see **Remove emptied folders**
-   under [Rename problems](#rename-problems)).
+5. The delay fields of the rule are stored but not used by scans; a scan never deletes folders
+   (see **Remove emptied folders** under [Rename problems](#rename-problems)). **Auto rename**
+   is separate: a rule set to Dry run only logs planned renames, and one set to On renames
+   identified files (see
+   [Renaming files](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder)); an imported
+   AOM `autorename` flag loads as Dry run.
 
 Per-file hashing errors appear in the Log as `<path>: <error>` and the scan continues with the
 next file. After a scan, each hashed file queues an **Identify** command when **Identify files
@@ -93,10 +96,12 @@ Speed is limited by the disk, network share, USB bridge or security scanner read
 
 ## Rename problems
 
-Renaming is manual and previewed: choose a file on **Hashed files**, **Rename…**, review the
-**Confirm rename** window, then **Rename file**; or select several files and use **Rename N
-selected…** and **Batch rename** (see [Renaming files](Renaming-Files.md)). Nothing renames
-automatically, and there is no undo.
+Renaming is manual and previewed unless you opted a managed folder in: choose a file on **Hashed
+files**, **Rename…**, review the **Confirm rename** window, then **Rename file**; or select
+several files and use **Rename N selected…** and **Batch rename** (see
+[Renaming files](Renaming-Files.md)). Only a folder whose **Auto rename** is **On** renames
+automatically (Dry run only logs), and its skipped files and collisions are explained in the Log
+(`Automatic rename skipped <path>: <reason>`). There is no undo.
 
 | Message | Meaning and action |
 |---|---|

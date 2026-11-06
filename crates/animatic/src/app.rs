@@ -27,6 +27,7 @@ use crate::worker::{
 use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
 
+mod auto_rename;
 mod covers;
 mod hash_queue_panel;
 mod media_options;
@@ -526,6 +527,9 @@ pub struct AnimaticApp {
     selected_local: Option<i64>,
     rename_preview: Option<RenamePreview>,
     batch_rename: Option<BatchRename>,
+    /// Automatic rename (roadmap M6.3): when a pass is due and the preview before a folder is
+    /// turned on.
+    auto_rename: auto_rename::AutoRenameState,
     rename_requests: u64,
     pattern_editor: PatternEditor,
     settings_guard: SettingsGuard,
@@ -643,6 +647,7 @@ impl AnimaticApp {
             selected_local: None,
             rename_preview: None,
             batch_rename: None,
+            auto_rename: auto_rename::AutoRenameState::default(),
             rename_requests: 0,
             pattern_editor: PatternEditor::default(),
             settings_guard,
@@ -1154,6 +1159,7 @@ impl AnimaticApp {
                         path.display()
                     ));
                     self.queue_after_hash(&path, size, ed2k);
+                    self.auto_rename.mark_due();
                     self.request_library_refresh();
                 }
                 Event::FullUpdatePreview(report) => {
@@ -1163,6 +1169,7 @@ impl AnimaticApp {
                 }
                 Event::Imported { summary } => {
                     self.log(summary);
+                    self.auto_rename.mark_due();
                     self.request_library_refresh();
                 }
                 Event::LegacyImportNeedsConfirmation { source } => {
@@ -1203,6 +1210,7 @@ impl AnimaticApp {
                 } => {
                     self.log(description);
                     if changed {
+                        self.auto_rename.mark_due();
                         self.request_library_refresh();
                     }
                 }
@@ -1264,7 +1272,8 @@ impl AnimaticApp {
                     ));
                 }
                 Event::RenamesPlanned { request, rows } => {
-                    if let Some(batch) = &mut self.batch_rename
+                    if let Some(rows) = self.auto_rename.accept_plan(request, rows)
+                        && let Some(batch) = &mut self.batch_rename
                         && batch.request == request
                     {
                         batch.rows = Some(rows);
@@ -3530,6 +3539,7 @@ impl AnimaticApp {
                     ui.separator();
                     ui.heading("Managed folders");
                     let mut remove_manager = None;
+                    let mut enable_auto_rename = None;
                     for (index, manager) in
                         self.settings.file_managers.managers.iter_mut().enumerate()
                     {
@@ -3547,11 +3557,9 @@ impl AnimaticApp {
                                 ui.checkbox(&mut manager.auto_hash, "Auto hash");
                                 ui.checkbox(&mut manager.auto_rehash, "Rehash changed");
                                 ui.checkbox(&mut manager.auto_remove, "Remove missing");
-                                not_active_yet(
-                                    ui,
-                                    "identified files in this folder will be renamed automatically (opt-in).",
-                                    |ui| ui.checkbox(&mut manager.auto_rename, "Auto rename"),
-                                );
+                                if auto_rename::mode_control(ui, index, manager) {
+                                    enable_auto_rename = Some(index);
+                                }
                                 ui.checkbox(&mut manager.exclude_system, "Skip system files")
                                     .on_hover_text(
                                         "Scans skip files and folders with the Windows system attribute. \
@@ -3604,6 +3612,9 @@ impl AnimaticApp {
                     }
                     if let Some(index) = remove_manager {
                         self.settings.file_managers.managers.remove(index);
+                    }
+                    if let Some(index) = enable_auto_rename {
+                        self.begin_auto_rename_enable(index);
                     }
                     if ui.button("Add folder rule").clicked() {
                         self.settings.file_managers.managers.push(
@@ -4528,6 +4539,7 @@ impl eframe::App for AnimaticApp {
         let ctx = root.ctx().clone();
         self.track_window(&ctx);
         self.process_events(&ctx);
+        self.pump_auto_rename(&ctx);
         self.process_update_events(&ctx);
         self.poll_shell(&ctx);
         self.process_media_events(&ctx);
@@ -4560,6 +4572,7 @@ impl eframe::App for AnimaticApp {
         self.full_update_window(&ctx);
         self.mylist_export_window(&ctx);
         self.batch_rename_window(&ctx);
+        self.auto_rename_enable_window(&ctx);
         self.media_install_window(&ctx);
         if self.about_open {
             let mut open = true;
@@ -4741,18 +4754,6 @@ fn filter_genres(p: &LibraryProjection, q: &str) -> Vec<usize> {
     (0..p.genres.len())
         .filter(|&i| q.is_empty() || p.keys.genres[i].contains(q))
         .collect()
-}
-
-/// Renders a control whose feature is not built yet: disabled, value untouched, with a hover
-/// text. Re-enable a control by deleting its `not_active_yet` call.
-fn not_active_yet(
-    ui: &mut egui::Ui,
-    planned: &str,
-    add: impl FnOnce(&mut egui::Ui) -> egui::Response,
-) {
-    ui.add_enabled_ui(false, add)
-        .inner
-        .on_disabled_hover_text(format!("Not active yet: {planned}"));
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {

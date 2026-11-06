@@ -29,6 +29,71 @@ pub enum Theme {
     System,
 }
 
+/// Automatic rename of identified files in a managed folder (roadmap M6.3).
+///
+/// Stored as `"off"`, `"dry_run"` or `"on"`. A stored boolean (the pre-M6.3 field and the AOM
+/// import) still loads: `false` is `Off`, `true` is `DryRun`, never `On`, so nothing is renamed
+/// until the user explicitly chooses `On` for the folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoRename {
+    /// Never rename automatically.
+    #[default]
+    Off,
+    /// Log the renames that would happen; move nothing.
+    DryRun,
+    /// Rename through the verified rename worker job.
+    On,
+}
+
+impl AutoRename {
+    pub fn is_off(self) -> bool {
+        self == AutoRename::Off
+    }
+
+    /// Settings-file spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AutoRename::Off => "off",
+            AutoRename::DryRun => "dry_run",
+            AutoRename::On => "on",
+        }
+    }
+}
+
+impl Serialize for AutoRename {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoRename {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Flag(bool),
+            Name(String),
+        }
+        match Stored::deserialize(deserializer)? {
+            Stored::Flag(false) => Ok(AutoRename::Off),
+            Stored::Flag(true) => Ok(AutoRename::DryRun),
+            Stored::Name(name) => match name.as_str() {
+                "off" => Ok(AutoRename::Off),
+                "dry_run" => Ok(AutoRename::DryRun),
+                "on" => Ok(AutoRename::On),
+                other => Err(serde::de::Error::custom(format!(
+                    "unknown auto_rename mode \"{other}\" (expected off, dry_run or on)"
+                ))),
+            },
+        }
+    }
+}
+
 /// Mylist state values used by AniDB (`state=` parameter).
 pub const MYLIST_STATES: [&str; 5] = ["Unknown", "On HDD", "On CD/DVD", "Deleted", "Remote/Shared"];
 
@@ -114,7 +179,8 @@ pub struct FileManager {
     pub auto_hash: bool,
     pub auto_rehash: bool,
     pub auto_remove: bool,
-    pub auto_rename: bool,
+    /// Automatic rename of identified files (see [`AutoRename`]); off by default.
+    pub auto_rename: AutoRename,
     /// Destination folder for renamed files ("" = keep the current folder).
     pub base_path: String,
     pub exclude_hidden: bool,
@@ -145,7 +211,7 @@ impl Default for FileManager {
             auto_hash: false,
             auto_rehash: false,
             auto_remove: false,
-            auto_rename: false,
+            auto_rename: AutoRename::Off,
             base_path: String::new(),
             exclude_hidden: true,
             exclude_system: true,
@@ -283,6 +349,11 @@ impl FileManagerSettings {
 
     /// Explicit path match, without the fallback used for non-destructive folder policy.
     pub(crate) fn matching_manager_for(&self, path: &Path) -> Option<&FileManager> {
+        self.matching_manager_index(path).map(|i| &self.managers[i])
+    }
+
+    /// Index in `managers` of the explicit path match (the longest matching folder).
+    pub fn matching_manager_index(&self, path: &Path) -> Option<usize> {
         let p = normalize_path(&path.to_string_lossy());
         let parent = path
             .parent()
@@ -290,8 +361,9 @@ impl FileManagerSettings {
             .unwrap_or_default();
         self.managers
             .iter()
-            .filter(|m| !m.path.is_empty())
-            .filter(|m| {
+            .enumerate()
+            .filter(|(_, m)| !m.path.is_empty())
+            .filter(|(_, m)| {
                 let mp = normalize_path(&m.path);
                 let mp_dir = if mp.ends_with('/') {
                     mp.clone()
@@ -304,7 +376,8 @@ impl FileManagerSettings {
                     format!("{parent}/") == mp_dir
                 }
             })
-            .max_by_key(|m| normalize_path(&m.path).len())
+            .max_by_key(|(_, m)| normalize_path(&m.path).len())
+            .map(|(i, _)| i)
     }
 }
 
@@ -1218,7 +1291,11 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
             auto_hash: b(m.get("autohash"), false),
             auto_rehash: b(m.get("autorehash"), false),
             auto_remove: b(m.get("autoremove"), false),
-            auto_rename: b(m.get("autorename"), false),
+            auto_rename: if b(m.get("autorename"), false) {
+                AutoRename::DryRun
+            } else {
+                AutoRename::Off
+            },
             base_path: m.get("basepath").cloned().unwrap_or_default(),
             exclude_hidden: b(m.get("excludehiddenfiles"), false),
             exclude_system: b(m.get("excludesystemfiles"), false),
@@ -1319,7 +1396,11 @@ x</renamingPattern>
         assert!(!s.file_managers.scheduled_scan);
         assert_eq!(s.file_managers.sleep_time_ms, 0);
         assert_eq!(s.file_managers.managers.len(), 2);
-        assert!(s.file_managers.default_manager().auto_rename);
+        assert_eq!(
+            s.file_managers.default_manager().auto_rename,
+            AutoRename::DryRun,
+            "an imported autorename flag only logs planned renames; nothing is renamed until the user chooses On"
+        );
     }
 
     #[test]

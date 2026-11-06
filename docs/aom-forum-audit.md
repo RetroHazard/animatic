@@ -47,6 +47,8 @@ The implementation comparison below describes the initial baseline, **not** an a
 | Automatic managed renaming | Rename engine, manual preview/apply, persisted `auto_rename` option | Worker does not consume `auto_rename`; the visible setting is not proof of automation | Open product gap; design around metadata arrival, collision handling and cancellation before enabling |
 | Truthful settings and discoverable refresh | Legacy imports retain hashing autostart/priority and file-information options; full update is available through CLI | Some settings have no runtime consumer; no equivalent full-update menu action | Open product gaps; do not represent persistence as implemented behavior |
 
+*Update 2026-11-06 (historical rows above are unchanged):* automatic managed renaming is now an opt-in, per-managed-folder setting (Off, Dry run, On; off by default) that runs only through the verified rename worker job and skips and logs collisions; see AGENTS.md rule 19 and the [wiki](https://github.com/RetroHazard/animatic/blob/main/wiki/Renaming-Files.md).
+
 ## Implemented changes and acceptance
 
 ### Safe missing-file planning
@@ -139,6 +141,8 @@ Source: the user-supplied backlog_v2 (authoritative for priorities; its external
 | A13, A15 | Covered by the earlier reliability tranche |
 | A14 | Safety constraint only; no new delete workflow |
 | A9, F6 | Automatic renaming remains unimplemented and must never be enabled implicitly |
+
+*Update 2026-11-06:* the A9/F6 constraint now reads "opt-in per managed folder, off by default, never implicit" (AGENTS.md rule 19); a stored or AOM-imported `auto_rename` flag that was `true` loads as dry run, never on.
 
 Corrections to v1: the XP SP3 anecdote concerns out-of-memory, not startup; `False.mkv` and blank-name pattern errors are correct rejections, not successes or defects; the 510/ten-minute anecdote is not a retry policy.
 

@@ -8,6 +8,7 @@ use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::HttpClient;
 use animatic_anidb::limits::Limits;
 use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
+use animatic_core::auto_rename::{self, AutoRenameMemory};
 use animatic_core::db::Db;
 use animatic_core::file_manager::{MoveControl, MoveMethod, clear_emptied_folders, move_file};
 use animatic_core::format;
@@ -132,6 +133,16 @@ pub enum Job {
     RenameFiles {
         items: Vec<RenameItem>,
         managers: FileManagerSettings,
+    },
+    /// Opt-in automatic rename (roadmap M6.3): plan the identified files of the managed folders
+    /// whose `auto_rename` is on or on dry run with `pattern`, log dry-run plans and skipped
+    /// files once per file and state, and rename the files of folders that are on through the
+    /// same verified move as `RenameFiles` (emptied folders are cleared the same way). Emits no
+    /// events when there is nothing to report or move; collisions are skipped and logged, never
+    /// overwritten.
+    AutoRename {
+        managers: FileManagerSettings,
+        pattern: String,
     },
     /// Opt-in media properties: probe files with `ffprobe` after they were hashed and save the
     /// figures (separate from hashing, never part of its read). Cancel stops before the next
@@ -417,6 +428,12 @@ impl Worker {
         self.pending.load(Ordering::SeqCst) == 0
     }
 
+    /// Submit `job` only if no job of the main worker thread is queued or running, as one atomic
+    /// step (like the scan scheduler's submission). Returns whether the job was queued.
+    pub fn submit_if_idle(&self, job: Job) -> bool {
+        submit_if_idle(&self.jobs, &self.pending, job)
+    }
+
     /// Stops the worker and waits for the main worker thread too, so that its database
     /// connection is closed when this returns. Only meant for an idle worker (restart): a job in
     /// a network exchange would delay the return by up to its timeout.
@@ -549,6 +566,9 @@ fn run(
     // their send slots from here (and so does the cover thread), and the send times are saved
     // so a restart keeps the spacing.
     let network = Network::new(limits);
+    // What automatic rename last did per file, so a scan or a queue run never repeats a note or
+    // retries a failed move unchanged (see `animatic_core::auto_rename`).
+    let mut auto_rename_memory = AutoRenameMemory::default();
     while let Ok(job) = jobs.recv() {
         let _counted = PendingJob::of(&job, &pending);
         if shutdown.load(Ordering::Relaxed) {
@@ -613,6 +633,15 @@ fn run(
             Job::RenameFiles { items, managers } => {
                 run_renames(&db_path, items, &managers, &events, &cancel, &pause)
             }
+            Job::AutoRename { managers, pattern } => run_auto_rename(
+                &db_path,
+                &managers,
+                &pattern,
+                &mut auto_rename_memory,
+                &events,
+                &cancel,
+                &pause,
+            ),
             Job::Hash {
                 paths,
                 source,
@@ -1338,6 +1367,16 @@ fn plan_renames(
     Event::RenamesPlanned { request, rows }
 }
 
+/// What `apply_renames` did.
+struct RenameTally {
+    renamed: usize,
+    not_renamed: usize,
+    /// Files that were not moved because the job was cancelled (they may be tried again).
+    cancelled: Vec<i64>,
+    /// The old paths of the files that were moved.
+    vacated: Vec<PathBuf>,
+}
+
 /// Rename apply (`Job::RenameFiles`): one `file_manager::move_file` per item, each reported, then
 /// `clear_empty_folders` for the folders those moves left empty.
 fn run_renames(
@@ -1348,14 +1387,87 @@ fn run_renames(
     cancel: &AtomicBool,
     pause: &AtomicBool,
 ) {
-    let total = items.len();
     let _ = events.send(Event::Started {
         label: "Renaming files".into(),
-        total,
+        total: items.len(),
     });
+    let tally = apply_renames(db_path, items, events, cancel, pause);
+    clear_vacated_folders(managers, &tally.vacated, events);
+    let _ = events.send(Event::RenameSummary {
+        renamed: tally.renamed,
+        not_renamed: tally.not_renamed,
+    });
+    let _ = events.send(Event::Finished);
+}
+
+/// Automatic rename (`Job::AutoRename`): plan, log, and carry out the renames of the folders
+/// that are on through `apply_renames`, the same verified move as a manual rename (and the same
+/// `clear_empty_folders` afterwards). A job with nothing to log or move sends no events at all.
+fn run_auto_rename(
+    db_path: &Path,
+    managers: &FileManagerSettings,
+    pattern: &str,
+    memory: &mut AutoRenameMemory,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+) {
+    let pass =
+        Db::open(db_path).and_then(|db| auto_rename::plan_pass(&db, managers, pattern, memory));
+    let pass = match pass {
+        Ok(pass) => pass,
+        Err(e) => {
+            let _ = events.send(Event::Error(format!("Automatic rename failed: {e}")));
+            return;
+        }
+    };
+    for note in pass.notes {
+        let _ = events.send(Event::Info(note));
+    }
+    if pass.renames.is_empty() {
+        return;
+    }
+    let items: Vec<RenameItem> = pass
+        .renames
+        .into_iter()
+        .map(|r| RenameItem {
+            local_id: r.local_id,
+            old: r.old,
+            new: r.new,
+        })
+        .collect();
+    let _ = events.send(Event::Started {
+        label: "Renaming files automatically".into(),
+        total: items.len(),
+    });
+    let tally = apply_renames(db_path, items, events, cancel, pause);
+    for local_id in &tally.cancelled {
+        memory.forget(*local_id);
+    }
+    clear_vacated_folders(managers, &tally.vacated, events);
+    let _ = events.send(Event::Info(format!(
+        "Automatic rename finished: {} renamed, {} not renamed",
+        tally.renamed, tally.not_renamed
+    )));
+    let _ = events.send(Event::Finished);
+}
+
+/// Move each item in order, reporting a `Renamed` or `RenameFailed` event for every file.
+fn apply_renames(
+    db_path: &Path,
+    items: Vec<RenameItem>,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+) -> RenameTally {
+    let total = items.len();
     let db = Db::open(db_path);
-    let (mut renamed, mut not_renamed) = (0, 0);
-    let mut vacated = Vec::new();
+    let mut tally = RenameTally {
+        renamed: 0,
+        not_renamed: 0,
+        cancelled: Vec::new(),
+        vacated: Vec::new(),
+    };
     for (index, item) in items.into_iter().enumerate() {
         let RenameItem { local_id, old, new } = item;
         let fail = |message: String| Event::RenameFailed {
@@ -1364,9 +1476,10 @@ fn run_renames(
             new: new.clone(),
             message,
         };
+        // `Err((message, cancelled))`
         let result = match &db {
-            _ if cancel.load(Ordering::Relaxed) => Err("Skipped: cancelled".to_string()),
-            Err(e) => Err(format!("Unable to open the library: {e}")),
+            _ if cancel.load(Ordering::Relaxed) => Err(("Skipped: cancelled".to_string(), true)),
+            Err(e) => Err((format!("Unable to open the library: {e}"), false)),
             Ok(db) => {
                 let label = old
                     .file_name()
@@ -1392,17 +1505,18 @@ fn run_renames(
                     },
                 )
                 .map_err(|e| match e {
-                    animatic_core::error::Error::Cancelled => {
-                        "Cancelled; the file and its library entry are unchanged".to_string()
-                    }
-                    e => e.to_string(),
+                    animatic_core::error::Error::Cancelled => (
+                        "Cancelled; the file and its library entry are unchanged".to_string(),
+                        true,
+                    ),
+                    e => (e.to_string(), false),
                 })
             }
         };
         match result {
             Ok(outcome) => {
-                renamed += 1;
-                vacated.push(old.clone());
+                tally.renamed += 1;
+                tally.vacated.push(old.clone());
                 let _ = events.send(Event::Renamed {
                     local_id,
                     old: old.clone(),
@@ -1411,18 +1525,16 @@ fn run_renames(
                     note: outcome.source_left,
                 });
             }
-            Err(message) => {
-                not_renamed += 1;
+            Err((message, cancelled)) => {
+                tally.not_renamed += 1;
+                if cancelled {
+                    tally.cancelled.push(local_id);
+                }
                 let _ = events.send(fail(message));
             }
         }
     }
-    clear_vacated_folders(managers, &vacated, events);
-    let _ = events.send(Event::RenameSummary {
-        renamed,
-        not_renamed,
-    });
-    let _ = events.send(Event::Finished);
+    tally
 }
 
 /// `clear_empty_folders` for the files a rename job moved away: removed folders are reported to
@@ -2356,6 +2468,188 @@ mod tests {
             recorded(&db.open(), a),
             media.join("a.mkv").to_string_lossy()
         );
+    }
+
+    const AUTO_PATTERN: &str = "A.Name + ' ' + E.EpisodeNo + '.mkv'";
+
+    /// An identified, hashed file at `media/name` (anime and episode cached) as episode `episode`.
+    fn identified_media(db: &Db, media: &Path, name: &str, episode: u32) -> i64 {
+        use animatic_anidb::commands::{EpNo, FileInfo};
+        let data = format!("synthetic {name}");
+        let local_id = register_media(db, &media.join(name), data.as_bytes());
+        let hashes = animatic_core::hash::hash_bytes(data.as_bytes(), Ed2kVariant::Red);
+        db.store_file_info(&FileInfo {
+            fid: local_id,
+            aid: 2,
+            eid: 20 + i64::from(episode),
+            size: hashes.size as i64,
+            ed2k: Some(hashes.ed2k),
+            anime_romaji: Some("Synthetic Show".into()),
+            epno: EpNo {
+                kind: 1,
+                number: episode,
+            },
+            ..FileInfo::default()
+        })
+        .unwrap();
+        local_id
+    }
+
+    fn folders(media: &Path, mode: animatic_core::settings::AutoRename) -> FileManagerSettings {
+        let mut settings = FileManagerSettings::default();
+        settings
+            .managers
+            .push(animatic_core::settings::FileManager {
+                name: "Synthetic".into(),
+                path: media.to_string_lossy().into_owned(),
+                auto_rename: mode,
+                ..Default::default()
+            });
+        settings
+    }
+
+    /// One automatic pass against `db`, with its events.
+    fn auto_pass(
+        db: &TempDb,
+        settings: &FileManagerSettings,
+        memory: &mut AutoRenameMemory,
+        cancel: bool,
+    ) -> Vec<Event> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        run_auto_rename(
+            &db.path,
+            settings,
+            AUTO_PATTERN,
+            memory,
+            &tx,
+            &AtomicBool::new(cancel),
+            &AtomicBool::new(false),
+        );
+        rx.try_iter().collect()
+    }
+
+    #[test]
+    fn automatic_rename_on_renames_through_the_verified_job_and_then_stays_quiet() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let id = identified_media(&library, &media, "episode.mkv", 3);
+        let settings = folders(&media, AutoRename::On);
+        let mut memory = AutoRenameMemory::default();
+
+        let events = auto_pass(&db, &settings, &mut memory, false);
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Renamed { local_id, .. } if *local_id == id)),
+            "{events:?}"
+        );
+        assert!(matches!(events.last(), Some(Event::Finished)));
+        assert!(!media.join("episode.mkv").exists());
+        assert!(media.join("Synthetic Show 3.mkv").exists());
+        assert_eq!(
+            recorded(&db.open(), id),
+            media.join("Synthetic Show 3.mkv").to_string_lossy()
+        );
+        assert!(
+            auto_pass(&db, &settings, &mut memory, false).is_empty(),
+            "a renamed file is already named: nothing to log or move"
+        );
+    }
+
+    #[test]
+    fn automatic_rename_dry_run_logs_the_plan_once_and_moves_nothing() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        identified_media(&library, &media, "episode.mkv", 3);
+        let settings = folders(&media, AutoRename::DryRun);
+        let mut memory = AutoRenameMemory::default();
+
+        let events = auto_pass(&db, &settings, &mut memory, false);
+
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(
+            matches!(&events[0], Event::Info(text) if text.contains("dry run") && text.contains("Synthetic Show 3.mkv")),
+            "{events:?}"
+        );
+        assert!(media.join("episode.mkv").exists());
+        assert!(!media.join("Synthetic Show 3.mkv").exists());
+        assert!(auto_pass(&db, &settings, &mut memory, false).is_empty());
+    }
+
+    #[test]
+    fn automatic_rename_off_does_nothing_and_a_collision_is_skipped_never_overwritten() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let id = identified_media(&library, &media, "episode.mkv", 3);
+        std::fs::write(media.join("Synthetic Show 3.mkv"), b"someone else's file").unwrap();
+        let mut memory = AutoRenameMemory::default();
+
+        let off = auto_pass(&db, &folders(&media, AutoRename::Off), &mut memory, false);
+        assert!(off.is_empty());
+
+        let settings = folders(&media, AutoRename::On);
+        let events = auto_pass(&db, &settings, &mut memory, false);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(
+            matches!(&events[0], Event::Info(text) if text.contains("skipped") && text.contains("already exists")),
+            "{events:?}"
+        );
+        assert!(media.join("episode.mkv").exists());
+        assert_eq!(
+            std::fs::read(media.join("Synthetic Show 3.mkv")).unwrap(),
+            b"someone else's file"
+        );
+        assert_eq!(
+            recorded(&db.open(), id),
+            media.join("episode.mkv").to_string_lossy()
+        );
+        assert!(auto_pass(&db, &settings, &mut memory, false).is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_automatic_rename_is_tried_again_by_the_next_pass() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        identified_media(&library, &media, "episode.mkv", 3);
+        let settings = folders(&media, AutoRename::On);
+        let mut memory = AutoRenameMemory::default();
+
+        let cancelled = auto_pass(&db, &settings, &mut memory, true);
+        assert!(cancelled.iter().any(
+            |e| matches!(e, Event::RenameFailed { message, .. } if message.contains("cancelled"))
+        ));
+        assert!(media.join("episode.mkv").exists());
+
+        let retried = auto_pass(&db, &settings, &mut memory, false);
+        assert!(retried.iter().any(|e| matches!(e, Event::Renamed { .. })));
+        assert!(media.join("Synthetic Show 3.mkv").exists());
+    }
+
+    #[test]
+    fn an_automatic_rename_job_submitted_while_idle_runs_on_the_worker() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        identified_media(&library, &media, "episode.mkv", 3);
+        let worker = Worker::spawn(db.path.clone());
+
+        assert!(worker.submit_if_idle(Job::AutoRename {
+            managers: folders(&media, AutoRename::On),
+            pattern: AUTO_PATTERN.into(),
+        }));
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+
+        assert!(media.join("Synthetic Show 3.mkv").exists());
     }
 
     #[test]

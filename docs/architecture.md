@@ -618,8 +618,32 @@ metadata).
   `Job::PlanRenames { request, pattern, files }` to the **projection thread** (it never waits
   behind a long hashing or queue job). `Event::RenamesPlanned` opens the **Batch rename** window
   with one line per file. One confirmation submits only the rows with `can_apply()` as
-  `Job::RenameFiles`; blocked rows are listed and skipped. There is no automatic rename (rule
-  19).
+  `Job::RenameFiles`; blocked rows are listed and skipped.
+- **Automatic rename** (opt-in per managed folder, rule 19). `FileManager::auto_rename` is an
+  `AutoRename` (`Off`, `DryRun`, `On`; stored as `"off"`/`"dry_run"`/`"on"`; a stored boolean
+  loads as `false` → `Off`, `true` → `DryRun`, so neither a legacy file nor the AOM import can
+  switch renaming on). `animatic_core::auto_rename::plan_pass` reads `Db::local_files`, keeps the
+  identified files whose path has an explicit `FileManagerSettings::matching_manager_index`
+  (the built-in Default fallback never qualifies; the longest folder wins, so a nested rule set
+  to Off excludes its files) and whose anime and episode rows are cached and that still exist,
+  plans them with `plan_batch` (so collisions with files on disk and within the pass are
+  blocked), and returns the renames for `On` folders plus log notes for dry-run plans and
+  skipped files. An `AutoRenameMemory` (owned by the worker's run loop) remembers the last
+  outcome per file, so each note is made, and each rename handed over, once per file and state;
+  a cancelled file is forgotten and retried. A pattern that does not compile pauses the pass with
+  one note.
+  The app (`app/auto_rename.rs`) marks a pass *due* on `Event::Hashed`, `Event::Synced { changed:
+  true }` (the FILE reply of an identify was applied), `Event::Imported`, a change of the folder
+  modes/paths/pattern and at start, and submits `Job::AutoRename { managers, pattern }` through
+  `Worker::submit_if_idle` only when the worker is idle, `scan_blocker()` is empty (no restore,
+  import, settings review, recovery notice or deferred changes) and Options is closed. The job
+  emits `Event::Info` notes and, only when something is to be moved, `Started`, the same
+  `Renamed`/`RenameFailed` events as a manual rename (shared `apply_renames`, hence
+  `move_file`'s verified cross-volume move and never-overwrite rule), an `Info` summary and
+  `Finished`; it is cancellable like `RenameFiles`. Choosing **On** in Options does not set the
+  mode directly: the app plans the folder's identified files from the projection with
+  `Job::PlanRenames` (read-only, same lines as **Batch rename**) and only the modal's **Turn on
+  automatic rename** sets `On`.
 - **Apply** runs on the worker. For every item `file_manager::move_file` moves the file and
   records the path; the worker reports `Event::Renamed` or `Event::RenameFailed` per file, then
   `Event::RenameSummary`. The activity bar's **Cancel** stops before the next file and during a
@@ -700,7 +724,7 @@ so tests force the cross-volume path on one volume):
 - [INFERENCE: untested] On case-insensitive filesystems a case-only rename is refused because
   the target "exists" (it is the same file).
 - Only the local file and its `local_file` row change; AniDB MyList `storage` text is not touched.
-- **Emptied folders.** After all the moves of a job, `run_renames` calls
+- **Emptied folders.** After all the moves of a job, `run_renames` (and `run_auto_rename`) calls
   `file_manager::clear_emptied_folders` for the old path of each file that moved (deferred to the
   end so a folder emptied early can still receive a later file). See the guarantees table; the
   Log reports a count, failures go to the diagnostic log only.
@@ -783,7 +807,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
 | Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |
 | Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `has_system_attribute`, `move_file`, `clear_emptied_folders`; `settings.rs`: `FileManagerSettings::matching_manager_for`; `worker.rs`: `run_renames`, `clear_vacated_folders` |
-| Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames}`, `run_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui` |
+| Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames, AutoRename}`, `run_renames`, `run_auto_rename`, `apply_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui`; `crates/animatic-core/src/auto_rename.rs`: `plan_pass`, `AutoRenameMemory`, `folder_candidates`; `app/auto_rename.rs`: `pump_auto_rename`, `mode_control`, `auto_rename_enable_window` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs`; `app/player_actions.rs`: `file_menu`, `player_toolbar`, `run_file_action`; `app.rs`: `play_selected` |
 | System tray | `crates/animatic/src/tray.rs`: `TrayController::update`, `icon_wanted`, `should_hide`, `MENU`, `platform` backends; `app/tray_ui.rs`: `tray_frame`, `tray_options_ui`; `app.rs`: `queue_run_allowed` |

@@ -36,7 +36,7 @@ Know the limits before you rely on a recovery path:
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed
   folders**, the queue runs only from **Tools → Run command queue** or **Synchronize now**,
-  and renaming is never automatic. The one automatic action is the optional startup
+  and renaming is automatic only in a managed folder you set to **Auto rename: On**. The one unasked action is the optional startup
   *check* for a newer Animatic release on GitHub (`updates.auto_check`); it downloads and
   installs nothing. See [Update problems](Network-and-Sync-Problems.md#update-problems).
 - **No logging backend.** Diagnostics are the in-memory **Log** page and the status bar. See

@@ -1,5 +1,7 @@
 Renaming is **manual and always confirmed**: one file, or several files at once with a single
-confirmation. There is no automatic renaming of any kind.
+confirmation. The only exception is the opt-in
+[automatic rename of a managed folder](#automatic-rename-opt-in-per-managed-folder), which is
+off unless you switch it on for that folder.
 
 ## One file
 
@@ -97,3 +99,57 @@ file* (dry run on the file selected on Hashed files; shows the result, diagnosti
 valid for this file.`) and live syntax diagnostics. The built-in default uses a fixed two-digit
 episode minimum (`01`, `02`, … `100`); an existing custom pattern is never changed unless you
 choose *Use stable default*.
+
+## Automatic rename (opt-in per managed folder)
+
+Each managed folder rule has an **Auto rename** setting with three modes (**Tools → Options… →
+Managed folders**, see [Options window](Options-Window.md)):
+
+| Mode | What happens |
+|---|---|
+| **Off** (default) | Nothing is renamed automatically. |
+| **Dry run (log only)** | The renames that *would* happen are written to the **Log** (`Automatic rename (dry run): <old> would be renamed to <new>`); no file is moved. |
+| **On** | Identified files in that folder are renamed with the current pattern, through the same worker job, verified cross-drive move and **Cancel** as a manual rename. |
+
+**Turning a folder On is confirmed.** Choosing **On** opens a window that lists, as a read-only
+dry run, what would be renamed *now* in that folder (the same lines as **Batch rename**: `Ready`,
+`Blocked`, `Already named`) and says that nothing has been renamed. Only **Turn on automatic
+rename** switches the folder to On; **Cancel** (or Esc) leaves the mode unchanged. The choice is
+kept when you **Save options**. The window appears every time a folder changes to On, not only the
+first time, so a preview is always seen before any automatic move. A stored or AOM-imported
+`auto_rename` flag that was simply *true* loads as **Dry run**, never On; see
+[Settings reference](Settings-Reference.md#per-folder-keys).
+
+**When it runs.** A pass is made when something may have made a file renameable: a file was
+hashed (a [scan](Managed-Folders-and-Scans.md) found it, including a file the library already
+knows as identified), an AniDB reply changed the library (the identify reply of a queued file was
+applied), an AOM import finished, or the folder modes, paths or pattern changed — and once at
+start-up. It runs only while no other task is running, and not while an import, a restore, a
+settings review or the settings recovery notice is open, or while the Options window is open.
+*Work offline* does not matter: planning and moving are local.
+
+**What it renames.** Only a file that
+
+- lies inside a managed folder with a non-empty path (the built-in **Default** rule, which
+  matches everything else, never renames; the folder with the longest matching path decides, so
+  a subfolder rule set to Off excludes its files),
+- AniDB has identified **and** whose anime and episode records are cached (until then it is
+  left alone without a note; the reply that completes it triggers a new pass),
+- still exists on disk, and
+- has a plan that is valid for **Apply** with the current pattern: a pattern that does not
+  compile pauses the whole pass with one `Automatic rename is paused` log line; warnings, a
+  missing title or episode number (stable default), an empty or true/false result or an unusable
+  name block the file.
+
+**Collisions and blocked plans are skipped and logged, never overwritten.** A file whose target
+already exists, or that would get the same name as another file of the same pass, is skipped with
+`Automatic rename skipped <path>: <reason>`. Each outcome is logged **once per file and state**: a
+scan or queue run that changes nothing neither repeats a note nor retries a failed move. A file
+is planned again when its path, its metadata, its folder mode or the pattern changes (or after
+Animatic restarts); a rename stopped by **Cancel** is tried again by the next pass. At most 20
+notes are logged per pass, followed by a count of the rest. As with a manual rename, the
+existing-target check and a same-drive rename are separate steps; the [limit described
+above](#what-applying-does) applies.
+
+Moves are reported like manual ones (`Renamed <old> to <new>`, `Rename failed: …`) followed by
+`Automatic rename finished: N renamed, M not renamed`. There is no undo and no AniDB notification.

@@ -25,7 +25,7 @@ Linux-specific statements are reading of the code.
 | Edit the pattern, reset it to the stable default, restore the replaced text and validate it on the selected file (**Tools → Options → Renaming pattern**) | Implemented |
 | Per-folder rename destination (`base_path`, shown as **Rename destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
 | Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
-| Automatic renaming during or after a scan | **Not implemented.** The per-folder "Auto rename" checkbox is stored and shown but nothing reads it. Every rename is a manual, confirmed action. |
+| Automatic renaming during or after a scan | **Opt-in per managed folder** (Options > Managed folders > **Auto rename**: Off, Dry run, On; off by default). Dry run only logs the plans; On renames identified files through the same verified worker job, and choosing On first shows a dry-run list to confirm. Collisions and blocked plans are skipped and logged, never overwritten. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). |
 | Renaming files that AniDB has not identified, or whose anime/episode rows are missing | Blocked with a message |
 | Cleaning up folders left empty by a move | Optional, per managed folder (**Remove emptied folders**, `clear_empty_folders`): only completely empty folders below the managed folder, see [Managed folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied) |
 
@@ -394,8 +394,8 @@ Deliberate differences stated in the source and project rules:
   and device names including `¹ ² ³`), with a length unit that depends on the build platform.
 - The stable default needs fetched title and episode data; a pending-title stand-in is never
   used to name a file with it.
-- Renaming is manual and confirmed; automatic renaming is not implemented and must never be
-  enabled implicitly.
+- Renaming is manual and confirmed, except for a managed folder you explicitly set to **On**
+  (opt-in per folder, off by default, never implicit; collisions are skipped, never overwritten).
 
 Limits:
 

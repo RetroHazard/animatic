@@ -10,6 +10,8 @@
 //!
 //! # Modules
 //!
+//! * [`auto_rename`] — opt-in automatic rename planning for managed folders (off, dry run, on),
+//!   incremental per file and state; the application carries the renames out.
 //! * [`atomic`] — crash-safe file replacement (temporary file, flush, rename) used by the
 //!   hash and statistics exports.
 //! * [`db`] — SQLite connection setup (WAL), idempotent schema creation, the command-queue
@@ -85,6 +87,7 @@
 //! flow: `docs/architecture.md` in the repository.
 
 pub mod atomic;
+pub mod auto_rename;
 pub mod covers;
 pub mod db;
 pub mod error;
