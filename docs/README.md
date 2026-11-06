@@ -23,6 +23,7 @@ archives carry the same pages in their `docs/` folder.
 | [Development](development.md) | Toolchain, checks, native smoke verification, CI, wiki publishing and contribution/privacy rules |
 | [Releases](releases.md) | Versioning and changelog, release tool, workflows, maintainer procedure, archive contents, checksum verification and the in-app update contract |
 | [Rename language Rust API](rename-api.md) | Planning a rename from Rust, against fixed objects or the library database, and custom data sources |
+| [Roadmap](roadmap.md) | Remaining features, derived from the feature parity page: milestones, ordering, constraints, dependencies and open decisions |
 
 Generate API documentation with `cargo doc --workspace --no-deps`; the local entry points
 are `target/doc/animatic_core/index.html` and `target/doc/animatic_anidb/index.html`.
