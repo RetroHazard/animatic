@@ -125,6 +125,16 @@ the generated line for that pull request's squash commit.
   offline or during a ban or cooldown. It is kept in a `covers` folder next to the database for
   your own display only and never downloaded again. `anidb.download_covers` (default on, also in
   Options) turns downloads off; covers already on disk are still shown.
+- System tray (best effort): Options → System tray has *Show tray icon* and *Minimize to tray*. On
+  Windows the icon sits in the notification area; on Linux it uses the StatusNotifierItem protocol
+  over D-Bus, with no extra system package. Its menu offers Show Animatic, Run command queue
+  (disabled whenever Tools → Run command queue is) and Quit. Minimizing hides the window only while
+  an icon is up, and closing still quits; where no tray exists both options are disabled with an
+  explanation.
+- Players: **Open in player** and **Enqueue** on Hashed files (buttons and a right-click menu) for
+  players with those argument templates, a chooser by player *Name* when several players exist,
+  and an Options editor for every player's name and open, play and enqueue arguments, with add,
+  remove and a single default.
 
 ### Changed
 
