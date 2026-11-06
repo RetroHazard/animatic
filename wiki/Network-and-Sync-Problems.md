@@ -72,7 +72,7 @@ queued`, and leave the queue alone; an automatic run is postponed instead.
 | `authentication: access denied` | A later command was refused (code 502) | Fatal, as above | Check the account |
 | `client version outdated - check the AniDB client registration` | Code 503 | Fatal, as above | Correct the client name or version registration |
 | `this AniDB client version is banned (reply 504): …` | Code 504: AniDB bans this client name and version | Fatal, as above, **no timed cooldown** | Register or use another client name or version (the client version is a settings-file value), or update Animatic; then **Retry failed** |
-| `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused the client | Fatal, as above | Verify the client name and version |
+| `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused the client name/version it was sent. AniDB registers a client per API, so a client registered only for UDP is refused here | Only the HTTP commands (anime records) are blocked; UDP commands keep running | Register a client for the HTTP API, enter it as **HTTP client name** / **HTTP client version** in Options, then **Retry failed** |
 
 After a fatal credential or client error the status bar shows **N blocked** and the Log shows
 `Command blocked: N queued commands blocked: <message>`. Correct the cause, optionally **Save

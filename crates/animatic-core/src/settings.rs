@@ -116,6 +116,11 @@ pub struct AnidbSettings {
     /// Registered client version (`clientver`), at least 1. It identifies the registered client
     /// to AniDB and is never changed by an Animatic release; see [`parse_client_version`].
     pub client_version: u32,
+    /// Client registered for the HTTP API, when it differs from the UDP client: AniDB registers
+    /// a client per API. Empty uses `client_name`; see [`AnidbSettings::http_client`].
+    pub http_client_name: String,
+    /// Version of `http_client_name`; 0 uses `client_version`.
+    pub http_client_version: u32,
     pub udp_server: String,
     pub local_port: u16,
     /// Image host used for covers until a login has announced the host AniDB wants used.
@@ -145,6 +150,8 @@ impl Default for AnidbSettings {
             api_key: String::new(),
             client_name: String::new(),
             client_version: 1,
+            http_client_name: String::new(),
+            http_client_version: 0,
             udp_server: "api.anidb.net:9000".into(),
             local_port: 29_456,
             image_server: "cdn.anidb.net".into(),
@@ -153,6 +160,21 @@ impl Default for AnidbSettings {
             offline: false,
             idle_logout_minutes: 10,
             auto_run_queue: false,
+        }
+    }
+}
+
+impl AnidbSettings {
+    /// Client name and version sent to the HTTP API: the separate HTTP registration when a
+    /// name is set (its version, or `client_version` when that is 0), otherwise the UDP client.
+    pub fn http_client(&self) -> (&str, u32) {
+        let name = self.http_client_name.trim();
+        if name.is_empty() {
+            (self.client_name.as_str(), self.client_version)
+        } else if self.http_client_version == 0 {
+            (name, self.client_version)
+        } else {
+            (name, self.http_client_version)
         }
     }
 }
@@ -1914,6 +1936,22 @@ x</renamingPattern>
         }
         // "+3" is what u32::from_str accepts; the field accepts it too.
         assert_eq!(parse_client_version("+3"), Ok(3));
+    }
+
+    #[test]
+    fn the_http_api_uses_its_own_registration_only_when_one_is_set() {
+        let mut anidb = AnidbSettings {
+            client_name: "udpclient".into(),
+            client_version: 3,
+            ..AnidbSettings::default()
+        };
+        assert_eq!(anidb.http_client(), ("udpclient", 3));
+        anidb.http_client_name = " httpclient ".into();
+        assert_eq!(anidb.http_client(), ("httpclient", 3));
+        anidb.http_client_version = 2;
+        assert_eq!(anidb.http_client(), ("httpclient", 2));
+        anidb.http_client_name = "  ".into();
+        assert_eq!(anidb.http_client(), ("udpclient", 3));
     }
 
     #[test]

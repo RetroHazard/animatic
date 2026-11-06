@@ -3473,6 +3473,25 @@ impl AnimaticApp {
                             .get_or_insert_with(|| self.settings.anidb.client_version.to_string()),
                         &mut self.settings.anidb.client_version,
                     );
+                    field_hint(
+                        ui,
+                        "HTTP client name",
+                        &mut self.settings.anidb.http_client_name,
+                        "AniDB registers a client per API. If your client name is registered \
+                         for the UDP API only, register one for the HTTP API too and enter it \
+                         here; it is used for anime records. Empty uses the client name above.",
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label("HTTP client version");
+                        ui.add(
+                            egui::DragValue::new(&mut self.settings.anidb.http_client_version)
+                                .speed(0.1),
+                        )
+                        .on_hover_text(
+                            "The version registered with the HTTP client name. 0 uses the \
+                             client version above.",
+                        );
+                    });
                     ui.checkbox(
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",

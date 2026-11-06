@@ -683,6 +683,31 @@ impl Db {
         )?)
     }
 
+    /// Block every runnable command that goes through the HTTP API (see [`Command::uses_http`]),
+    /// for a rejected HTTP client registration. Returns how many were blocked.
+    pub fn queue_block_http(&self, err: &str) -> Result<usize> {
+        self.write_tx(|| {
+            let ids: Vec<i64> = self
+                .conn()
+                .prepare("SELECT id, payload FROM command_queue WHERE blocked = 0")?
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|(_, payload)| {
+                    serde_json::from_str::<Command>(payload).is_ok_and(|c| c.uses_http())
+                })
+                .map(|(id, _)| id)
+                .collect();
+            for id in &ids {
+                self.conn().execute(
+                    "UPDATE command_queue SET last_error = ?2, blocked = 1 WHERE id = ?1",
+                    params![id, err],
+                )?;
+            }
+            Ok(ids.len())
+        })
+    }
+
     /// Put blocked commands back in the queue with fresh attempts. Edits of one mylist entry
     /// are first merged into the latest one, so a retried old edit can never overwrite a newer
     /// one. Returns how many blocked rows there were.
@@ -1343,6 +1368,33 @@ mod tests {
         let (first, _, tries) = db.queue_peek().unwrap().unwrap();
         assert_eq!((first, tries), (id, 0));
         assert_eq!(db.queue_blocked_len().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_rejected_http_client_blocks_only_http_commands() {
+        let db = Db::memory().unwrap();
+        db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+        db.queue_push(&Command::FetchFile { fid: 7 }).unwrap();
+        db.queue_push(&Command::FetchAnime { aid: 2 }).unwrap();
+        db.queue_push(&Command::MylistStats).unwrap();
+
+        let message = "authentication: HTTP API rejected the client registration";
+        assert_eq!(db.queue_block_http(message).unwrap(), 2);
+
+        let mut runnable = Vec::new();
+        while let Some((id, command, _)) = db.queue_peek().unwrap() {
+            runnable.push(command);
+            db.queue_remove(id).unwrap();
+        }
+        assert_eq!(
+            runnable,
+            [Command::FetchFile { fid: 7 }, Command::MylistStats]
+        );
+        assert_eq!(
+            db.queue_blocked_len().unwrap(),
+            2,
+            "anime fetches wait for a fixed client"
+        );
     }
 
     #[test]

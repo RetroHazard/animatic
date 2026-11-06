@@ -97,8 +97,8 @@ impl CoverUi {
                 image_server: settings.image_server.clone(),
                 download: settings.download_covers,
                 offline: settings.offline,
-                client_name: settings.client_name.clone(),
-                client_version: settings.client_version,
+                client_name: settings.http_client().0.to_string(),
+                client_version: settings.http_client().1,
             });
         }
         let mut retry = false;

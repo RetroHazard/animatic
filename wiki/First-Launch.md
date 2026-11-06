@@ -47,6 +47,11 @@ points registration at <https://anidb.net/software/add>. Rules that follow from 
 - The local UDP port (`anidb.local_port`, default 29456) and UDP server are likewise
   JSON-only. If the port cannot be bound, the run stops with an error that names the setting;
   Animatic never switches to another port by itself (AniDB bans many different source ports).
+- AniDB registers a client **per API**. Animatic uses the UDP API for nearly everything and the
+  HTTP API for full anime records (detail window **Refresh**, anime refreshes of a full update).
+  If your client name is registered for UDP only, register a second client for the HTTP API and
+  enter it as **HTTP client name** and **HTTP client version**; left empty, the UDP client is sent
+  to both APIs.
 - The **API key** (set in your AniDB profile) is optional and turns on encrypted UDP sessions.
 - An empty client name, user name or password makes the queue stop at the first command
   with an authentication error and blocks *every* pending command until you correct it and

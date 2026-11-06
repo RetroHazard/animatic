@@ -1792,6 +1792,17 @@ fn fail_command(
                 // Ban: keep the entry, stop everything for the cooldown.
                 db.queue_deferred(id, &error.message)?;
                 start_cooldown(db, wait, &error.message, events)?;
+            } else if command.uses_http() {
+                // The HTTP API refused the client registration: only HTTP commands depend on
+                // it, so the UDP commands behind them keep running.
+                let n = db.queue_block_http(&error.message)?;
+                let _ = events.send(Event::Blocked {
+                    description: format!(
+                        "{n} queued HTTP commands blocked: {}. Check the HTTP client in Options.",
+                        error.message
+                    ),
+                });
+                return Ok(true);
             } else {
                 // Rejected credentials / outdated client: nothing can succeed until corrected.
                 let n = db.queue_block_all(&error.message)?;
@@ -1967,11 +1978,8 @@ fn run_queue(
     let mut udp = network
         .session
         .take(network.udp_config(&settings), &network.limits);
-    let mut http = HttpClient::new(
-        &settings.client_name,
-        settings.client_version,
-        network.limits.clone(),
-    );
+    let (http_name, http_version) = settings.http_client();
+    let mut http = HttpClient::new(http_name, http_version, network.limits.clone());
     while !cancel.load(Ordering::Relaxed) {
         let next = match db.queue_peek_in(scope) {
             Ok(v) => v,
