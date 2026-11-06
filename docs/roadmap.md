@@ -213,10 +213,16 @@ controls or exports suggest, or where it could exceed AniDB's limits.
     client instance, persisting the last send time in `meta` so a restart cannot reset the
     spacing.
   - The HTTP limiter covers every HTTP request, including the title dump and images.
-  - A title-dump guard based on `titles_dump_date`: **Download anime titles** and full updates
-    skip the dump inside the minimum interval and say when it is next allowed.
-  - A minimum age per anime based on `anime.fetched` (at least one day, per the HTTP API rule).
-    An explicit refresh from the detail window is also refused inside that age and shows when it
+  - Request guards count *requests*, not successful imports. `titles_dump_date` and
+    `anime.fetched` record only success, so a failed or truncated download could otherwise be
+    repeated within the day. Before sending, durably record a last-attempt time: a new `meta`
+    key for the title dump and a per-anime attempt time (an idempotent column or table). The
+    guards read those attempt times; the success markers keep their current meaning.
+  - A title-dump guard on that attempt time: **Download anime titles**, full updates and
+    transient-failure retries skip the dump inside the minimum interval and say when it is next
+    allowed.
+  - A minimum age per anime on its attempt time (at least one day, per the HTTP API rule). An
+    explicit refresh from the detail window is also refused inside that age and shows when it
     becomes available.
   - A minimum age per file for `FetchFile` on files AniDB already knew. The length is a design
     choice (AniDB only says "extended periods"); start conservative, for example seven days.
@@ -226,7 +232,9 @@ controls or exports suggest, or where it could exceed AniDB's limits.
   - All limits are named constants with a link to the recorded rule.
 - **Acceptance:** loopback tests with a controllable clock: two consecutive queue runs keep
   the long-term spacing; a restart keeps it; a second title dump and a too-early anime fetch
-  are refused without any request.
+  are refused without any request. A failed, truncated or invalid title dump, and a crash or
+  restart right after the request was sent, still block a repeat inside the interval; the same
+  holds for a failed anime fetch.
 - **Constraints:** rules 8 and 15; the GitHub update transport stays separate (rule 20).
 
 ## M2 Library safety
