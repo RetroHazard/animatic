@@ -69,9 +69,9 @@ flowchart LR
 | M1.6 | Remove unused dependencies | Done |
 | M1.7 | Linux runtime and production AniDB verification | Planned |
 | M1.8 | Honour AniDB server limits across runs and restarts | Planned |
-| M2.1 | Database backup | Planned |
-| M2.2 | Database restore | Planned |
-| M2.3 | Integrity check and maintenance | Planned |
+| M2.1 | Database backup | Done |
+| M2.2 | Database restore | Done |
+| M2.3 | Integrity check and maintenance | Done |
 | M3.1 | Edit storage, source, other and view date | Planned |
 | M3.2 | Add files to MyList | Planned |
 | M3.3 | Delete MyList entries | Planned |

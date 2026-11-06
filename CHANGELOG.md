@@ -57,6 +57,12 @@ the generated line for that pull request's squash commit.
   of zeros).
 - Options controls whose feature is not built yet are shown disabled with a "Not active yet" hint,
   keeping their stored (for example imported AOM) values.
+- Library safety tools: **File → Back up library…** saves a consistent snapshot (queue included)
+  while Animatic runs; **File → Restore library…** validates a backup (integrity check, Animatic
+  tables, schema not newer), asks for confirmation, keeps the current library as
+  `<database>.before-restore-YYYYMMDD-HHMMSS` and reloads; **Tools → Check library** runs
+  `integrity_check` and `foreign_key_check` without repairing; **Tools → Compact library…** runs
+  `VACUUM`. All run in the background while no other work is active.
 
 ### Changed
 
