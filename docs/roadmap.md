@@ -62,10 +62,10 @@ flowchart LR
 | Item | Title | Status |
 |---|---|---|
 | M1.1 | Player and AVDump argument safety | Done |
-| M1.2 | Atomic, off-thread exports | Planned |
-| M1.3 | One-snapshot statistics | Planned |
-| M1.4 | Disable controls whose feature is not built yet | Planned |
-| M1.5 | Legacy import target and leftovers | Planned |
+| M1.2 | Atomic, off-thread exports | Done |
+| M1.3 | One-snapshot statistics | Done |
+| M1.4 | Disable controls whose feature is not built yet | Done |
+| M1.5 | Legacy import target and leftovers | Done |
 | M1.6 | Remove unused dependencies | Done |
 | M1.7 | Linux runtime and production AniDB verification | Planned |
 | M1.8 | Honour AniDB server limits across runs and restarts | Planned |

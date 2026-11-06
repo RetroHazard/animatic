@@ -47,6 +47,16 @@ the generated line for that pull request's squash commit.
   feature parity) with a sidebar. Its source is `wiki/` in the repository, reviewed in pull
   requests and published by a workflow on `main`; release archives ship the same pages in
   `docs/` and no longer include the developer documentation. (#14)
+- Importing an AOM databank into a database that already holds data asks for confirmation first,
+  because rows with the same ids are replaced. The import decrypts into a marked
+  `animatic-legacy-import-*` temporary folder that is removed however the import ends; at the next
+  start Animatic offers to remove such folders left by a crash, and deletes only marked folders.
+- Hash and statistics exports are written to a temporary file and renamed over the target, so a
+  failed write leaves the previous file intact; the hash export runs off the interface thread, and
+  statistics come from one consistent database snapshot (a failed query reports an error instead
+  of zeros).
+- Options controls whose feature is not built yet are shown disabled with a "Not active yet" hint,
+  keeping their stored (for example imported AOM) values.
 
 ### Changed
 
