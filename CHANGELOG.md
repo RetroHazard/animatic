@@ -103,6 +103,11 @@ the generated line for that pull request's squash commit.
   deferred files. `sleep_time_ms` paces the hashed files of a scan (default 0, at most 10 s)
   instead of storing AOM's pause between scans; an AOM import turns that pause into the scan
   interval.
+- **Tools → Full update…** previews what a full update would queue (title list, file and anime
+  refreshes, minus what AniDB's limits do not allow yet and what is already queued) and queues it
+  after confirmation, the same as `--full-update`; nothing is sent until the queue runs. **Update
+  known file information** works: with it on, hashing an already identified file again queues a
+  refresh of its AniDB record, at most once per file per 7 days (off by default).
 
 ### Changed
 

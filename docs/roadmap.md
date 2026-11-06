@@ -77,8 +77,8 @@ flowchart LR
 | M3.3 | Delete MyList entries | Done |
 | M3.4 | Refresh an entry, episode or group | Done |
 | M3.5 | Keep and show MyList statistics | Done |
-| M4.1 | Full update menu action | Planned |
-| M4.2 | Update known file information | Planned |
+| M4.1 | Full update menu action | Done |
+| M4.2 | Update known file information | Done |
 | M4.3 | Full-account MyList import through MyList export | Planned |
 | M5.1 | Scheduler for folder scans | Done |
 | M5.2 | Settle delay for files being written | Done |
