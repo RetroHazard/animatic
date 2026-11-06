@@ -89,6 +89,12 @@ the generated line for that pull request's squash commit.
   the library untouched, and an existing destination is never replaced. **Hashed files** can
   rename several selected files at once: a background-planned preview lists each file's new name
   or problem, and one confirmation renames only the valid rows. Renaming is never automatic.
+- An optional **Hash with Animatic** file-manager entry (Options → Hashing, off by default):
+  saving the option registers a per-user entry (Windows `HKCU` registry key or Linux `.desktop`
+  file) and removes only entries Animatic created; Options shows whether it is actually present,
+  and an AOM settings import never registers it. Launching Animatic with media files while another
+  instance has the same database open hands the files to that window (loopback only,
+  token-protected lock file next to the database); a different `--database` starts normally.
 
 ### Changed
 
