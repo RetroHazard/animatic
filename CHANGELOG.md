@@ -83,9 +83,3 @@ the generated line for that pull request's squash commit.
   creates `vVERSION` at that commit and publishes the GitHub Release (previously a maintainer
   pushed the tag by hand and published a draft). Release no longer starts on a tag push. A dry
   Release run can rehearse the head of an unmerged release branch.
-
-### Fixed
-
-- Player and AVDump argument templates are now split into arguments before placeholders are
-  substituted, so a file path, user name or key containing spaces, quotes or option-like text
-  always stays one argument instead of splitting or adding arguments.
