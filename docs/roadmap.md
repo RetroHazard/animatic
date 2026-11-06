@@ -14,22 +14,26 @@ stay authoritative about what Animatic does.
 - Before starting an item, re-check its **Builds on** facts. Symbols are named instead of line
   numbers, because line numbers go stale.
 - The constraints cite rules from [AGENTS.md](../AGENTS.md#architectural-rules). An item that
-  needs a rule changed (for example M6.3 and rule 19) needs an explicit maintainer decision
-  first; amend the rule in the same pull request.
+  changes a rule (M6.3 changes rule 19) amends that rule in the same pull request.
 - When an item ships, set its status to **Done (#N)** and, in the same pull request, update
   the Feature parity row, the settings reference, the affected wiki pages and `CHANGELOG.md`.
   Remove a stored-only field from the parity list once something reads it.
 - Statuses: **Planned**, **Decision needed** (blocked on a maintainer choice, listed under
-  [Open decisions](#open-decisions)), **Research** (blocked on facts that are not in the
-  repository), **In progress**, **Done (#N)**.
+  [Decisions](#decisions)), **Research** (blocked on facts that are not in the repository),
+  **In progress**, **Done (#N)**.
 
 ## Ordering principle
 
 Trust before breadth, and breadth before automation. This follows the
 [forum audit](aom-forum-audit.md#first-reliability-tranche-from-the-top-25): fix places where
-Animatic silently does less than it appears to (M1), make the library recoverable (M2), finish
-the explicit manual workflows (M3, M4), and only then add background and destructive automation
-on top of them (M5, M6). Presentation and platform integration (M7, M8) do not block anything.
+Animatic silently does less than it appears to or could get a user banned (M1), make the
+library recoverable (M2), finish the explicit manual workflows (M3, M4), and only then add
+background and destructive automation on top of them (M5, M6). Presentation and platform
+integration (M7, M8) do not block the rest, except where they send requests to AniDB.
+
+**AniDB server limits are a hard requirement for every item.** A client that exceeds them gets
+its users temporarily banned. Every new request path goes through the shared limits from M1.8,
+and no item may add a request that bypasses them.
 
 ```mermaid
 flowchart LR
@@ -41,11 +45,16 @@ flowchart LR
   M5 --> M6[M6 Renaming automation]
   M7[M7 Presentation]
   M8[M8 Platform integration]
+  M18[M1.8 AniDB server limits] --> M41[M4.1 Full update menu]
+  M18 --> M42[M4.2 Update known file information]
+  M18 --> M55[M5.5 Automatic queue run]
+  M18 --> M71[M7.1 Anime covers]
   M56[M5.6 Long-lived session] --> M55
   M51[M5.1 Scheduler] --> M54[M5.4 Persistent hash queue and autostart]
-  M51 --> M55[M5.5 Automatic queue run]
+  M51 --> M55
   M51 --> M63[M6.3 Automatic rename]
   M61[M6.1 Rename apply on worker] --> M63
+  M11[M1.1 Argument safety] --> M75[M7.5 Media properties]
 ```
 
 ## Overview
@@ -55,10 +64,11 @@ flowchart LR
 | M1.1 | Player and AVDump argument safety | Planned |
 | M1.2 | Atomic, off-thread exports | Planned |
 | M1.3 | One-snapshot statistics | Planned |
-| M1.4 | Truthful Options controls | Decision needed |
+| M1.4 | Mark controls whose feature is not built yet | Decision needed |
 | M1.5 | Legacy import target and leftovers | Planned |
 | M1.6 | Remove unused dependencies | Planned |
 | M1.7 | Linux runtime and production AniDB verification | Planned |
+| M1.8 | Honour AniDB server limits across runs and restarts | Research |
 | M2.1 | Database backup | Planned |
 | M2.2 | Database restore | Planned |
 | M2.3 | Integrity check and maintenance | Planned |
@@ -68,31 +78,31 @@ flowchart LR
 | M3.4 | Refresh an entry, episode or group | Planned |
 | M3.5 | Keep and show MyList statistics | Planned |
 | M4.1 | Full update menu action | Planned |
-| M4.2 | Per-anime refresh throttle | Planned |
+| M4.2 | Update known file information | Planned |
 | M4.3 | Full-account MyList bootstrap and reconciliation | Research |
 | M5.1 | Scheduler for folder scans | Planned |
 | M5.2 | Settle delay for files being written | Planned |
 | M5.3 | `exclude_system` and `clear_empty_folders` | Planned |
 | M5.4 | Persistent hash queue and autostart | Planned |
-| M5.5 | Automatic queue run | Decision needed |
+| M5.5 | Opt-in automatic queue run | Planned |
 | M5.6 | Long-lived session: keep-alive and idle logout | Planned |
 | M6.1 | Rename apply on the worker, cross-volume moves | Planned |
 | M6.2 | Batch rename | Planned |
-| M6.3 | Automatic rename per managed folder | Decision needed |
-| M7.1 | Anime covers | Planned |
+| M6.3 | Opt-in automatic rename per managed folder | Planned |
+| M7.1 | Anime covers | Research |
 | M7.2 | Saved window, columns and sorting | Planned |
 | M7.3 | Status row colours and system theme | Planned |
 | M7.4 | Player open and enqueue actions | Planned |
-| M7.5 | Media properties | Research |
-| M8.1 | Credentials in the operating-system keystore | Decision needed |
+| M7.5 | Opt-in media properties through `ffprobe` | Research |
+| M8.1 | Credentials in the operating-system keystore | Planned |
 | M8.2 | Shell integration and single-instance handoff | Decision needed |
-| M8.3 | System tray | Decision needed |
+| M8.3 | System tray, best effort | Planned |
 | M8.4 | Client version field | Planned |
 
 ## M1 Trust and correctness
 
 These are small, independent fixes for places where the application does less than its
-controls or exports suggest.
+controls or exports suggest, or where it could exceed AniDB's limits.
 
 ### M1.1 Player and AVDump argument safety
 
@@ -125,16 +135,25 @@ controls or exports suggest.
   also groundwork for the "difference in stats" research lead.
 - **Depends:** none. M3.5 reuses this when it compares local figures with AniDB's.
 
-### M1.4 Truthful Options controls
+### M1.4 Mark controls whose feature is not built yet
 
-- **Problem:** some Options checkboxes change only a stored value: `update_file_information`,
-  `hashing.autostart`, per-folder `auto_rename`, `colored_rows` and the player **Name** field.
+- **Problem:** five Options controls are AOM settings carried over so that the AOM settings
+  import keeps them, but no code reads them yet. Ticking one does nothing, and the UI does not
+  say so.
+
+  | Control | Setting | Built by |
+  |---|---|---|
+  | Update known file information | `anidb.update_file_information` | M4.2 |
+  | Start hashing automatically | `hashing.autostart` | M5.4 |
+  | Auto rename (per managed folder) | `file_managers.managers[].auto_rename` | M6.3 |
+  | Use status colors | `ui.colored_rows` | M7.3 |
+  | Player Name | `players[].name` | M7.4 |
+
 - **Change:** keep the stored values, because the AOM import must round-trip them. Disable each
-  such control and show "Stored for AOM compatibility; not active yet" until its roadmap item
-  ships. Each later item re-enables its own control.
+  control and show "Not active yet" with the planned behavior in its tooltip. The item that
+  builds the feature enables the control again.
 - **Acceptance:** every enabled control in Options changes behavior.
-- **Decision needed:** whether to disable these controls or hide them (see
-  [Open decisions](#open-decisions)).
+- **Decision needed:** disable with a note (recommended) or hide (see [Decisions](#decisions)).
 
 ### M1.5 Legacy import target and leftovers
 
@@ -158,12 +177,48 @@ controls or exports suggest.
 
 - **Problem:** CI builds and tests on Linux, but nobody has run the application on Linux or
   synchronized with the production AniDB service.
-- **Change:** run the [native UI verification](development.md#native-ui-verification) steps on a Linux
-  desktop and record the result. Separately, a maintainer with a registered client runs one
-  manual synchronization (login, FILE, MYLISTADD on a test entry, logout) and records the
+- **Change:** run the [native UI verification](development.md#native-ui-verification) steps on a
+  Linux desktop and record the result. Separately, a maintainer with a registered client runs
+  one manual synchronization (login, FILE, MYLISTADD on a test entry, logout) and records the
   outcome without private data.
 - **Acceptance:** the verification sections of the parity page and the audit name what was
   exercised. Automated tests never contact AniDB.
+- **Depends:** M1.8, so the production check runs under the final limits.
+
+### M1.8 Honour AniDB server limits across runs and restarts
+
+- **Problem:** today's limits apply only within one client instance and one run.
+  - The UDP `Pacer` (2 s between the first five packets of a burst, then 4 s) belongs to each
+    `UdpClient`, and `HttpClient::pace` (2 s) to each `HttpClient`. `process_queue` builds new
+    clients for every run, so repeated **Synchronize now** clicks restart the burst allowance,
+    and every run logs in and out again.
+  - `HttpClient::titles_dump`, `image` and `get_bytes` are not paced at all.
+  - Nothing limits the title dump: `meta.titles_dump_date` is written but never read, and
+    every full update queues another `TitlesDump`.
+  - Nothing enforces the "do not refetch an anime more than once a day" etiquette that
+    [storage and network](storage-and-network.md#http-api) already records: `FetchAnime` has no
+    age check, even though `anime.fetched` exists.
+- **Research first:** confirm the current rules for UDP flood protection, HTTP API flooding and
+  caching, the title dump download frequency and the image server from AniDB's own pages
+  (`UDP_API_Definition`, `HTTP_API_Definition`, `API` on wiki.anidb.net). Those pages refuse
+  automated readers (HTTP 403 from Cloudflare, observed while writing this roadmap), so a
+  maintainer reads them in a browser. Record each rule with its source and retrieval date in
+  storage and network. The values in the code today come from that document, not from a fresh
+  read.
+- **Change:**
+  - One process-wide UDP limiter and one HTTP limiter, owned by the worker and shared by every
+    client instance, persisting the last send time in `meta` so a restart cannot reset the
+    spacing.
+  - The HTTP limiter covers every HTTP request, including the title dump and images.
+  - A title-dump guard based on `titles_dump_date`: **Download anime titles** and full updates
+    skip the dump inside the minimum interval and say when it is next allowed.
+  - A minimum age per anime based on `anime.fetched`. An explicit refresh from the detail window
+    is also refused inside that age and shows when it becomes available.
+  - All limits are named constants with a link to the recorded rule.
+- **Acceptance:** loopback tests with a controllable clock: two consecutive queue runs keep
+  the long-term spacing; a restart keeps it; a second title dump and a too-early anime fetch
+  are refused without any request.
+- **Constraints:** rules 8 and 15; the GitHub update transport stays separate (rule 20).
 
 ## M2 Library safety
 
@@ -230,6 +285,7 @@ items expose the commands in the desktop application.
 - **Change:** add **Refresh** actions that queue `MylistRefresh`, `FetchEpisode` and `FetchGroup`
   from **My list**, the anime detail episode table and **Groups**.
 - **Acceptance:** the refreshed data replaces the cached rows and keeps pending local intent.
+- **Depends:** M1.8 for any minimum age the rules require.
 
 ### M3.5 Keep and show MyList statistics
 
@@ -243,37 +299,42 @@ items expose the commands in the desktop application.
 ### M4.1 Full update menu action
 
 - **Change:** add **Tools > Full update...**, which reuses `Job::QueueFullUpdate`. A
-  confirmation shows how many commands it would queue.
+  confirmation shows how many commands it would queue after the M1.8 guards have removed the
+  title dump and anime that are too recent.
 - **Acceptance:** it behaves exactly like `--full-update`, and nothing is sent until the queue
   runs.
+- **Depends:** M1.8.
 
-### M4.2 Per-anime refresh throttle
+### M4.2 Update known file information
 
-- **Change:** skip `FetchAnime` for anime whose `anime.fetched` is newer than a configurable age
-  (default at least one day; AniDB's HTTP API documentation asks clients to cache replies and not
-  repeat a request within a day, so re-check the current wording first), unless the user
-  explicitly asks for a refresh from the detail window.
-- **Acceptance:** two full updates in a row queue no duplicate anime fetches.
-- **Constraints:** rule 8.
+- **Change:** give `update_file_information` ("Update known file information") a meaning: when a
+  file that is already identified is hashed again, queue a `FetchFile` to refresh its AniDB
+  record, subject to the M1.8 minimum ages. This meaning is inferred from the AOM label; confirm
+  it before building.
+- **Acceptance:** with the option off, re-hashing a known file sends nothing; with it on, it
+  queues one refresh, and none while a recent one exists.
+- **Depends:** M1.8 and M1.4.
 
 ### M4.3 Full-account MyList bootstrap and reconciliation
 
 - **Research first:** the transport has only per-entry `MYLIST`, plus `MYLISTADD`, `MYLISTDEL`
   and `MYLISTSTATS`. Find out which *maintained* AniDB route returns a whole MyList, its usage
-  policy and its format, and how it authenticates. Record the answer in
-  [storage and network](storage-and-network.md) before writing code.
+  policy and its format, and how it authenticates. Candidates named in AniDB's API index are a
+  MyList export and an HTTP user MyList summary; their current rules are unverified. Record the
+  answer in [storage and network](storage-and-network.md) before writing code.
 - **Design constraints:**
   - Only a complete, validated listing may establish absence; a partial or malformed one never
     deletes local rows (rule 14).
   - Pending local intent wins over the listing (rules 13 and 14).
-  - The import is streamed and bounded in the same way as the title dump (rule 18).
+  - The import is streamed and bounded in the same way as the title dump (rule 18), and its
+    request frequency goes through M1.8.
 - **Acceptance:** after a bootstrap on an empty database, the local MyList matches a synthetic
   listing, and a second run changes nothing.
 
 ## M5 Background automation
 
-All background work stays opt-in, respects **Work offline**, cooldowns and busy activity, and
-runs on the worker (rules 1, 2, 8 and 15).
+All background work is opt-in, off by default, respects **Work offline**, cooldowns and busy
+activity, and runs on the worker (rules 1, 2, 8 and 15).
 
 ### M5.1 Scheduler for folder scans
 
@@ -312,21 +373,24 @@ runs on the worker (rules 1, 2, 8 and 15).
 - **Depends:** M5.1 for automatic draining.
 - **Constraints:** rules 3 and 5 (one read per file).
 
-### M5.5 Automatic queue run
+### M5.5 Opt-in automatic queue run
 
-- **Change:** an opt-in setting runs the AniDB queue after new commands arrive and at an
-  interval, with flood spacing, cooldowns and blocked states unchanged.
-- **Decision needed:** whether the default should stay manual (recommended) and whether
-  automatic runs may perform MyList deletes.
-- **Depends:** M5.1 and M5.6.
+- **Decided:** opt-in, off by default.
+- **Change:** when enabled, run the AniDB queue after new commands arrive and at an interval,
+  with flood spacing, cooldowns and blocked states unchanged. MyList deletes stay manual:
+  an automatic run leaves them queued until the user runs the queue.
+- **Acceptance:** with the option off nothing is sent without a click; with it on, a burst of
+  new commands never sends faster than the M1.8 limits, and an active cooldown stops it.
+- **Depends:** M1.8, M5.1 and M5.6.
 
 ### M5.6 Long-lived session: keep-alive and idle logout
 
-- **Problem:** `process_queue` builds a new `UdpClient` for each run, so `UdpClient::ping` and
-  `idle_logout_minutes` have nothing to act on.
+- **Problem:** `process_queue` builds a new `UdpClient` for each run, so every run logs in and
+  out, and `UdpClient::ping` and `idle_logout_minutes` have nothing to act on.
 - **Change:** keep one session across queue runs while automatic runs are on. Use `PING` for
   NAT keep-alive, honor `idle_logout_minutes`, and log out on exit.
 - **Constraints:** rule 8 (session recovery, encryption, spacing).
+- **Depends:** M1.8.
 
 ## M6 Renaming automation
 
@@ -347,26 +411,30 @@ runs on the worker (rules 1, 2, 8 and 15).
   explicit confirmation that applies only the valid rows through M6.1.
 - **Depends:** M6.1.
 
-### M6.3 Automatic rename per managed folder
+### M6.3 Opt-in automatic rename per managed folder
 
-- **Decision needed:** rule 19 currently says automatic rename stays unimplemented. Enabling it
-  needs an explicit maintainer decision and an amended rule (opt-in per folder, never on by
-  default, never implicit).
+- **Decided:** opt-in per managed folder, off by default. The pull request amends rule 19
+  ("automatic rename stays unimplemented and never implicit") to "opt-in per folder, never on by
+  default, never implicit".
 - **Change:** after identification, rename files in folders with `auto_rename` on through M6.1.
-  Collisions are skipped and logged, never overwritten. Add a dry-run mode that only logs the
-  planned renames.
+  Collisions are skipped and logged, never overwritten. A dry-run mode logs the planned renames
+  without moving anything, and the first enable of a folder shows that dry run.
 - **Depends:** M5.1, M6.1 and M1.4.
 
 ## M7 Presentation
 
 ### M7.1 Anime covers
 
-- **Builds on:** the `anime.picname` column, which is already stored, `HttpClient::image`, and
-  the `image_server` setting.
-- **Change:** fetch covers on demand on the worker into a bounded cache folder, decode them off
-  the UI thread, and show them in the anime detail window. Covers are skipped when offline.
-- **Research:** the AniDB image CDN's usage policy and pacing.
+- **Decided:** retrieve covers, strictly within AniDB's usage conditions for its image servers.
+- **Builds on:** the `anime.picname` column, which is already stored, `HttpClient::image`, the
+  image server that `AUTH` returns, and the `image_server` setting.
+- **Research first:** the image servers' usage conditions (allowed host, request rate, caching,
+  attribution, hotlinking). Record them under M1.8's source list.
+- **Change:** fetch a cover on demand when the detail window opens, through the M1.8 HTTP
+  limiter, into a bounded on-disk cache. A cached cover is never downloaded again. Decode off
+  the UI thread; skip fetching when offline or banned.
 - **Constraints:** rules 1, 8 and 16.
+- **Depends:** M1.8.
 
 ### M7.2 Saved window, columns and sorting
 
@@ -389,25 +457,38 @@ runs on the worker (rules 1, 2, 8 and 15).
   them. Use the player **Name** in the player chooser.
 - **Depends:** M1.1.
 
-### M7.5 Media properties
+### M7.5 Opt-in media properties through `ffprobe`
 
-- **Research:** decide between parsing container headers (Matroska, MP4) in-process and calling
-  an external tool such as `ffprobe` through the existing external-tool launcher.
-- **Change:** store the duration, resolution, codecs and bitrates per file, and fill the hash
-  export's media tokens, which currently produce constants.
-- **Constraints:** rule 5. Header parsing reads only the container headers and must not add a
-  second full read.
+- **Decided:** opt-in, using the external `ffprobe` tool from FFmpeg, which the app can install
+  with one click. The feature stays disabled until `ffprobe` is available.
+- **Change:**
+  - Detection: a configured path, then `PATH`. Options shows the detected version.
+  - One-click install: a confirmed, anonymous, size-limited download of a pinned build for the
+    platform into Animatic's data folder, verified by SHA-256 before use, without elevation.
+    Only `ffprobe` and its license files are kept. On Linux, a distribution-packaged `ffprobe`
+    on `PATH` is preferred when present.
+  - Extraction: after hashing, a separate worker job runs `ffprobe` (argument vector, no shell,
+    timeout, bounded output, JSON) and stores duration, resolution, codecs and bitrates in a new,
+    idempotently created table. The hash export's media tokens, which today produce constants,
+    use these values.
+- **Research first:** which distributor and build to pin (FFmpeg builds are LGPL or GPL;
+  downloading at the user's request is not bundling, but the license must be shown), where its
+  checksums come from, and how a pinned version is updated.
+- **Constraints:** rules 1, 5 (`ffprobe` reads container headers, not a second full pass) and 10;
+  download safety in the spirit of rule 20 (explicit, confirmed, no elevation, nothing sent but
+  the request).
+- **Depends:** M1.1.
 
 ## M8 Platform integration
 
-Each of these items is platform-specific (rule 10) and needs a maintainer decision before work
-starts.
+Each of these items is platform-specific and goes behind a cross-platform abstraction (rule 10).
 
 ### M8.1 Credentials in the operating-system keystore
 
+- **Decided:** keystore with a visible fallback.
 - **Change:** keep the password and API keys in the Windows Credential Manager or the Linux
-  Secret Service (for example the `keyring` crate), with an explicit, visible fallback to the
-  settings file when no keystore exists.
+  Secret Service (for example the `keyring` crate). When no keystore is available, fall back to
+  the settings file and say so in Options. Migrate existing plaintext values on the first save.
 - **Constraints:** rules 12 and 17 (load and recovery never expose secret values).
 
 ### M8.2 Shell integration and single-instance handoff
@@ -415,26 +496,35 @@ starts.
 - **Change:** register "Hash with Animatic" (a per-user Windows registry entry and a Linux
   `.desktop` action), and forward the paths to an already running instance instead of opening a
   second one. This gives `integrate_into_shell` a meaning.
+- **Decision needed:** build it, or declare it a deliberate non-port.
 
-### M8.3 System tray
+### M8.3 System tray, best effort
 
-- **Change:** minimize to tray and show a tray menu. Tray support on Linux desktops is
-  inconsistent, so this may become a deliberate non-port.
+- **Decided:** best effort.
+- **Change:** minimize to tray and show a tray menu where the platform supports it (Windows
+  notification area; Linux StatusNotifierItem/AppIndicator). Where no tray is available, the
+  minimize-to-tray option is disabled with an explanation, so the window can never be hidden
+  without a way back.
 
 ### M8.4 Client version field
 
 - **Change:** add the `client_version` field to the AniDB section of Options next to **Client
   name**, validated as a positive integer. Release version bumps never change it.
 
-## Open decisions
+## Decisions
 
-| Decision | Options | Recommendation |
-|---|---|---|
-| M1.4: stored-only controls | Disable with a note, or hide | Disable with a note, so imported AOM values stay visible |
-| M5.5: automatic queue run | Manual only, or an opt-in automatic run | Opt-in automatic run, manual by default, deletes always manual |
-| M6.3: automatic rename | Keep forbidden (rule 19), or opt-in per folder | Opt-in per folder with dry run, after M6.1 has shipped |
-| M8.1: keystore | Keystore with fallback, or settings file only | Keystore with a visible fallback |
-| M8.2 / M8.3: shell integration and tray | Build, or declare deliberate non-ports | Build M8.2; decide M8.3 after a Linux runtime check (M1.7) |
+| Decision | Outcome |
+|---|---|
+| M5.5 automatic queue run | Decided: opt-in, off by default; MyList deletes stay manual |
+| M6.3 automatic rename | Decided: opt-in per managed folder, with a dry run; rule 19 amended in that pull request |
+| M8.1 credentials | Decided: operating-system keystore with a visible fallback |
+| M8.3 tray | Decided: best effort; disabled where the platform has no tray |
+| M7.5 media properties | Decided: opt-in through `ffprobe`, one-click install, disabled until available |
+| M1.8 server limits | Decided: a hard requirement for every request path |
+| M7.1 covers | Decided: retrieve them, within AniDB's image server usage conditions |
+| M4.3 full MyList download | Decided: research the maintained route first |
+| M1.4 inactive controls | **Open:** disable with "Not active yet" (recommended, keeps imported AOM values visible) or hide |
+| M8.2 shell integration | **Open:** build, or declare a deliberate non-port |
 
 ## Not planned
 
