@@ -82,7 +82,7 @@ flowchart LR
 | M4.3 | Full-account MyList import through MyList export | Planned |
 | M5.1 | Scheduler for folder scans | Done |
 | M5.2 | Settle delay for files being written | Done |
-| M5.3 | `exclude_system` and `clear_empty_folders` | Planned |
+| M5.3 | `exclude_system` and `clear_empty_folders` | Done |
 | M5.4 | Persistent hash queue and autostart | Planned |
 | M5.5 | Opt-in automatic queue run | Planned |
 | M5.6 | Long-lived session: keep-alive and idle logout | Planned |

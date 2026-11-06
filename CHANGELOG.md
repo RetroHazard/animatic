@@ -115,6 +115,10 @@ the generated line for that pull request's squash commit.
   **Theme: System** follows the operating system, and the saved theme and UI scale apply at
   launch. Options has a **Client version** field next to **Client name**; a release update never
   changes it.
+- Managed folders honour two rules that were stored only: **Skip system files** makes scans ignore
+  files and folders with the Windows system attribute (no effect on Linux), and **Remove emptied
+  folders** removes the folders a rename left completely empty beneath the managed folder, never
+  the managed folder itself and never anything non-empty (hidden files keep a folder).
 
 ### Changed
 
