@@ -25,7 +25,7 @@ written with the settings.
 | | Add "Hash with Animatic" to the file menu | Active, off by default; applied by **Save options**, see [File-menu entry](#file-menu-entry) |
 | | Restrict file extensions + list | The picker filter; the list also always drives [scans](Managed-Folders-and-Scans.md) |
 | | Hash export template, Export %length% in minutes | Active for [hash export](Exports.md#hash-export) |
-| Managed folders | Per-rule fields, Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Auto rename* is shown disabled ("Not active yet") |
+| Managed folders | Per-rule fields (including *Skip system files* and *Remove emptied folders*), Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Skip system files* applies on Windows only; *Remove emptied folders* acts after a [rename](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied); *Auto rename* is shown disabled ("Not active yet") |
 | | Folder scanning: scan at start, scan on a schedule every N minutes (5–10080), hash a file once unchanged for N ms, pause between hashed files | Active; see [scheduled scans](Managed-Folders-and-Scans.md#scheduled-scans) and [settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing). Scan settings reach the background timer when Options is closed, not while you edit |
 | Statistics export | Enable, Format, Output file | Active |
 | External player | Executable, Play arguments, Default (*Name* is shown disabled, "Not active yet") | Active; open/enqueue have no UI |

@@ -10,7 +10,7 @@ use animatic_anidb::limits::Limits;
 use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
 use animatic_core::db::Db;
 use animatic_core::file_manager::hash_and_register;
-use animatic_core::file_manager::{MoveControl, MoveMethod, move_file};
+use animatic_core::file_manager::{MoveControl, MoveMethod, clear_emptied_folders, move_file};
 use animatic_core::format;
 use animatic_core::hash::Ed2kVariant;
 use animatic_core::library::LibraryProjection;
@@ -102,7 +102,12 @@ pub enum Job {
     /// Rename apply: move each file to its planned path, in order, and record the new paths.
     /// Moves across volumes copy, verify and swap (see `file_manager::move_file`). Cancel stops
     /// before the next file and during a copy; every file gets a `Renamed` or `RenameFailed`.
-    RenameFiles(Vec<RenameItem>),
+    /// Afterwards the folders the moves emptied are removed in the managed folders whose
+    /// `clear_empty_folders` is on (see `file_manager::clear_emptied_folders`).
+    RenameFiles {
+        items: Vec<RenameItem>,
+        managers: FileManagerSettings,
+    },
     /// Plan a batch rename on the projection thread (answered by `Event::RenamesPlanned`; no
     /// started/finished events, never queued behind a long main-worker job).
     PlanRenames {
@@ -535,7 +540,9 @@ fn run(
             | Job::PlanRenames { .. } => {
                 unreachable!("handled before dispatch")
             }
-            Job::RenameFiles(items) => run_renames(&db_path, items, &events, &cancel, &pause),
+            Job::RenameFiles { items, managers } => {
+                run_renames(&db_path, items, &managers, &events, &cancel, &pause)
+            }
             Job::Hash(paths) => {
                 let total = paths.len();
                 let _ = events.send(Event::Started {
@@ -1276,10 +1283,12 @@ fn plan_renames(
     Event::RenamesPlanned { request, rows }
 }
 
-/// Rename apply (`Job::RenameFiles`): one `file_manager::move_file` per item, each reported.
+/// Rename apply (`Job::RenameFiles`): one `file_manager::move_file` per item, each reported, then
+/// `clear_empty_folders` for the folders those moves left empty.
 fn run_renames(
     db_path: &Path,
     items: Vec<RenameItem>,
+    managers: &FileManagerSettings,
     events: &Sender<Event>,
     cancel: &AtomicBool,
     pause: &AtomicBool,
@@ -1291,6 +1300,7 @@ fn run_renames(
     });
     let db = Db::open(db_path);
     let (mut renamed, mut not_renamed) = (0, 0);
+    let mut vacated = Vec::new();
     for (index, item) in items.into_iter().enumerate() {
         let RenameItem { local_id, old, new } = item;
         let fail = |message: String| Event::RenameFailed {
@@ -1337,6 +1347,7 @@ fn run_renames(
         match result {
             Ok(outcome) => {
                 renamed += 1;
+                vacated.push(old.clone());
                 let _ = events.send(Event::Renamed {
                     local_id,
                     old: old.clone(),
@@ -1351,11 +1362,35 @@ fn run_renames(
             }
         }
     }
+    clear_vacated_folders(managers, &vacated, events);
     let _ = events.send(Event::RenameSummary {
         renamed,
         not_renamed,
     });
     let _ = events.send(Event::Finished);
+}
+
+/// `clear_empty_folders` for the files a rename job moved away: removed folders are reported to
+/// the activity log, failures only to the log file.
+fn clear_vacated_folders(
+    managers: &FileManagerSettings,
+    vacated: &[PathBuf],
+    events: &Sender<Event>,
+) {
+    let mut removed = 0;
+    for old in vacated {
+        let cleared = clear_emptied_folders(managers, old);
+        removed += cleared.removed.len();
+        for error in cleared.errors {
+            log::warn!("could not remove an emptied folder: {error}");
+        }
+    }
+    if removed > 0 {
+        let _ = events.send(Event::Info(format!(
+            "Removed {removed} empty folder{}",
+            if removed == 1 { "" } else { "s" }
+        )));
+    }
 }
 
 /// Run `export` on the projection thread's connection and keep that connection afterwards.
@@ -2060,11 +2095,14 @@ mod tests {
         };
         let worker = Worker::spawn(db.path.clone());
 
-        worker.submit(Job::RenameFiles(vec![
-            item(a, "a.mkv", "Show 01.mkv"),
-            item(c, "c.mkv", "taken.mkv"),
-            item(b, "b.mkv", "sub/Show 02.mkv"),
-        ]));
+        worker.submit(Job::RenameFiles {
+            items: vec![
+                item(a, "a.mkv", "Show 01.mkv"),
+                item(c, "c.mkv", "taken.mkv"),
+                item(b, "b.mkv", "sub/Show 02.mkv"),
+            ],
+            managers: FileManagerSettings::default(),
+        });
         let mut renamed = Vec::new();
         let mut failed = Vec::new();
         let mut summary = None;
@@ -2106,6 +2144,38 @@ mod tests {
     }
 
     #[test]
+    fn a_rename_job_removes_the_folders_it_emptied_only_when_the_managed_folder_asks_for_it() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let managers = |clear_empty_folders| FileManagerSettings {
+            managers: vec![animatic_core::settings::FileManager {
+                path: media.to_string_lossy().into_owned(),
+                clear_empty_folders,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let worker = Worker::spawn(db.path.clone());
+        for (clear, name) in [(false, "kept"), (true, "cleared")] {
+            let old = media.join(name).join("season 1/ep.mkv");
+            let id = register_media(&library, &old, name.as_bytes());
+            worker.submit(Job::RenameFiles {
+                items: vec![RenameItem {
+                    local_id: id,
+                    old,
+                    new: media.join(format!("{name}.mkv")),
+                }],
+                managers: managers(clear),
+            });
+            wait_for(&worker, |e| matches!(e, Event::Finished));
+            assert!(media.join(format!("{name}.mkv")).is_file());
+            assert_eq!(media.join(name).exists(), !clear, "{name}");
+        }
+        assert!(media.is_dir(), "the managed folder itself stays");
+    }
+
+    #[test]
     fn a_cancelled_rename_job_changes_nothing_and_accounts_for_every_file() {
         let db = TempDb::new();
         let library = db.open();
@@ -2129,6 +2199,7 @@ mod tests {
         run_renames(
             &db.path,
             items,
+            &FileManagerSettings::default(),
             &tx,
             &AtomicBool::new(true),
             &AtomicBool::new(false),

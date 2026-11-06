@@ -62,6 +62,9 @@
 //!   swapped into place and recorded before the source is removed. It never replaces an
 //!   existing target on the cross-volume path; a same-volume rename is not an atomic
 //!   no-overwrite operation.
+//! * [`file_manager::clear_emptied_folders`] is the only folder removal: after Animatic's own move,
+//!   strictly beneath the matching manager root, one non-recursive `remove_dir` per completely
+//!   empty folder, never the root itself.
 //! * Exports ([`stats::LibraryStats::write`], [`db::Db::export_local_hashes`]) replace their
 //!   target through [`atomic::write_atomic`]: a failed write leaves the previous file intact.
 //!   [`db::Db::library_stats`] reads every figure in one read transaction and returns an error

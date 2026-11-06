@@ -27,7 +27,7 @@ Linux-specific statements are reading of the code.
 | Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
 | Automatic renaming during or after a scan | **Not implemented.** The per-folder "Auto rename" checkbox is stored and shown but nothing reads it. Every rename is a manual, confirmed action. |
 | Renaming files that AniDB has not identified, or whose anime/episode rows are missing | Blocked with a message |
-| Cleaning up folders left empty by a move | Not implemented (`clear_empty_folders` is stored only) |
+| Cleaning up folders left empty by a move | Optional, per managed folder (**Remove emptied folders**, `clear_empty_folders`): only completely empty folders below the managed folder, see [Managed folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied) |
 
 User-interface steps (which page, which button) are in [Renaming files](Renaming-Files.md); the
 stored field and its neighbors are in the [Settings reference](Settings-Reference.md). These

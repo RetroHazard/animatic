@@ -49,6 +49,88 @@ fn hidden(entry: &DirEntry) -> bool {
     entry.file_name().to_string_lossy().starts_with('.')
 }
 
+/// The Windows system attribute (`FILE_ATTRIBUTE_SYSTEM`) of a file or folder, for
+/// `exclude_system`. The attribute does not exist on Linux, where this is always `false` and
+/// `exclude_system` has no effect. A link is judged by its own attributes, never its target's.
+#[cfg(windows)]
+fn has_system_attribute(entry: &DirEntry) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+    entry
+        .metadata()
+        .is_ok_and(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_SYSTEM != 0)
+}
+
+#[cfg(not(windows))]
+fn has_system_attribute(_entry: &DirEntry) -> bool {
+    false
+}
+
+/// What [`clear_emptied_folders`] did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ClearedFolders {
+    /// The folders removed, deepest first.
+    pub removed: Vec<PathBuf>,
+    /// Why a folder that looked empty could not be removed. Never fatal.
+    pub errors: Vec<String>,
+}
+
+/// `clear_empty_folders` after a file left `old`: removes the folder that held it, then each parent
+/// in turn, while the folder is strictly beneath the root of the manager matching `old` (that
+/// manager has the option on and its root is a reachable directory) and has no entries at all,
+/// hidden ones included. The root itself is never removed, nothing is removed recursively
+/// (`remove_dir` refuses a folder that is not empty) and links are never followed or removed. Call
+/// it only for a file Animatic itself moved away.
+pub fn clear_emptied_folders(settings: &FileManagerSettings, old: &Path) -> ClearedFolders {
+    let mut cleared = ClearedFolders::default();
+    let Some(manager) = settings.matching_manager_for(old) else {
+        return cleared;
+    };
+    if !manager.clear_empty_folders
+        || old
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        || !matches!(fs::metadata(&manager.path), Ok(metadata) if metadata.is_dir())
+    {
+        return cleared;
+    }
+    let mut inside = normalize(Path::new(&manager.path));
+    if !inside.ends_with('/') {
+        inside.push('/');
+    }
+    let mut folder = old.parent();
+    while let Some(dir) = folder {
+        if !normalize(dir).starts_with(&inside) {
+            break;
+        }
+        match fs::symlink_metadata(dir) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => break,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    cleared.errors.push(format!("{}: {e}", dir.display()));
+                }
+                break;
+            }
+        }
+        match fs::read_dir(dir).map(|mut entries| entries.next().is_none()) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                cleared.errors.push(format!("{}: {e}", dir.display()));
+                break;
+            }
+        }
+        if let Err(e) = fs::remove_dir(dir) {
+            cleared.errors.push(format!("{}: {e}", dir.display()));
+            break;
+        }
+        cleared.removed.push(dir.to_path_buf());
+        folder = dir.parent();
+    }
+    cleared
+}
+
 fn extension_allowed(path: &Path, extensions: &HashSet<String>) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -96,7 +178,11 @@ pub fn plan_scan(
             .follow_links(false)
             .max_depth(depth)
             .into_iter()
-            .filter_entry(|entry| !(manager.exclude_hidden && entry.depth() > 0 && hidden(entry)));
+            .filter_entry(|entry| {
+                entry.depth() == 0
+                    || !((manager.exclude_hidden && hidden(entry))
+                        || (manager.exclude_system && has_system_attribute(entry)))
+            });
         for entry in walker
             .filter_map(|r| r.ok())
             .filter(|e| e.file_type().is_file())
@@ -1201,5 +1287,160 @@ mod tests {
         let started = Instant::now();
         assert!(!interruptible_sleep(Duration::from_secs(30), &cancel));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    fn scan_names(root: &Path, exclude_system: bool) -> Vec<String> {
+        let manager = FileManager {
+            path: root.to_string_lossy().into_owned(),
+            auto_hash: true,
+            exclude_system,
+            ..Default::default()
+        };
+        let settings = FileManagerSettings {
+            managers: vec![manager],
+            ..Default::default()
+        };
+        let mut names: Vec<String> = plan_scan(&Db::memory().unwrap(), &settings, "mkv")
+            .unwrap()
+            .into_iter()
+            .filter_map(|action| match action {
+                ScanAction::Hash { path, .. } => {
+                    Some(path.file_name().unwrap().to_string_lossy().into_owned())
+                }
+                _ => None,
+            })
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[cfg(windows)]
+    fn set_system_attribute(path: &Path) {
+        let status = std::process::Command::new("attrib")
+            .arg("+s")
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn scan_skips_system_files_and_folders_only_when_exclude_system_is_on() {
+        let root = test_root("system-attribute");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sysdir")).unwrap();
+        fs::write(root.join("plain.mkv"), b"plain").unwrap();
+        fs::write(root.join("system.mkv"), b"system").unwrap();
+        fs::write(root.join("sysdir/inside.mkv"), b"inside").unwrap();
+        set_system_attribute(&root.join("system.mkv"));
+        set_system_attribute(&root.join("sysdir"));
+
+        assert_eq!(scan_names(&root, true), ["plain.mkv"]);
+        assert_eq!(
+            scan_names(&root, false),
+            ["inside.mkv", "plain.mkv", "system.mkv"]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn exclude_system_is_a_no_op_off_windows() {
+        let root = test_root("system-attribute");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("plain.mkv"), b"plain").unwrap();
+        fs::write(root.join("sub/inside.mkv"), b"inside").unwrap();
+
+        assert_eq!(scan_names(&root, true), ["inside.mkv", "plain.mkv"]);
+        assert_eq!(scan_names(&root, false), ["inside.mkv", "plain.mkv"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn clearing(root: &Path, option: bool) -> FileManagerSettings {
+        FileManagerSettings {
+            managers: vec![FileManager {
+                path: root.to_string_lossy().into_owned(),
+                clear_empty_folders: option,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn clearing_removes_emptied_nested_folders_up_to_but_not_the_root() {
+        let root = test_root("clear-nested");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a/b/c")).unwrap();
+        fs::create_dir_all(root.join("keep")).unwrap();
+        fs::write(root.join("keep/other.mkv"), b"other").unwrap();
+        let moved_from = root.join("a/b/c/show.mkv");
+
+        let cleared = clear_emptied_folders(&clearing(&root, true), &moved_from);
+
+        assert_eq!(
+            cleared.removed,
+            [root.join("a/b/c"), root.join("a/b"), root.join("a")]
+        );
+        assert!(cleared.errors.is_empty());
+        assert!(root.is_dir(), "the manager root stays");
+        assert!(root.join("keep/other.mkv").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_keeps_folders_that_still_hold_anything_even_a_hidden_file() {
+        let root = test_root("clear-hidden");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::write(root.join("a/b/.hidden"), b"x").unwrap();
+        fs::create_dir_all(root.join("x/y")).unwrap();
+        fs::create_dir_all(root.join("x/sibling")).unwrap();
+
+        let kept = clear_emptied_folders(&clearing(&root, true), &root.join("a/b/show.mkv"));
+        assert_eq!(kept, ClearedFolders::default());
+        assert!(root.join("a/b/.hidden").is_file());
+
+        // A folder emptied by the move goes, but its parent still holds a sibling folder.
+        let partial = clear_emptied_folders(&clearing(&root, true), &root.join("x/y/show.mkv"));
+        assert_eq!(partial.removed, [root.join("x/y")]);
+        assert!(root.join("x/sibling").is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_does_nothing_when_off_outside_the_root_or_for_the_root_itself() {
+        let root = test_root("clear-scope");
+        let _ = fs::remove_dir_all(&root);
+        let managed = root.join("managed");
+        fs::create_dir_all(managed.join("a")).unwrap();
+        fs::create_dir_all(root.join("managed2/a")).unwrap();
+        fs::create_dir_all(root.join("elsewhere/a")).unwrap();
+
+        let off = clear_emptied_folders(&clearing(&managed, false), &managed.join("a/x.mkv"));
+        assert_eq!(off, ClearedFolders::default());
+        assert!(managed.join("a").is_dir());
+
+        let on = clearing(&managed, true);
+        for outside in ["managed2/a/x.mkv", "elsewhere/a/x.mkv"] {
+            let result = clear_emptied_folders(&on, &root.join(outside));
+            assert_eq!(result, ClearedFolders::default(), "{outside}");
+        }
+        assert!(root.join("managed2/a").is_dir());
+        assert!(root.join("elsewhere/a").is_dir());
+
+        let at_root = clear_emptied_folders(&on, &managed.join("x.mkv"));
+        assert_eq!(at_root, ClearedFolders::default());
+        assert!(managed.is_dir());
+
+        let missing_root = root.join("gone");
+        let unreachable = clear_emptied_folders(
+            &clearing(&missing_root, true),
+            &missing_root.join("a/x.mkv"),
+        );
+        assert_eq!(unreachable, ClearedFolders::default());
+        fs::remove_dir_all(root).unwrap();
     }
 }

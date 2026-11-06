@@ -1579,11 +1579,14 @@ impl AnimaticApp {
             });
         if apply {
             if let Some(new) = plan.target.clone().filter(|_| plan.can_apply()) {
-                self.worker.submit(Job::RenameFiles(vec![RenameItem {
-                    local_id: id,
-                    old,
-                    new,
-                }]));
+                self.worker.submit(Job::RenameFiles {
+                    items: vec![RenameItem {
+                        local_id: id,
+                        old,
+                        new,
+                    }],
+                    managers: self.settings.file_managers.clone(),
+                });
             }
             self.rename_preview = None;
         } else if edit_pattern {
@@ -1754,7 +1757,10 @@ impl AnimaticApp {
                 })
                 .collect();
             batch.applied = true;
-            self.worker.submit(Job::RenameFiles(items));
+            self.worker.submit(Job::RenameFiles {
+                items,
+                managers: self.settings.file_managers.clone(),
+            });
         } else if edit_pattern {
             self.settings_open = true;
             self.batch_rename = None;
@@ -3440,6 +3446,17 @@ impl AnimaticApp {
                                     "identified files in this folder will be renamed automatically (opt-in).",
                                     |ui| ui.checkbox(&mut manager.auto_rename, "Auto rename"),
                                 );
+                                ui.checkbox(&mut manager.exclude_system, "Skip system files")
+                                    .on_hover_text(
+                                        "Scans skip files and folders with the Windows system attribute. \
+                                         Linux has no such attribute, so this has no effect there.",
+                                    );
+                                ui.checkbox(&mut manager.clear_empty_folders, "Remove emptied folders")
+                                    .on_hover_text(
+                                        "After Animatic renames or moves a file out of a subfolder, remove \
+                                         the folder (and emptied parents) if nothing at all is left in it. \
+                                         The managed folder itself is never removed.",
+                                    );
                                 ui.checkbox(&mut manager.mylist_auto_add, "Add to mylist");
                             });
                             ui.horizontal(|ui| {

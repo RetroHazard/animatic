@@ -14,7 +14,11 @@ Planning (`file_manager::plan_scan`), per rule in list order:
 - **Subfolders** on = unlimited depth; off = direct children only. Symbolic links are not followed.
 - With **exclude_hidden** (the default for new rules; not shown in Options), entries whose name
   starts with `.` are skipped, directories included. The Windows hidden attribute is not
-  consulted, and *exclude system files* is stored but unused.
+  consulted.
+- With **Skip system files** (`exclude_system`, on for new rules), files and folders that carry the
+  Windows *system* attribute are skipped; a skipped folder is not entered. Linux has no such
+  attribute, so there the option changes nothing. The attribute is read from the entry itself, never
+  from the target of a link.
 - Only files whose extension is in the **extension list** are considered. This list is always
   applied during a scan, even when *Restrict file extensions* is unchecked (that checkbox only
   filters the file picker). An empty list means a scan finds nothing. Matching is
@@ -83,9 +87,8 @@ stored `sleep_time_ms` as a pause between scans (default 900000); a stored value
 reset to 0 on load, and the scan interval above replaces the old meaning.
 
 Hashes found by a scan follow the normal [identification](Hashing-and-Identification.md) path.
-The rule fields `auto_rename`, `clear_empty_folders` and `exclude_system` have no effect; the
-**Auto rename** checkbox exists but renaming is only manual
-([Manual renaming](Renaming-Files.md)).
+The rule field `auto_rename` has no effect; the **Auto rename** checkbox exists but renaming is
+only manual ([Manual renaming](Renaming-Files.md)).
 
 **Which rule applies to a file** (`FileManagerSettings::manager_for`): rules with a non-empty
 path are candidates; one applies if the file is below its folder (any depth when *Subfolders*
@@ -97,3 +100,22 @@ and the rename destination, but never authorizes removal.
 storage*, *Set source*, *Set other* is a checkbox. Unchecked = leave that field unchanged;
 checked with an empty text = explicitly clear it. **Rename destination** is the base folder
 for [manual renames](Renaming-Files.md); empty keeps files where they are.
+
+## Removing folders a rename emptied
+
+**Remove emptied folders** (`clear_empty_folders`, off by default) is the only place Animatic
+deletes a folder, and it is not part of a scan. After a [manual rename](Renaming-Files.md) (single
+or batch) has moved files, each folder a moved file left is removed when **all** hold:
+
+- the old path is under an explicit rule with the option on (the same longest-path matching as
+  *Remove missing*; a rule without *Subfolders* only covers its own folder, which is never removed),
+  and the rule's folder exists as a directory;
+- the folder is **strictly below** the rule's folder; the rule's own folder is never removed;
+- the folder is **completely empty**: any file, folder or hidden file keeps it. Nothing is deleted
+  recursively and links are not followed or removed.
+
+Parents are then checked in turn, upward, under the same conditions. Only folders that one of the
+files moved by that job came from are considered; an empty folder somewhere else is left alone,
+and so is a folder whose file could not be moved (or whose old copy remains after a cross-drive
+copy). The Log notes "Removed N empty folders"; a folder that cannot be removed is only written to
+the diagnostic log, and the rename itself is not affected.

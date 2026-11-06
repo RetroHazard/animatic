@@ -170,8 +170,10 @@ afterwards. Unreachable roots and other filesystem errors keep records. The chec
 deletion are separate steps, so this is a conservative plan, not an atomic guarantee against a
 volume disconnecting in between. Removal deletes only `local_file`/`local_hash` rows; scans,
 hashing and removal never delete media files and nothing uses a recycle bin. The one media
-file deletion is the source of a verified cross-volume rename (see
-[Rename](#rename)).
+file deletion is the source of a verified cross-volume rename; the one folder deletion is
+`clear_empty_folders` after a rename (see [Rename](#rename)). A scan never removes a folder.
+`exclude_system` makes `plan_scan` skip entries with the Windows system attribute (behind
+`has_system_attribute`; always false on Linux, where it is a documented no-op).
 
 ### AniDB synchronization
 
@@ -562,6 +564,7 @@ Language reference: [Rename language](https://github.com/RetroHazard/animatic/wi
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
 | Library backup and restore | A backup is a consistent snapshot, written to a temporary file and renamed into place; a restore validates the file twice, keeps a byte-for-byte copy of the replaced library and swaps the database file with one rename, after removing the old `-wal`/`-shm`, so the database path is the old or the new library; a refused file changes nothing | That the restored queue matches what AniDB already received; settings (not part of the database); a crash between removing the old `-wal` and the rename (the kept copy is then the way back); automatic or rolling backups; repair |
 | `move_file` | The library never points at a missing file and the only copy is never deleted. Same volume: one `rename`, then the path update (undone if the update fails). A rename that fails because the volumes differ (`ErrorKind::CrossesDevices`: `EXDEV` / `ERROR_NOT_SAME_DEVICE`) falls back to copy → verify → swap → record → remove the source; any failure or cancel before the swap deletes the temporary copy and changes nothing. An existing destination is never replaced | See below |
+| `clear_emptied_folders` | Runs only after a successful move of Animatic's own rename job, only when the manager matching the old path has `clear_empty_folders` on and its root is a reachable directory. It removes the old folder and then each parent with `fs::remove_dir` (never recursive, so any entry, hidden files included, keeps the folder), only while the folder is strictly beneath the manager root and is a real directory (a link is neither followed nor removed). The root is never removed; an error stops the walk and is logged, never fatal to the rename | Removal of folders that were already empty, were emptied by anything but this job, or lie outside a matching manager; a folder that fills between the emptiness check and `remove_dir` is still safe because `remove_dir` itself refuses a non-empty folder |
 | Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary; a secret is never blanked in the file unless the keystore accepted it | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. In the plain-text fallback `.bak` may retain old or removed credentials. Directory-entry durability. Encryption of the file itself; the keystore's own protection (it guards against copied files, not code running as the user). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
 | Statistics and hash export | Both run on the projection thread (the UI only opens the file dialog) and replace the target through `atomic::write_atomic`: a uniquely named temporary file in the target folder, flushed with `sync_all`, then renamed over the target; on any failure the temporary file is removed and the previous target stays. `Db::library_stats` reads every figure in one read transaction and returns an error, never zeros, when a query fails. `Db::export_local_hashes` reads the hashed files from the database, not the UI projection | Directory-entry durability (the parent folder is not synced), so a power loss right after the rename can still lose the new file; a crash between create and rename can leave a hidden `.<name>.<pid>.<n>.tmp` file. `Settings::save` keeps its own tmp+rename sequence (it must rotate the backup between writing and renaming) and does not use the helper |
@@ -597,6 +600,10 @@ so tests force the cross-volume path on one volume):
 - [INFERENCE: untested] On case-insensitive filesystems a case-only rename is refused because
   the target "exists" (it is the same file).
 - Only the local file and its `local_file` row change; AniDB MyList `storage` text is not touched.
+- **Emptied folders.** After all the moves of a job, `run_renames` calls
+  `file_manager::clear_emptied_folders` for the old path of each file that moved (deferred to the
+  end so a folder emptied early can still receive a later file). See the guarantees table; the
+  Log reports a count, failures go to the diagnostic log only.
 
 ## Build and release automation
 
@@ -675,7 +682,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
 | Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |
-| Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `move_file`; `settings.rs`: `FileManagerSettings::matching_manager_for` |
+| Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `has_system_attribute`, `move_file`, `clear_emptied_folders`; `settings.rs`: `FileManagerSettings::matching_manager_for`; `worker.rs`: `run_renames`, `clear_vacated_folders` |
 | Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames}`, `run_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs` |

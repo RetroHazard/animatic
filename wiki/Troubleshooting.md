@@ -28,7 +28,9 @@ Know the limits before you rely on a recovery path:
   the interface has no recycle-bin or trash workflow. A rename moves a file inside the
   filesystem; when the destination is on another drive it copies the file, verifies the copy
   and only then removes the original, which is the one case where a file is deleted (see
-  [Rename problems](File-and-Import-Problems.md#rename-problems)); there is no undo.
+  [Rename problems](File-and-Import-Problems.md#rename-problems)); there is no undo. The only
+  folders Animatic removes are completely empty ones that a rename emptied inside a managed folder
+  whose **Remove emptied folders** is on (off by default).
 - **No full-account import.** Animatic does not download your complete AniDB MyList (see
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed

@@ -22,11 +22,14 @@ If a scan hashes nothing:
    and an empty list hashes nothing. Entries may include a leading dot and are matched
    case-insensitively. (Files passed on the command line are not filtered.)
 3. **Hidden files** are skipped when the rule's **exclude hidden** is on, and names starting
-   with `.` are hidden by this definition. Symbolic links are not followed. **Include
+   with `.` are hidden by this definition. On Windows, files and folders with the *system*
+   attribute are skipped when the rule's **Skip system files** is on (no effect on Linux).
+   Symbolic links are not followed. **Include
    subdirectories** controls depth: a non-recursive rule sees only its own folder.
 4. Unreadable subfolders are skipped silently; they produce no hash actions.
-5. Other settings in the rule (`auto_rename`, clear empty folders, exclude system files, the
-   delay fields) are stored but not used by scans; nothing renames or deletes automatically.
+5. Other settings in the rule (`auto_rename`, the delay fields) are stored but not used by scans;
+   nothing renames automatically. A scan never deletes folders (see **Remove emptied folders**
+   under [Rename problems](#rename-problems)).
 
 Per-file hashing errors appear in the Log as `<path>: <error>` and the scan continues with the
 next file. After a scan, each hashed file queues an **Identify** command when **Identify files
@@ -128,6 +131,11 @@ Details:
   new copy, the Log says so, and the old file remains as a duplicate you can delete.
 - **Missing folders are created before the rename.** If the rename then fails, the new empty
   folders remain; Animatic does not remove them.
+- **Emptied source folders** are removed only when the matching managed folder has **Remove
+  emptied folders** on: the folder a moved file left, and its parents, while they are below the
+  managed folder and completely empty ([details](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied)).
+  A folder that still holds anything, hidden files included, stays; the managed folder itself
+  is never removed.
 - **Open files and permissions:** a file held open by a player or scanner, a read-only
   destination, or an operating-system limit on total path length (the planner limits each
   name component but not the whole path) causes an I/O error.

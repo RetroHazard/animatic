@@ -86,7 +86,9 @@ atomic operation: if another program creates a file at the destination in betwee
 can **overwrite** it (on Linux the system call replaces an existing file; Rust's rename also
 replaces existing files on Windows). A move to another drive never replaces a file that appears
 in between. A failure reports `Rename failed: <file>: <reason> (target <path>)` in the Log and may leave newly
-created empty folders. There is no undo and no AniDB notification.
+created empty folders. There is no undo and no AniDB notification. If the matching managed folder
+has **Remove emptied folders** on, the folders a successful rename left empty are removed
+afterwards ([details](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied)).
 
 Pattern tools in Options (nothing is saved until **Save options**, but see
 [Options window](Options-Window.md)): *Use stable default* (replace the text; the earlier text is
