@@ -40,6 +40,10 @@ ureq = "3.5.1"
 walkdir = "2.5.0"
 zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2"] }
 
+[dev-dependencies]
+# Test fixtures only: a manual clock, an in-memory limit store and loopback servers.
+animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb", features = ["test-support"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 windows-native-keyring-store = { version = "1.1.0", default-features = false }

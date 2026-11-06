@@ -415,4 +415,70 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(db.meta("lost").unwrap(), None);
     }
+
+    #[test]
+    fn a_database_from_before_request_attempts_gains_the_table_and_keeps_its_data() {
+        use crate::limits::RequestKind;
+        let path = temp_db_path("attempts");
+        let now = crate::format::now();
+        {
+            // The schema as it was before `request_attempt` existed: the new table is the last
+            // statement of the script.
+            let old_schema = SCHEMA.split("-- Last time a request").next().unwrap();
+            assert!(!old_schema.contains("request_attempt"));
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(old_schema).unwrap();
+            conn.execute_batch(&format!(
+                "INSERT INTO anime(aid, fetched) VALUES (1, {}), (2, 0);
+                 INSERT INTO meta(key, value) VALUES ('titles_dump_date', '{}');",
+                now - 3600,
+                now - 7200
+            ))
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let table: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'request_attempt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(table, 1, "the table is created in place");
+        let fetched: Vec<i64> = db
+            .conn()
+            .prepare("SELECT fetched FROM anime ORDER BY aid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(fetched, [now - 3600, 0], "existing rows are untouched");
+        // Earlier successes still count as requests until attempts are saved.
+        assert!(
+            db.request_next_allowed(RequestKind::Anime, 1, now)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            db.request_next_allowed(RequestKind::Anime, 2, now).unwrap(),
+            None
+        );
+        assert!(db.titles_dump_next_allowed(now).unwrap().is_some());
+        db.record_request_attempt(RequestKind::Anime, 2, now)
+            .unwrap();
+        drop(db);
+
+        // Opening again changes nothing and keeps the saved attempt.
+        let db = Db::open(&path).unwrap();
+        assert!(
+            db.request_next_allowed(RequestKind::Anime, 2, now)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(db.meta("schema_version").unwrap().as_deref(), Some("1"));
+        drop(db);
+        remove_db_files(&path);
+    }
 }

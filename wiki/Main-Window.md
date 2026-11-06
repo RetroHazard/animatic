@@ -120,7 +120,7 @@ Semantics (from `app.rs` and `library.rs`):
 | File | Quit | Closes; saves settings (unless guarded) and tries to save unsaved commands. |
 | Tools | Options… | Opens [Options](Options-Window.md). |
 | Tools | Scan managed folders | Starts a [scan](Managed-Folders-and-Scans.md). Disabled during a settings review. |
-| Tools | Download anime titles | Queues the title-list download (nothing is sent yet). |
+| Tools | Download anime titles | Queues the title-list download (nothing is sent yet). The list is requested at most once per 24 hours: inside that window after the last attempt (even a failed one) nothing is queued and the log says when the next download is allowed. |
 | Tools | Fetch mylist statistics | Queues a MyList-statistics request. When run, the figures are stored with the time they arrived and shown on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures; the log also gets a line (`N anime, N episodes, N files in mylist`). |
 | Tools | Check library | Runs [`integrity_check` and `foreign_key_check`](Backups-and-Recovery.md#check-and-compact-the-library) in the background; never repairs. Disabled while a job runs, during an import or settings review, or during a restore. |
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |

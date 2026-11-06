@@ -6,12 +6,14 @@ use std::time::{Duration, Instant};
 
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::HttpClient;
+use animatic_anidb::limits::Limits;
 use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
 use animatic_core::db::Db;
 use animatic_core::file_manager::hash_and_register;
 use animatic_core::format;
 use animatic_core::hash::Ed2kVariant;
 use animatic_core::library::LibraryProjection;
+use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
 use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityReport};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
 use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
@@ -334,6 +336,9 @@ fn run(
         shutdown,
         pending,
     } = flags;
+    // One limiter for the whole process: every queue run builds new clients, but they all take
+    // their send slots from here, and the send times are saved so a restart keeps the spacing.
+    let network = Network::new(animatic_core::limits::open_limits(&db_path));
     while let Ok(job) = jobs.recv() {
         let _counted = PendingJob::of(&job, &pending);
         if shutdown.load(Ordering::Relaxed) {
@@ -430,17 +435,19 @@ fn run(
                 }
                 let _ = events.send(Event::Finished);
             }
-            Job::ProcessQueue(settings) => process_queue(&db_path, settings, &events, &cancel),
+            Job::ProcessQueue(settings) => {
+                process_queue(&db_path, settings, &events, &cancel, &network)
+            }
             Job::QueueFullUpdate => {
                 let _ = events.send(Event::Started {
                     label: "Queueing full update".into(),
                     total: 0,
                 });
                 match queue_full_update(&db_path) {
-                    Ok(n) => {
+                    Ok(report) => {
                         let _ = events.send(Event::Synced {
-                            description: format!("Queued {n} commands for the full update"),
-                            changed: true,
+                            description: report.describe(),
+                            changed: report.queued > 0,
                         });
                     }
                     Err(e) => {
@@ -1247,12 +1254,29 @@ fn fail_command(
     }
 }
 
+/// What outlives one queue run in the worker: the limiter every client of every run draws its
+/// send slots from, and the reply timeout of the UDP clients.
+struct Network {
+    limits: Arc<Limits>,
+    udp_timeout: Duration,
+}
+
+impl Network {
+    fn new(limits: Arc<Limits>) -> Network {
+        Network {
+            limits,
+            udp_timeout: UdpConfig::default().timeout,
+        }
+    }
+}
+
 /// Run the AniDB command queue until it is empty, cancelled, blocked or put on cooldown.
 fn process_queue(
     db_path: &Path,
     settings: AnidbSettings,
     events: &Sender<Event>,
     cancel: &AtomicBool,
+    network: &Network,
 ) {
     if settings.offline {
         let _ = events.send(Event::Error(
@@ -1287,17 +1311,24 @@ fn process_queue(
         label: "Synchronizing with AniDB".into(),
         total: 0,
     });
-    let mut udp = UdpClient::new(UdpConfig {
-        server: settings.udp_server.clone(),
-        local_port: settings.local_port,
-        client: settings.client_name.clone(),
-        client_version: settings.client_version,
-        username: settings.username.clone(),
-        password: settings.password.clone(),
-        api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
-        ..Default::default()
-    });
-    let mut http = HttpClient::new(&settings.client_name, settings.client_version);
+    let mut udp = UdpClient::new(
+        UdpConfig {
+            server: settings.udp_server.clone(),
+            local_port: settings.local_port,
+            client: settings.client_name.clone(),
+            client_version: settings.client_version,
+            username: settings.username.clone(),
+            password: settings.password.clone(),
+            api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
+            timeout: network.udp_timeout,
+        },
+        network.limits.clone(),
+    );
+    let mut http = HttpClient::new(
+        &settings.client_name,
+        settings.client_version,
+        network.limits.clone(),
+    );
     while !cancel.load(Ordering::Relaxed) {
         let next = match db.queue_peek() {
             Ok(v) => v,
@@ -1350,99 +1381,96 @@ fn open_for_legacy_import(db_path: &Path, confirmed: bool) -> animatic_core::Res
     Ok(Some(db))
 }
 
+/// What a full update queued, and what AniDB's limits left out of it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct FullUpdateReport {
+    queued: usize,
+    /// The title dump is not requested again before this epoch second.
+    titles_dump_after: Option<i64>,
+    /// Anime left out because they were requested less than a day ago.
+    recent_anime: usize,
+    /// Files left out because they were requested less than seven days ago.
+    recent_files: usize,
+}
+
+impl FullUpdateReport {
+    fn describe(&self) -> String {
+        let mut left_out = Vec::new();
+        if let Some(until) = self.titles_dump_after {
+            left_out.push(format!(
+                "the title dump (allowed again after {})",
+                format::datetime_local(until)
+            ));
+        }
+        if self.recent_anime > 0 {
+            left_out.push(format!(
+                "{} anime requested within the last day",
+                self.recent_anime
+            ));
+        }
+        if self.recent_files > 0 {
+            left_out.push(format!(
+                "{} files requested within the last {} days",
+                self.recent_files,
+                KNOWN_FILE_MIN_AGE.as_secs() / 86_400
+            ));
+        }
+        let mut text = format!("Queued {} commands for the full update", self.queued);
+        if !left_out.is_empty() {
+            text.push_str(&format!(
+                "; left out because AniDB's limits do not allow them yet: {}",
+                left_out.join(", ")
+            ));
+        }
+        text
+    }
+}
+
 /// Queue the commands of a full update (`--full-update`): the titles dump plus every anime and
-/// file known from hashed local files.
-fn queue_full_update(db_path: &Path) -> animatic_core::Result<usize> {
+/// file known from hashed local files, except what AniDB's limits do not allow yet (the title
+/// dump once a day, an anime a day, a known file seven days after the last attempt).
+fn queue_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> {
     let db = Db::open(db_path)?;
+    let now = format::now();
     let mut fids = BTreeSet::new();
     let mut aids = BTreeSet::new();
     for file in db.local_files()? {
         fids.extend(file.fid);
         aids.extend(file.aid);
     }
+    let (files_known, anime_known) = (fids.len(), aids.len());
+    let recent_files = db.recent_requests(RequestKind::File, now)?;
+    let recent_anime = db.recent_requests(RequestKind::Anime, now)?;
+    fids.retain(|fid| !recent_files.contains(fid));
+    aids.retain(|aid| !recent_anime.contains(aid));
+    let titles_dump_after = db.titles_dump_next_allowed(now)?;
+    let mut report = FullUpdateReport {
+        queued: 0,
+        titles_dump_after,
+        recent_anime: anime_known - aids.len(),
+        recent_files: files_known - fids.len(),
+    };
     let mut commands = Vec::with_capacity(1 + fids.len() + aids.len());
-    commands.push(Command::TitlesDump);
+    if titles_dump_after.is_none() {
+        commands.push(Command::TitlesDump);
+    }
     commands.extend(fids.into_iter().map(|fid| Command::FetchFile { fid }));
     commands.extend(aids.into_iter().map(|aid| Command::FetchAnime { aid }));
-    db.queue_push_many(&commands)
+    report.queued = db.queue_push_many(&commands)?;
+    Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{SocketAddr, UdpSocket};
+    use std::net::SocketAddr;
     use std::sync::atomic::AtomicUsize;
-    use std::thread::JoinHandle;
     use std::time::Instant;
 
+    use animatic_anidb::limits::Clock;
+    use animatic_anidb::testing::{ManualClock, UdpFixture as Fixture};
+    use parking_lot::Mutex;
+
     use super::*;
-
-    /// Local stand-in for the AniDB UDP server. `reply(n, request)` is the reply (without tag)
-    /// to the n-th packet; the fixture echoes the request tag like the real server.
-    ///
-    /// The receive loop blocks without a read timeout: Windows documents a socket whose blocking
-    /// receive timed out as indeterminate, and a 25 ms polling timeout intermittently lost the
-    /// one request a test sends. `Drop` wakes the loop with an empty datagram instead.
-    struct Fixture {
-        addr: SocketAddr,
-        packets: Arc<AtomicUsize>,
-        stop: Arc<AtomicBool>,
-        handle: Option<JoinHandle<()>>,
-    }
-
-    impl Fixture {
-        fn start(reply: impl Fn(usize, &str) -> String + Send + 'static) -> Fixture {
-            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-            let addr = socket.local_addr().unwrap();
-            let packets = Arc::new(AtomicUsize::new(0));
-            let stop = Arc::new(AtomicBool::new(false));
-            let (p, s) = (packets.clone(), stop.clone());
-            let handle = std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                loop {
-                    let received = socket.recv_from(&mut buf);
-                    if s.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    // Errors such as a Windows connection reset from an earlier reply are
-                    // reported once per receive; the next receive is unaffected.
-                    let Ok((n, from)) = received else {
-                        continue;
-                    };
-                    let index = p.fetch_add(1, Ordering::SeqCst);
-                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let tag = request
-                        .rsplit_once("&tag=")
-                        .map(|(_, t)| t.trim().to_string())
-                        .unwrap_or_default();
-                    let _ = socket
-                        .send_to(format!("{tag} {}", reply(index, &request)).as_bytes(), from);
-                }
-            });
-            Fixture {
-                addr,
-                packets,
-                stop,
-                handle: Some(handle),
-            }
-        }
-
-        fn packets(&self) -> usize {
-            self.packets.load(Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(h) = self.handle.take() {
-                // Wake the blocking receive; the loop sees `stop` and exits.
-                if let Ok(waker) = UdpSocket::bind("127.0.0.1:0") {
-                    let _ = waker.send_to(&[], self.addr);
-                }
-                let _ = h.join();
-            }
-        }
-    }
 
     struct TempDb {
         dir: PathBuf,
@@ -1483,11 +1511,32 @@ mod tests {
         }
     }
 
-    /// Run the queue once as a fresh job (new clients every time) and return its events.
-    fn run_queue(db: &TempDb, settings: &AnidbSettings) -> Vec<Event> {
+    /// The worker's network state for a test: the real limiter code over `db`, on a clock that
+    /// moves only when the limiter sleeps, so spacing is exact and the test does not wait.
+    fn network_for(db: &TempDb, clock: &Arc<ManualClock>) -> Network {
+        Network {
+            limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
+            udp_timeout: Duration::from_secs(5),
+        }
+    }
+
+    fn run_queue_with(db: &TempDb, settings: &AnidbSettings, network: &Network) -> Vec<Event> {
         let (tx, rx) = crossbeam_channel::unbounded();
-        process_queue(&db.path, settings.clone(), &tx, &AtomicBool::new(false));
+        process_queue(
+            &db.path,
+            settings.clone(),
+            &tx,
+            &AtomicBool::new(false),
+            network,
+        );
         rx.try_iter().collect()
+    }
+
+    /// Run the queue once as a fresh job (new clients and, as after a restart, a new limiter
+    /// over the saved state) and return its events.
+    fn run_queue(db: &TempDb, settings: &AnidbSettings) -> Vec<Event> {
+        let network = network_for(db, &Arc::new(ManualClock::default()));
+        run_queue_with(db, settings, &network)
     }
 
     fn queue_two(db: &Db) {
@@ -1874,9 +1923,9 @@ mod tests {
             )
             .unwrap();
         // TitlesDump + files 10 and 11 + anime 100; the duplicate and unidentified files add nothing.
-        assert_eq!(queue_full_update(&db.path).unwrap(), 4);
+        assert_eq!(queue_full_update(&db.path).unwrap().queued, 4);
         assert_eq!(
-            queue_full_update(&db.path).unwrap(),
+            queue_full_update(&db.path).unwrap().queued,
             0,
             "queueing is idempotent"
         );
@@ -1897,6 +1946,88 @@ mod tests {
             source: kowai.to_path_buf(),
             temp_root: db.dir.join("temp"),
             confirmed,
+        }
+    }
+
+    #[test]
+    fn full_update_leaves_out_what_the_limits_do_not_allow_yet() {
+        use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
+        let db = TempDb::new();
+        let d = db.open();
+        d.conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1),(2,'bb',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/s/1'),(2,2,'/s/2');
+                 INSERT INTO file(fid, aid, ed2k, size) VALUES (10,100,'aa',1),(11,101,'bb',1);",
+            )
+            .unwrap();
+        let now = format::now();
+        d.record_titles_dump_attempt(now - 3600).unwrap();
+        d.record_request_attempt(RequestKind::Anime, 100, now - 3600)
+            .unwrap();
+        d.record_request_attempt(RequestKind::File, 10, now - 86_400)
+            .unwrap();
+
+        // Recently requested: the title dump, anime 100 and file 10 stay out of the queue.
+        let report = queue_full_update(&db.path).unwrap();
+        assert_eq!(report.queued, 2, "{report:?}");
+        assert_eq!(report.recent_anime, 1);
+        assert_eq!(report.recent_files, 1);
+        assert_eq!(report.titles_dump_after, Some(now - 3600 + 86_400));
+        let text = report.describe();
+        assert!(
+            text.contains("title dump") && text.contains("1 anime") && text.contains("1 files"),
+            "{text}"
+        );
+        let queued: Vec<Command> = d
+            .queue_list()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| e.command)
+            .collect();
+        assert_eq!(
+            queued,
+            [
+                Command::FetchFile { fid: 11 },
+                Command::FetchAnime { aid: 101 }
+            ]
+        );
+
+        // Once the intervals have passed, everything is queued again.
+        d.queue_clear().unwrap();
+        d.record_titles_dump_attempt(now - 86_400 - 1).unwrap();
+        d.record_request_attempt(RequestKind::Anime, 100, now - 86_400 - 1)
+            .unwrap();
+        let week = KNOWN_FILE_MIN_AGE.as_secs() as i64;
+        d.record_request_attempt(RequestKind::File, 10, now - week - 1)
+            .unwrap();
+        let report = queue_full_update(&db.path).unwrap();
+        assert_eq!(report.queued, 5, "{report:?}");
+        assert_eq!(report.titles_dump_after, None);
+        assert!(!report.describe().contains("left out"));
+    }
+
+    /// Reply script of a server that accepts the login and answers every MYLIST request with
+    /// "no such entry", noting when (on `clock`) each packet arrived.
+    fn accepting_server(clock: &Arc<ManualClock>, arrivals: &Arc<Mutex<Vec<i64>>>) -> Fixture {
+        let (clock, arrivals) = (clock.clone(), arrivals.clone());
+        Fixture::start(move |_, request| {
+            arrivals.lock().push(clock.now_ms());
+            if request.starts_with("AUTH") {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else if request.starts_with("MYLIST ") {
+                "321 NO SUCH ENTRY".into()
+            } else {
+                "203 LOGGED OUT".into()
+            }
+        })
+    }
+
+    fn push_refreshes(db: &TempDb, lids: &[i64]) {
+        for lid in lids {
+            db.open()
+                .queue_push(&Command::MylistRefresh { lid: *lid })
+                .unwrap();
         }
     }
 
@@ -2026,5 +2157,270 @@ mod tests {
             matches!(event, Event::Finished),
             "no leftovers are reported once removed"
         );
+    }
+
+    #[test]
+    fn consecutive_runs_and_a_restart_keep_the_long_term_spacing() {
+        let clock = Arc::new(ManualClock::default());
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let fixture = accepting_server(&clock, &arrivals);
+        let db = TempDb::new();
+        let s = settings(fixture.addr);
+        let process = network_for(&db, &clock);
+
+        // Two runs of one process: each builds new clients, but the burst allowance is shared.
+        push_refreshes(&db, &[1, 2]);
+        run_queue_with(&db, &s, &process);
+        push_refreshes(&db, &[3, 4]);
+        run_queue_with(&db, &s, &process);
+        assert_eq!(fixture.packets(), 8, "login, two requests, logout, twice");
+        // A restart: a new process reads the saved send time and cannot know the burst size.
+        push_refreshes(&db, &[5]);
+        run_queue_with(&db, &s, &network_for(&db, &clock));
+
+        let arrivals = arrivals.lock().clone();
+        let gaps: Vec<i64> = arrivals.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(
+            gaps,
+            [2000, 2000, 2000, 2000, 4000, 4000, 4000, 4000, 4000, 4000]
+        );
+        let saved = db
+            .open()
+            .meta(animatic_core::limits::UDP_LAST_SEND_KEY)
+            .unwrap();
+        assert_eq!(saved, Some(arrivals.last().unwrap().to_string()));
+    }
+
+    #[test]
+    fn the_send_time_is_saved_before_the_packet_leaves() {
+        let clock = Arc::new(ManualClock::default());
+        let db = TempDb::new();
+        let (path, at) = (db.path.clone(), clock.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        // The server never answers: the process "dies" with the packet in flight.
+        let fixture = Fixture::start(move |_, _| {
+            let saved = Db::open(&path)
+                .unwrap()
+                .meta(animatic_core::limits::UDP_LAST_SEND_KEY)
+                .unwrap();
+            log.lock().push((saved, at.now_ms()));
+            String::new()
+        });
+        push_refreshes(&db, &[1]);
+        let network = Network {
+            limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
+            udp_timeout: Duration::from_millis(300),
+        };
+        run_queue_with(&db, &settings(fixture.addr), &network);
+        let seen = seen.lock().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].0,
+            Some(seen[0].1.to_string()),
+            "saved when the packet arrived"
+        );
+    }
+
+    #[test]
+    fn a_busy_local_port_stops_the_run_with_an_error_naming_the_setting() {
+        let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let fixture = Fixture::start(|_, _| "200 session 127.0.0.1:1 LOGIN ACCEPTED".into());
+        let db = TempDb::new();
+        queue_two(&db.open());
+        let mut s = settings(fixture.addr);
+        s.local_port = port;
+        let events = run_queue(&db, &s);
+        assert!(has_error(&events, "anidb.local_port"), "{events:?}");
+        assert_eq!(fixture.packets(), 0, "no packet came from another port");
+        let d = db.open();
+        assert_eq!(
+            d.queue_blocked_len().unwrap(),
+            0,
+            "the commands wait for a free port"
+        );
+        assert!(d.sync_cooldown().unwrap().is_some());
+        assert!(
+            d.meta(animatic_core::limits::UDP_LAST_SEND_KEY)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_banned_client_version_blocks_the_queue_until_it_is_corrected() {
+        let fixture = Fixture::start(|_, _| "504 CLIENT VERSION BANNED".into());
+        let db = TempDb::new();
+        queue_two(&db.open());
+        let s = settings(fixture.addr);
+        let events = run_queue(&db, &s);
+        assert!(has_error(&events, "banned"), "{events:?}");
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Blocked { description } if description.contains("banned"))
+        ));
+        let d = db.open();
+        assert_eq!(
+            d.queue_blocked_len().unwrap(),
+            2,
+            "every runnable row is blocked"
+        );
+        assert!(
+            d.sync_cooldown().unwrap().is_none(),
+            "no timed ban: only a correction helps"
+        );
+        assert_eq!(fixture.packets(), 1);
+        run_queue(&db, &s);
+        assert_eq!(fixture.packets(), 1, "nothing is eligible, nothing is sent");
+    }
+
+    #[test]
+    fn an_unanswered_login_backs_off_in_growing_steps_that_a_login_resets() {
+        let clock = Arc::new(ManualClock::default());
+        let answer = Arc::new(AtomicBool::new(false));
+        let on = answer.clone();
+        let fixture = Fixture::start(move |_, request| {
+            if !on.load(Ordering::SeqCst) {
+                String::new()
+            } else if request.starts_with("AUTH") {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else if request.starts_with("MYLIST ") {
+                "321 NO SUCH ENTRY".into()
+            } else {
+                "203 LOGGED OUT".into()
+            }
+        });
+        let db = TempDb::new();
+        let s = settings(fixture.addr);
+        push_refreshes(&db, &[1]);
+        // One run on a new limiter each time (a restart), and the wait is "over" afterwards.
+        let run = |expect_wait: Option<i64>| {
+            let network = Network {
+                limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
+                udp_timeout: Duration::from_millis(300),
+            };
+            let started = format::now();
+            let events = run_queue_with(&db, &s, &network);
+            let d = db.open();
+            let cooldown = d.sync_cooldown().unwrap();
+            d.clear_sync_cooldown().unwrap();
+            match expect_wait {
+                Some(secs) => {
+                    let (until, reason) = cooldown.expect("a cooldown");
+                    assert!(
+                        (started + secs..=started + secs + 3).contains(&until),
+                        "wait {secs}s, got {}s",
+                        until - started
+                    );
+                    assert!(reason.contains("no reply to the AniDB login"), "{reason}");
+                    assert!(has_error(&events, "AUTH"));
+                    assert_eq!(d.queue_blocked_len().unwrap(), 0, "the command waits");
+                    assert_eq!(
+                        d.queue_list().unwrap()[0].tries,
+                        0,
+                        "not the command's fault"
+                    );
+                }
+                None => assert!(cooldown.is_none()),
+            }
+        };
+        for secs in [30, 120, 300, 600, 1800, 7200, 7200] {
+            run(Some(secs));
+        }
+        assert_eq!(
+            fixture.packets(),
+            7,
+            "one AUTH per run, no retry inside a run"
+        );
+        assert_eq!(
+            db.open()
+                .meta(animatic_core::limits::AUTH_BACKOFF_STEP_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("6"),
+            "the step stays at the last value"
+        );
+
+        answer.store(true, Ordering::SeqCst);
+        run(None);
+        assert_eq!(
+            db.open().queue_len().unwrap(),
+            0,
+            "the login worked and the command ran"
+        );
+        assert_eq!(
+            db.open()
+                .meta(animatic_core::limits::AUTH_BACKOFF_STEP_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("0"),
+            "a successful AUTH resets the backoff"
+        );
+
+        answer.store(false, Ordering::SeqCst);
+        push_refreshes(&db, &[2]);
+        run(Some(30));
+    }
+
+    #[test]
+    fn a_known_file_is_requested_at_most_every_seven_days_by_the_queue() {
+        let fixture = Fixture::start(|_, request| {
+            if request.starts_with("AUTH") {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else if request.starts_with("FILE ") {
+                "320 NO SUCH FILE".into()
+            } else {
+                "203 LOGGED OUT".into()
+            }
+        });
+        let db = TempDb::new();
+        let s = settings(fixture.addr);
+        db.open()
+            .queue_push(&Command::FetchFile { fid: 5 })
+            .unwrap();
+        run_queue(&db, &s);
+        let sent = fixture.packets();
+        assert_eq!(sent, 3, "login, FILE, logout");
+
+        // Queued again inside the week: completed as skipped, with no packet and no failure.
+        db.open()
+            .queue_push(&Command::FetchFile { fid: 5 })
+            .unwrap();
+        let events = run_queue(&db, &s);
+        assert_eq!(
+            fixture.packets(),
+            sent,
+            "nothing was sent, not even a login"
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Synced { description, changed: false } if description.contains("File 5 skipped") && description.contains("allowed after"))
+        ), "{events:?}");
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            Event::Error(_) | Event::Blocked { .. } | Event::Cooldown { .. }
+        )));
+        let d = db.open();
+        assert_eq!(d.queue_len().unwrap(), 0, "the skipped command is removed");
+        assert!(d.sync_cooldown().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_queued_title_dump_inside_the_window_is_completed_as_skipped() {
+        let fixture = Fixture::start(|_, _| "555 BANNED".into());
+        let db = TempDb::new();
+        let d = db.open();
+        d.record_titles_dump_attempt(format::now() - 60).unwrap();
+        d.queue_push(&Command::TitlesDump).unwrap();
+        let events = run_queue(&db, &settings(fixture.addr));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Synced { description, .. } if description.contains("Title dump skipped") && description.contains("allowed after"))
+        ), "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Error(_) | Event::Blocked { .. }))
+        );
+        assert_eq!(d.queue_len().unwrap(), 0);
+        assert_eq!(fixture.packets(), 0);
     }
 }

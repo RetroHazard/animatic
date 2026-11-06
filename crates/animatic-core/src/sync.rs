@@ -17,6 +17,7 @@ use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::format;
 use crate::library::MylistEntry;
+use crate::limits::{RequestKind, anime_wait_message, file_wait_message, titles_dump_wait_message};
 use crate::settings::FileManager;
 
 /// A command that failed this many times (counting only failures its own fault can explain,
@@ -162,6 +163,10 @@ pub enum Outcome {
     Updated(String),
     Stats(commands::MylistStats),
     NotFound(String),
+    /// The command was completed without a request because AniDB's limits do not allow it yet
+    /// (title dump once a day, minimum age per anime and per file). The text says when it is
+    /// allowed again. It is not a failure and counts no attempt.
+    Skipped(String),
 }
 
 impl Outcome {
@@ -180,14 +185,19 @@ impl Outcome {
                 "{} anime, {} episodes, {} files in mylist",
                 s.animes, s.episodes, s.files
             ),
-            Outcome::NotFound(s) => s.clone(),
+            Outcome::NotFound(s) | Outcome::Skipped(s) => s.clone(),
         }
     }
 
     /// True when the change affects what the library views display. Account statistics are
     /// stored for the overview, so they count.
     pub fn changes_library(&self) -> bool {
-        !matches!(self, Outcome::Unknown | Outcome::NotFound(_))
+        // Account statistics are stored for the overview, so they count; a command skipped by a
+        // request guard changed nothing.
+        !matches!(
+            self,
+            Outcome::Unknown | Outcome::NotFound(_) | Outcome::Skipped(_)
+        )
     }
 }
 
@@ -890,6 +900,14 @@ pub fn execute(
             }
         },
         Command::FetchAnime { aid } => {
+            let now = format::now();
+            if let Some(until) = db.request_next_allowed(RequestKind::Anime, *aid, now)? {
+                return Ok(Outcome::Skipped(anime_wait_message(*aid, until)));
+            }
+            // A request that cannot be sent (no client name) is not an attempt.
+            http.check_client()?;
+            // Saved before the request leaves: a failure, crash or restart cannot allow a repeat.
+            db.record_request_attempt(RequestKind::Anime, *aid, now)?;
             let xml = http.anime(*aid)?;
             db.store_anime_xml(&xml)?;
             Ok(Outcome::Updated(format!("anime {aid} updated")))
@@ -908,24 +926,41 @@ pub fn execute(
             }
             None => Ok(Outcome::NotFound(format!("no group {gid}"))),
         },
-        Command::FetchFile { fid } => match commands::file_by_fid(udp, *fid)? {
-            Some(info) => {
-                db.store_file_info(&info)?;
-                Ok(Outcome::Updated(format!("file {fid} updated")))
+        Command::FetchFile { fid } => {
+            let now = format::now();
+            if let Some(until) = db.request_next_allowed(RequestKind::File, *fid, now)? {
+                return Ok(Outcome::Skipped(file_wait_message(*fid, until)));
             }
-            None => Ok(Outcome::NotFound(format!("no file {fid}"))),
-        },
+            // Log in first: a login that fails (wrong password, no reply) sent no FILE request.
+            udp.ensure_login()?;
+            db.record_request_attempt(RequestKind::File, *fid, now)?;
+            match commands::file_by_fid(udp, *fid)? {
+                Some(info) => {
+                    db.store_file_info(&info)?;
+                    Ok(Outcome::Updated(format!("file {fid} updated")))
+                }
+                None => Ok(Outcome::NotFound(format!("no file {fid}"))),
+            }
+        }
         Command::MylistStats => {
             let stats = commands::mylist_stats(udp)?;
             db.store_mylist_stats(&stats, format::now())?;
             Ok(Outcome::Stats(stats))
         }
         Command::TitlesDump => {
+            if let Some(until) = db.titles_dump_next_allowed(format::now())? {
+                return Ok(Outcome::Skipped(titles_dump_wait_message(until)));
+            }
             // The download is spooled outside the library database; it is only written to
             // (in one short transaction) once the whole dump has been validated.
             let limits = TitlesLimits::default();
-            let import =
-                db.import_title_dump::<CommandError>(|sink| http.titles_dump(&limits, sink))?;
+            let import = db.import_title_dump::<CommandError>(|sink| {
+                // Saved before the request leaves (and after the local spool was set up, so a
+                // local failure is not an attempt): a failed or truncated download, a crash or
+                // a restart cannot allow a second request inside the interval.
+                db.record_titles_dump_attempt(format::now())?;
+                http.titles_dump(&limits, sink)
+            })?;
             Ok(Outcome::Updated(format!(
                 "{} titles downloaded ({} new)",
                 import.titles, import.added

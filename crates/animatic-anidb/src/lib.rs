@@ -2,15 +2,19 @@
 //!
 //! This crate speaks the protocols and nothing else: it has no database, no command queue and
 //! no dependency on the rest of the workspace. It classifies errors (see [`error`]) and keeps
-//! only in-memory protocol state (flood spacing, one re-login/retry, a short server backoff and a
-//! ban latch per client). Persistent retry and cooldown policy is not here: `animatic-core`
-//! provides persistence and the command executor, and the application's worker decides how to
-//! retry, block or pause.
+//! only in-memory protocol state (a one-time re-login/retry, a short server backoff and a ban
+//! latch per client) plus the process-wide request spacing in [`limits`], whose state it saves
+//! through a [`limits::LimitStore`] the caller supplies. Persistent retry and cooldown policy is
+//! not here: `animatic-core` provides persistence and the command executor, and the
+//! application's worker decides how to retry, block or pause.
 //!
 //! * [`udp`] — the UDP API (login, file identification, MyList management): protocol version 3,
-//!   one blocking client per thread, client-side flood spacing (at least 2 s between packets,
-//!   4 s once a burst exceeds five), tag matching, optional API-key encryption, compressed
-//!   replies and a single automatic re-login/retry.
+//!   one blocking client per thread, tag matching, optional API-key encryption, compressed
+//!   replies and a single automatic re-login/retry. The bound local port is never replaced by
+//!   another one.
+//! * [`limits`] — one [`limits::Limits`] per process, shared by every client: UDP packets at
+//!   least 2 s apart (4 s once a burst exceeds five), HTTP requests at least 2 s apart, send
+//!   times saved before each request, and the escalating backoff after an unanswered `AUTH`.
 //! * [`commands`] — typed wrappers for the UDP commands. Success codes are decoded strictly;
 //!   only an explicit "no such" code means absence, any other unexpected or malformed reply is
 //!   an error.
@@ -29,6 +33,9 @@
 pub mod commands;
 pub mod error;
 pub mod http;
+pub mod limits;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod udp;
 
 pub use error::{AnidbError, Result};

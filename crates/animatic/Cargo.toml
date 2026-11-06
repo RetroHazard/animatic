@@ -21,3 +21,7 @@ parking_lot = "0.13.0"
 rfd = "0.17.2"
 serde = "1.0.229"
 serde_json = "1.0.154"
+
+[dev-dependencies]
+# Test fixtures only: a manual clock, an in-memory limit store and loopback servers.
+animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb", features = ["test-support"] }

@@ -282,3 +282,14 @@ CREATE TABLE IF NOT EXISTS command_queue (
 CREATE INDEX IF NOT EXISTS command_queue_order ON command_queue(blocked, priority, id);
 CREATE INDEX IF NOT EXISTS command_queue_lid ON command_queue(lid);
 CREATE INDEX IF NOT EXISTS command_queue_payload ON command_queue(payload);
+
+-- Last time a request for one record was sent to AniDB, saved BEFORE sending and whether or not
+-- it succeeded, so a failure, crash or restart cannot allow a repeat inside the minimum age.
+-- kind: 'anime' (HTTP record) or 'file' (UDP FILE by id); id: aid or fid; attempted: unix time.
+-- `anime.fetched` and `meta.titles_dump_date` keep recording only successes.
+CREATE TABLE IF NOT EXISTS request_attempt (
+    kind      TEXT    NOT NULL,
+    id        INTEGER NOT NULL,
+    attempted INTEGER NOT NULL,
+    PRIMARY KEY (kind, id)
+);

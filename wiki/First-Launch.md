@@ -44,7 +44,8 @@ points registration at <https://anidb.net/software/add>. Rules that follow from 
   registration uses another version, edit the settings file while Animatic is closed
   ([settings reference](Settings-Reference.md)).
 - The local UDP port (`anidb.local_port`, default 29456) and UDP server are likewise
-  JSON-only. If the port cannot be bound, the client falls back to an ephemeral port.
+  JSON-only. If the port cannot be bound, the run stops with an error that names the setting;
+  Animatic never switches to another port by itself (AniDB bans many different source ports).
 - The **API key** (set in your AniDB profile) is optional and turns on encrypted UDP sessions.
 - An empty client name, user name or password makes the queue stop at the first command
   with an authentication error and blocks *every* pending command until you correct it and

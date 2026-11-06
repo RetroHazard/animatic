@@ -31,7 +31,7 @@ The migration implementation necessarily contains clean-room format knowledge an
 ## Workspace structure
 
 - `crates/animatic-core`: storage, schema, `maintenance` (library backup, restore, integrity check, compaction), library queries, hashing, migration, settings, `secrets` (OS keystore for credentials behind the `SecretStore` trait, with an in-memory test store and a settings-file fallback), rename language, file-manager policy, statistics, external tools, durable command model, and `update` (GitHub release check, bounded download, `SHA256SUMS` verification and `self-replace` install, with its own error type).
-- `crates/animatic-anidb`: AniDB UDP and HTTP transports plus typed command/reply handling.
+- `crates/animatic-anidb`: AniDB UDP and HTTP transports, typed command/reply handling, and the process-wide request spacing (`limits`).
 - `crates/animatic`: native eframe/egui application, background worker (including the dedicated updater thread), UI state, restart handoff and CLI entry point.
 - `wiki/`: the user guide (installation, command line, data locations, every page and task, settings reference, rename language, troubleshooting, feature parity with AOM). Published to the GitHub wiki by `wiki.yml` and shipped in release archives as `docs/*.md`. Flat pages named like the archive's docs (letters, digits, `.`, `-`, `_`), plus `_Sidebar.md` and `_Footer.md`; a page links other pages relatively (`Page.md#anchor`) and repository files only by absolute `https://github.com/RetroHazard/animatic/blob/main/...` URLs, which `scripts/ci.py docs` enforces.
 - `docs/README.md`: developer documentation index (architecture, storage/network contracts, development, releases, rename Rust API, research).
@@ -56,7 +56,7 @@ The migration implementation necessarily contains clean-room format knowledge an
 5. Hash ED2K-red, CRC32, MD5, and SHA-1 in one file pass. Do not add redundant reads.
 6. Legacy imports read source files only. Never rewrite or delete the selected AOM databank.
 7. Preserve rename-language compatibility intentionally; document deliberate differences and add behavior tests.
-8. Network code must retain AniDB flood spacing, authentication/session recovery, optional encryption, and offline behavior. GitHub update traffic is a separate transport (`animatic_core::update`) that never reuses AniDB spacing, cooldowns or error types.
+8. Network code must retain AniDB flood spacing, authentication/session recovery, optional encryption, and offline behavior. Spacing is process-wide, not per client: every `UdpClient`/`HttpClient` takes its send slots from the worker's one `animatic_anidb::limits::Limits`, whose send times are saved in `meta` before each request, and every new AniDB request path must go through it. Request guards (title dump 24 h, anime 24 h, known file 7 days, `animatic_core::limits`) count attempts saved before sending, not successes. A busy `anidb.local_port` is an error, never a different port. GitHub update traffic is a separate transport (`animatic_core::update`) that never reuses AniDB spacing, cooldowns or error types.
 9. Prefer current AniDB web editors over reviving retired metadata-change protocols.
 10. Avoid platform-specific behavior unless isolated behind a cross-platform abstraction and verified on Windows and Linux.
 11. Automatic local-record removal requires affirmative file absence beneath a reachable, explicitly configured manager root. Unavailable drives and filesystem errors must preserve library records.

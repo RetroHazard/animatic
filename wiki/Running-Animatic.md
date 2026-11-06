@@ -48,7 +48,7 @@ case-sensitive.
 | Argument | Meaning |
 |---|---|
 | `--database FILE`, `-d FILE`, `/database FILE` | Use `FILE` as the SQLite library database. The next argument is taken as the file name even if it starts with `-`. Missing value → error `--database requires a file name`. May repeat; the last one wins. |
-| `--full-update`, `/fullupdate` | After startup, queue a full update: the title-list download plus one file lookup and one anime refresh for each file id and anime id that your **identified hashed local files** resolve to (not the whole local cache or title catalog). Nothing is sent to AniDB until you run the queue. There is no menu equivalent. Queueing it twice adds nothing. |
+| `--full-update`, `/fullupdate` | After startup, queue a full update: the title-list download plus one file lookup and one anime refresh for each file id and anime id that your **identified hashed local files** resolve to (not the whole local cache or title catalog). It leaves out what AniDB's limits do not allow yet (the title list and an anime requested within 24 hours, a file within 7 days; see [Request limits](AniDB-Synchronization.md#request-limits)) and the log says how many. Nothing is sent to AniDB until you run the queue. There is no menu equivalent. Queueing it twice adds nothing. |
 | `--help`, `-h`, `/?` | Print `Animatic [--database FILE] [--full-update] [MEDIA FILES...]` and exit. Does not create directories, files or a window. |
 | `/utf8`, `/ucs2` | Accepted and ignored (legacy compatibility). |
 | any other argument starting with `-` | Error: `unknown option: <argument>`. Includes `--version`, `-v`, `--database=FILE` (there is no `=` form) and `--settings`. |

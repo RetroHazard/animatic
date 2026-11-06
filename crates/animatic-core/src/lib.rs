@@ -14,6 +14,9 @@
 //!   hash and statistics exports.
 //! * [`db`] — SQLite connection setup (WAL), idempotent schema creation, the command-queue
 //!   upgrade, and the persisted sync cooldown. [`db::Db`] is one connection; open one per thread.
+//! * [`limits`] — saved AniDB limit state: the send times and `AUTH` backoff step behind the
+//!   process-wide spacing, and the attempt-based guards (title dump once a day, minimum age per
+//!   anime and per file).
 //! * [`store`] — write side: AniDB records, MyList rows, hashed local files, and the atomic
 //!   title-dump merge (`Db::import_title_dump`, implemented in [`store`]).
 //! * [`library`] — read side: display types, queries and the immutable
@@ -68,6 +71,7 @@ pub mod format;
 pub mod hash;
 pub mod legacy;
 pub mod library;
+pub mod limits;
 pub mod maintenance;
 pub mod rename;
 pub mod secrets;

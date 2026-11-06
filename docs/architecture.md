@@ -44,6 +44,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | Module | Responsibility |
 |---|---|
 | `db` | Connection setup (WAL), idempotent schema creation, `command_queue` upgrade, `write_tx`, cooldown storage in `meta` |
+| `limits` | Saved AniDB limit state: the `LimitStore` over `meta` (send times, `AUTH` backoff step) behind the process-wide spacing, and the attempt-based request guards (title dump once a day, minimum age per anime and per known file) |
 | `store` | Transactional application of API records, local hash/path writes, title dump spool and merge |
 | `library` | Read queries, display types and `LibraryProjection` snapshots with search keys |
 | `sync` | `Command`, queue operations (`impl Db`), edit coalescing, overlays, `CommandError`, `execute` |
@@ -62,9 +63,12 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 
 ### `animatic-anidb`
 
-`udp` (session, pacing, encryption, compression, tag matching), `commands` (typed UDP requests
-and strict reply decoding), `http` (anime XML, title dump streaming, image download), `error`
-(`AnidbError` and its retry classification). Both AniDB APIs require a registered client name.
+`udp` (session, encryption, compression, tag matching, no silent port fallback), `commands` (typed
+UDP requests and strict reply decoding), `http` (anime XML, title dump streaming, image
+download), `limits` (the process-wide `Limits`: UDP and HTTP spacing shared by every client,
+send times saved before each request, `AUTH` backoff; plus the `Clock` and `LimitStore` seams),
+`error` (`AnidbError` and its retry classification), `testing` (loopback fixtures and a manual
+clock behind the `test-support` feature). Both AniDB APIs require a registered client name.
 
 ### `animatic`
 
@@ -75,8 +79,8 @@ projection bookkeeping, the Software updates window), `worker.rs` (jobs, events,
 
 | Thread | Database connection | Work |
 |---|---|---|
-| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); rename apply; settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: per file) | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
+| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump or an anime refresh; rename apply; settings save |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics` and `Job::ExportHashes` |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
@@ -151,7 +155,7 @@ sequenceDiagram
     User->>UI: Synchronize now / Run command queue
     UI->>Worker: Job::ProcessQueue(AnidbSettings)
     Worker->>DB: refuse while offline or in cooldown
-    Worker->>Net: build UdpClient and HttpClient from settings
+    Worker->>Net: build UdpClient and HttpClient from settings, over the worker's one shared Limits
     loop until empty, cancelled, blocked or cooling down
         Worker->>DB: queue_peek (lowest priority, oldest id)
         Worker->>Exec: execute(id, command, db, udp, http)
@@ -177,6 +181,15 @@ version are corrected); transient errors persist a cooldown and stop the run; pe
 block only the affected command and the run continues. Counted failures stop at five attempts.
 The persisted cooldown is checked before any transport exists, so it also holds after a restart,
 and "Retry failed" only unblocks rows: it cannot bypass an active cooldown.
+
+AniDB's limits hold across runs and restarts. The worker creates one `Limits` (UDP and HTTP
+spacing) when it starts and lends it to the clients of every run, so repeated runs share one
+burst allowance; each send time is saved in `meta` before the request leaves, so a restart
+keeps the spacing. Request guards count attempts: the title dump (24 h), an anime (24 h) and a
+known file (7 days) are not requested again inside their window, even after a failed or
+interrupted request. The executor completes such a command as `Outcome::Skipped`, the full update
+leaves it out, and the UI refuses the click and says when it is allowed
+([Request guards](storage-and-network.md#request-guards)).
 
 ### MyList edits and optimistic state
 
@@ -222,8 +235,10 @@ snapshot still materializes the whole library; storage queries are not paged.
 `TitlesLimits` and validates the XML structure and gzip trailer. Rows go to a private temporary
 SQLite spool; only after the whole document validated does `Db::import_title_dump` merge them in
 one `BEGIN IMMEDIATE` transaction together with the `titles_dump_date` timestamp. The library
-database is neither written nor locked while the network is read. It is a public title list, not
-an account download: there is no full-MyList bootstrap, no resume and no external checksum.
+database is neither written nor locked while the network is read. The attempt time that keeps
+the dump to once a day is saved before the request, outside that transaction, so a failed
+download counts too. It is a public title list, not an account download: there is no
+full-MyList bootstrap, no resume and no external checksum.
 Limits and exact semantics are in [Title dump](storage-and-network.md#title-dump).
 
 ### Legacy migration
@@ -562,6 +577,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan` |
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
+| Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |
 | Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `move_file`; `settings.rs`: `FileManagerSettings::matching_manager_for` |
 | Rename | `crates/animatic-core/src/rename/plan.rs`, `rename/mod.rs` (`target_path`), `app.rs`: `preview_rename`, `rename_window`, `pattern_editor_ui` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |

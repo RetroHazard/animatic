@@ -1,12 +1,14 @@
 //! Synchronous AniDB UDP API client (protocol version 3).
 //!
-//! Intended to be owned by a single worker thread. It enforces the AniDB flood
-//! protection rules (≥2 s between packets, ≥4 s once a burst exceeds five packets),
-//! re-authenticates on expired sessions, supports compressed and encrypted sessions,
-//! and matches responses to requests with tags.
+//! Intended to be owned by a single worker thread. Packet spacing (≥2 s between packets, ≥4 s
+//! once a burst exceeds five) comes from the process-wide [`Limits`] every client shares, which
+//! saves each send time before the packet leaves. The client re-authenticates on expired
+//! sessions, supports compressed and encrypted sessions, and matches responses to requests
+//! with tags. It binds the configured local port and never silently uses another one.
 
 use std::io::Read;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aes::Aes128;
@@ -15,6 +17,7 @@ use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use md5::{Digest, Md5};
 
 use crate::error::{AnidbError, Result};
+use crate::limits::Limits;
 
 pub const DEFAULT_SERVER: &str = "api.anidb.net:9000";
 pub const PROTOVER: u32 = 3;
@@ -112,40 +115,15 @@ pub fn escape(s: &str) -> String {
         .replace('\n', "<br />")
 }
 
-struct Pacer {
-    last: Option<Instant>,
-    burst: u32,
-}
-
-impl Pacer {
-    fn wait(&mut self) {
-        let now = Instant::now();
-        if let Some(last) = self.last {
-            let idle = now.duration_since(last);
-            if idle > Duration::from_secs(600) {
-                self.burst = 0;
-            }
-            let min = if self.burst < 5 {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_secs(4)
-            };
-            if idle < min {
-                std::thread::sleep(min - idle);
-            }
-        }
-        self.burst += 1;
-        self.last = Some(Instant::now());
-    }
-}
-
+/// A UDP client. Spacing between packets is not its own: every client of a process shares one
+/// [`Limits`], so a new client per queue run cannot restart the burst allowance.
 pub struct UdpClient {
     cfg: Config,
     socket: Option<UdpSocket>,
     addr: Option<SocketAddr>,
     session: Option<String>,
     cipher: Option<Aes128>,
-    pacer: Pacer,
+    limits: Arc<Limits>,
     tag: u32,
     /// Image server announced at login (imgserver=1).
     pub image_server: Option<String>,
@@ -157,17 +135,14 @@ pub struct UdpClient {
 }
 
 impl UdpClient {
-    pub fn new(cfg: Config) -> Self {
+    pub fn new(cfg: Config, limits: Arc<Limits>) -> Self {
         UdpClient {
             cfg,
             socket: None,
             addr: None,
             session: None,
             cipher: None,
-            pacer: Pacer {
-                last: None,
-                burst: 0,
-            },
+            limits,
             tag: 0,
             image_server: None,
             new_version_available: false,
@@ -224,9 +199,18 @@ impl UdpClient {
             self.addr = Some(addr);
         }
         if self.socket.is_none() {
-            let sock = UdpSocket::bind(("0.0.0.0", self.cfg.local_port))
-                .or_else(|_| UdpSocket::bind(("0.0.0.0", 0)))
-                .map_err(|e| AnidbError::Network(format!("cannot bind UDP socket: {e}")))?;
+            // Never another port than the configured one: many different source ports from one
+            // address within an hour get it banned. Port 0 is chosen by the caller (tests).
+            let port = self.cfg.local_port;
+            let sock = UdpSocket::bind(("0.0.0.0", port)).map_err(|e| {
+                AnidbError::Network(if port == 0 {
+                    format!("cannot open a UDP socket: {e}")
+                } else {
+                    format!(
+                        "cannot bind UDP port {port}: {e}; the port is set by anidb.local_port, so close the program that uses it or choose another free port above 1024"
+                    )
+                })
+            })?;
             self.socket = Some(sock);
         }
         Ok((self.socket.as_ref().unwrap(), self.addr.unwrap()))
@@ -279,9 +263,12 @@ impl UdpClient {
         let tag = self.next_tag();
         let line = format!("{line}&tag={tag}");
         let payload = self.encrypt(line.as_bytes());
-        self.pacer.wait();
         let timeout = self.cfg.timeout;
-        let (sock, addr) = self.socket()?;
+        // Resolve and bind first: a packet that cannot be sent must not use up a send slot.
+        let addr = self.socket()?.1;
+        // The send time is saved before the packet leaves (see `Limits::wait_udp`).
+        self.limits.wait_udp()?;
+        let sock = self.socket.as_ref().expect("opened by socket()");
         sock.set_read_timeout(Some(timeout)).ok();
         sock.send_to(&payload, addr)
             .map_err(|e| AnidbError::Network(e.to_string()))?;
@@ -333,7 +320,7 @@ impl UdpClient {
     fn check_global(&mut self, resp: Response) -> Result<Response> {
         match resp.code {
             // 510 is treated like an explicit ban: the client stops and never retries on its own.
-            510 | 555 | 504 => {
+            510 | 555 => {
                 let reason = if resp.message.is_empty() {
                     "banned".to_string()
                 } else {
@@ -344,6 +331,9 @@ impl UdpClient {
                 Err(AnidbError::Banned(reason))
             }
             503 => Err(AnidbError::ClientOutdated),
+            // The client name and version are banned for good: nothing helps until they change,
+            // so this is a correction-needed error like 503, not a timed ban.
+            504 => Err(AnidbError::ClientBanned),
             598 => Err(AnidbError::UnknownCommand),
             600 | 601 | 602 | 604 => {
                 let wait = if resp.code == 604 {
@@ -395,7 +385,9 @@ impl UdpClient {
         }
     }
 
-    /// Log in (also called implicitly by [`UdpClient::request`]).
+    /// Log in (also called implicitly by [`UdpClient::request`]). An `AUTH` (or the `ENCRYPT`
+    /// before it) without a reply is answered with [`AnidbError::AuthTimeout`] carrying the
+    /// next step of the escalating, saved backoff; a successful login resets it.
     pub fn auth(&mut self) -> Result<()> {
         if self.cfg.client.is_empty() {
             return Err(AnidbError::Auth("no AniDB client name configured".into()));
@@ -403,6 +395,31 @@ impl UdpClient {
         if self.cfg.username.is_empty() || self.cfg.password.is_empty() {
             return Err(AnidbError::Auth("username and password required".into()));
         }
+        match self.login() {
+            Err(AnidbError::Timeout) => {
+                Err(AnidbError::AuthTimeout(self.limits.auth_unanswered()?))
+            }
+            Ok(()) => {
+                // Failing to reset only keeps a longer backoff for the next unanswered login.
+                if let Err(e) = self.limits.auth_answered() {
+                    log::warn!("could not reset the AUTH backoff: {e}");
+                }
+                Ok(())
+            }
+            other => other,
+        }
+    }
+
+    /// Make sure a session exists, logging in if needed. Call it before recording that a
+    /// request is about to be sent, so a login that fails first does not count as a request.
+    pub fn ensure_login(&mut self) -> Result<()> {
+        if self.session.is_none() {
+            self.auth()?;
+        }
+        Ok(())
+    }
+
+    fn login(&mut self) -> Result<()> {
         self.start_encryption()?;
         let line = Self::encode(
             "AUTH",
@@ -501,6 +518,25 @@ impl UdpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{Limits, Protocol};
+    use crate::testing::{TestLimits, UdpFixture, test_limits};
+    use parking_lot::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn client() -> UdpClient {
+        UdpClient::new(Config::default(), test_limits().limits)
+    }
+
+    fn config_for(server: std::net::SocketAddr) -> Config {
+        Config {
+            server: server.to_string(),
+            client: "syntheticclient".into(),
+            username: "synthetic-user".into(),
+            password: "synthetic-password".into(),
+            timeout: Duration::from_millis(150),
+            ..Config::default()
+        }
+    }
 
     #[test]
     fn parses_tagged_and_untagged_replies() {
@@ -527,7 +563,7 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt_round_trip_with_pkcs_padding() {
-        let mut c = UdpClient::new(Config::default());
+        let mut c = client();
         c.cipher = Some(Aes128::new(&[7u8; 16].into()));
         for len in [0usize, 5, 16, 33] {
             let msg: Vec<u8> = (0..len as u8).collect();
@@ -548,8 +584,8 @@ mod tests {
 
     #[test]
     fn ban_replies_stop_the_client_and_never_retry() {
-        for code in [504, 510, 555] {
-            let mut c = UdpClient::new(Config::default());
+        for code in [510, 555] {
+            let mut c = client();
             assert!(matches!(
                 c.check_global(reply(code)),
                 Err(AnidbError::Banned(_))
@@ -565,8 +601,17 @@ mod tests {
     }
 
     #[test]
+    fn a_banned_client_version_needs_a_correction_instead_of_a_timed_ban() {
+        let mut c = client();
+        let err = c.check_global(reply(504)).unwrap_err();
+        assert!(matches!(err, AnidbError::ClientBanned), "{err:?}");
+        assert!(err.is_fatal() && !err.is_transient() && err.retry_after().is_none());
+        assert!(err.to_string().contains("banned"), "{err}");
+    }
+
+    #[test]
     fn global_replies_are_classified() {
-        let mut c = UdpClient::new(Config::default());
+        let mut c = client();
         assert!(matches!(
             c.check_global(reply(503)),
             Err(AnidbError::ClientOutdated)
@@ -585,6 +630,109 @@ mod tests {
         };
         assert!(left <= Duration::from_secs(60));
         assert!(c.socket.is_none());
+    }
+
+    #[test]
+    fn a_busy_local_port_is_an_error_and_never_replaced_by_another_port() {
+        let held = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let server = UdpFixture::start(|_, _| "300 PONG".into());
+        let t = test_limits();
+        let mut c = UdpClient::new(
+            Config {
+                local_port: port,
+                ..config_for(server.addr)
+            },
+            t.limits.clone(),
+        );
+        let err = c.ping().unwrap_err();
+        let AnidbError::Network(message) = &err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains("anidb.local_port"), "{message}");
+        assert!(message.contains(&port.to_string()), "{message}");
+        assert_eq!(server.packets(), 0, "nothing was sent from another port");
+        assert!(
+            t.store.sends(Protocol::Udp).is_empty(),
+            "no send slot was used up"
+        );
+
+        // Once the port is free it is bound again.
+        drop(held);
+        let mut c = UdpClient::new(
+            Config {
+                local_port: port,
+                ..config_for(server.addr)
+            },
+            t.limits.clone(),
+        );
+        c.ping().unwrap();
+        assert_eq!(
+            c.socket.as_ref().unwrap().local_addr().unwrap().port(),
+            port
+        );
+    }
+
+    #[test]
+    fn clients_of_one_process_share_the_spacing_and_a_restart_keeps_it() {
+        let t = test_limits();
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let log = arrivals.clone();
+        let clock = t.clock.clone();
+        let server = UdpFixture::start(move |_, _| {
+            use crate::limits::Clock;
+            log.lock().push(clock.now_ms());
+            "300 PONG".into()
+        });
+        // Three "runs", each with brand new clients, one of them after a restart.
+        for run in 0..3 {
+            let limits = if run == 2 {
+                Limits::new(t.clock.clone(), t.store.clone())
+            } else {
+                t.limits.clone()
+            };
+            let mut c = UdpClient::new(config_for(server.addr), limits);
+            c.ping().unwrap();
+            c.ping().unwrap();
+        }
+        let arrivals = arrivals.lock().clone();
+        let gaps: Vec<i64> = arrivals.windows(2).map(|w| w[1] - w[0]).collect();
+        // Four packets of two runs keep the 2 s burst spacing. The restart cannot know the
+        // burst size, so its first and every later packet keep the 4 s long-term spacing.
+        assert_eq!(gaps, [2000, 2000, 2000, 4000, 4000]);
+        assert_eq!(t.store.sends(Protocol::Udp), arrivals);
+    }
+
+    #[test]
+    fn unanswered_logins_back_off_in_steps_and_a_successful_login_starts_over() {
+        let t: TestLimits = test_limits();
+        let answer = Arc::new(AtomicBool::new(false));
+        let reply_when = answer.clone();
+        let server = UdpFixture::start(move |_, _| {
+            if reply_when.load(Ordering::SeqCst) {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else {
+                String::new()
+            }
+        });
+        let wait_of = |t: &TestLimits| {
+            let mut c = UdpClient::new(config_for(server.addr), t.limits.clone());
+            match c.auth() {
+                Err(AnidbError::AuthTimeout(wait)) => wait.as_secs(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            [wait_of(&t), wait_of(&t), wait_of(&t)],
+            [30, 120, 300],
+            "each unanswered AUTH escalates, also from a new client"
+        );
+        answer.store(true, Ordering::SeqCst);
+        let mut c = UdpClient::new(config_for(server.addr), t.limits.clone());
+        c.auth().unwrap();
+        assert!(c.is_logged_in());
+        answer.store(false, Ordering::SeqCst);
+        assert_eq!(wait_of(&t), 30, "a login resets the escalation");
     }
 
     #[test]

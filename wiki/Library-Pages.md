@@ -174,7 +174,10 @@ available.` if it is not stored), **Reviews** (author or `Anonymous`, rating, bo
 
 - **Open on AniDB** opens `https://anidb.net/anime/<id>` in your browser.
 - **Refresh from AniDB** queues `Fetch anime N` (HTTP API). Nothing is sent until you run the
-  queue; a duplicate of an already queued refresh is ignored.
+  queue; a duplicate of an already queued refresh is ignored. AniDB asks clients to request an
+  anime at most once per 24 hours, so inside that window after the last request (successful or
+  not) the button queues nothing and the status bar and log say when the refresh is allowed
+  ([Request limits](AniDB-Synchronization.md#request-limits)).
 
 The window shows no cover image: picture names are stored, but no image is downloaded or shown.
 Close it with its title-bar button.

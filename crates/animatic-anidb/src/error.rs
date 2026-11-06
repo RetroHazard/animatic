@@ -12,6 +12,20 @@ pub enum AnidbError {
     Banned(String),
     #[error("client version outdated - check the AniDB client registration")]
     ClientOutdated,
+    /// Reply 504: AniDB refuses this client name and version for good. Like
+    /// [`AnidbError::ClientOutdated`] it needs a correction, never a retry.
+    #[error(
+        "this AniDB client version is banned (reply 504): correct the client name and version in the settings, or update Animatic"
+    )]
+    ClientBanned,
+    /// An `AUTH` (or the `ENCRYPT` before it) got no reply. The duration is the escalating,
+    /// persisted backoff that now applies (see [`crate::limits::AUTH_BACKOFF`]).
+    #[error("no reply to the AniDB login (AUTH); the next try is allowed in {}", wait_text(*.0))]
+    AuthTimeout(Duration),
+    /// The request state that must be saved before a request is sent could not be saved, so
+    /// nothing was sent.
+    #[error("cannot save the AniDB request state, nothing was sent: {0}")]
+    Storage(String),
     #[error("AniDB server error {0}: {1}")]
     ServerError(u16, String),
     #[error("AniDB unavailable, retry in {} min", .0.as_secs().div_ceil(60))]
@@ -30,10 +44,26 @@ pub enum AnidbError {
     Xml(String),
 }
 
-/// Cooldown applied after a ban when AniDB does not tell how long it lasts.
+/// Cooldown applied after a ban when AniDB does not tell how long it lasts. AniDB bans last
+/// "usually about 30 min"; see the UDP API rules in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits).
 pub const BAN_COOLDOWN: Duration = Duration::from_secs(30 * 60);
-/// Cooldown applied after a transient network failure.
+/// Cooldown applied after a transient network failure. A design choice: AniDB publishes no
+/// figure (see
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)).
 pub const TRANSIENT_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// "30 s", "2 min", "2 h": a wait in the unit people read it in.
+fn wait_text(wait: Duration) -> String {
+    let secs = wait.as_secs().max(1);
+    if secs < 120 {
+        format!("{secs} s")
+    } else if secs < 2 * 3600 {
+        format!("{} min", secs.div_ceil(60))
+    } else {
+        format!("{} h", secs.div_ceil(3600))
+    }
+}
 
 impl AnidbError {
     /// Errors after which retrying the same command later may succeed.
@@ -42,6 +72,8 @@ impl AnidbError {
             self,
             AnidbError::Network(_)
                 | AnidbError::Timeout
+                | AnidbError::AuthTimeout(_)
+                | AnidbError::Storage(_)
                 | AnidbError::ServerError(..)
                 | AnidbError::ServerUnavailable(_)
                 | AnidbError::Http(_)
@@ -52,7 +84,10 @@ impl AnidbError {
     pub fn is_fatal(&self) -> bool {
         matches!(
             self,
-            AnidbError::Banned(_) | AnidbError::ClientOutdated | AnidbError::Auth(_)
+            AnidbError::Banned(_)
+                | AnidbError::ClientOutdated
+                | AnidbError::ClientBanned
+                | AnidbError::Auth(_)
         )
     }
 
@@ -61,12 +96,13 @@ impl AnidbError {
     pub fn retry_after(&self) -> Option<Duration> {
         match self {
             AnidbError::Banned(_) => Some(BAN_COOLDOWN),
-            AnidbError::ServerUnavailable(d) => Some(*d),
+            AnidbError::ServerUnavailable(d) | AnidbError::AuthTimeout(d) => Some(*d),
             AnidbError::ServerError(604, _) => Some(TRANSIENT_COOLDOWN),
             AnidbError::ServerError(..) => Some(BAN_COOLDOWN),
-            AnidbError::Network(_) | AnidbError::Timeout | AnidbError::Http(_) => {
-                Some(TRANSIENT_COOLDOWN)
-            }
+            AnidbError::Network(_)
+            | AnidbError::Timeout
+            | AnidbError::Storage(_)
+            | AnidbError::Http(_) => Some(TRANSIENT_COOLDOWN),
             _ => None,
         }
     }
@@ -105,9 +141,20 @@ mod tests {
             assert!(e.is_transient() && !e.is_fatal());
             assert_eq!(e.retry_after(), Some(TRANSIENT_COOLDOWN));
         }
-        for e in [AnidbError::ClientOutdated, AnidbError::Auth(String::new())] {
-            assert!(e.is_fatal() && e.retry_after().is_none());
+        for e in [
+            AnidbError::ClientOutdated,
+            AnidbError::ClientBanned,
+            AnidbError::Auth(String::new()),
+        ] {
+            assert!(e.is_fatal() && !e.is_transient() && e.retry_after().is_none());
         }
+        assert!(AnidbError::ClientBanned.to_string().contains("banned"));
+        let unanswered = AnidbError::AuthTimeout(Duration::from_secs(300));
+        assert!(unanswered.is_transient() && !unanswered.is_fatal());
+        assert_eq!(unanswered.retry_after(), Some(Duration::from_secs(300)));
+        let storage = AnidbError::Storage("synthetic".into());
+        assert!(storage.is_transient() && !storage.is_fatal());
+        assert_eq!(storage.retry_after(), Some(TRANSIENT_COOLDOWN));
         for e in [
             AnidbError::IllegalInput(String::new()),
             AnidbError::UnknownCommand,
@@ -116,6 +163,21 @@ mod tests {
             AnidbError::Xml(String::new()),
         ] {
             assert!(!e.is_transient() && !e.is_fatal() && e.retry_after().is_none());
+        }
+    }
+
+    #[test]
+    fn waits_are_shown_in_a_readable_unit() {
+        for (secs, text) in [
+            (30, "30 s"),
+            (119, "119 s"),
+            (120, "2 min"),
+            (600, "10 min"),
+            (1800, "30 min"),
+            (7200, "2 h"),
+        ] {
+            let shown = AnidbError::AuthTimeout(Duration::from_secs(secs)).to_string();
+            assert!(shown.ends_with(text), "{shown}");
         }
     }
 }

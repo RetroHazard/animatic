@@ -7,25 +7,32 @@ What the code uses (source: `animatic-anidb`):
 
 | Purpose | Endpoint | Notes |
 |---|---|---|
-| UDP API | `api.anidb.net:9000` by default (**AniDB account** settings can change the server and local port) | IPv4 only. The client binds `0.0.0.0` on the configured local port (default 29456) and falls back to a random port if binding fails. Each exchange waits up to 20 s and a first timeout is retried once |
-| HTTP API | `http://api.anidb.net:9001/httpapi` | Plain HTTP; requests are spaced at least 2 s apart; 60 s timeout |
-| Titles dump | `https://anidb.net/api/anime-titles.xml.gz` | Public download, bounded as described in [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers) |
+| UDP API | `api.anidb.net:9000` by default (**AniDB account** settings can change the server and local port) | IPv4 only. The client binds `0.0.0.0` on the configured local port (default 29456) and **never uses another port**: if it cannot be bound the run stops with an error naming `anidb.local_port` and nothing is sent. Each exchange waits up to 20 s and a first timeout is retried once |
+| HTTP API | `http://api.anidb.net:9001/httpapi` | Plain HTTP; every HTTP request (anime records, the title list) is spaced at least 2 s from the previous one; 60 s timeout |
+| Titles dump | `https://anidb.net/api/anime-titles.xml.gz` | Public download, at most once per 24 hours, bounded as described in [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers) |
 | Update check and download | `https://api.github.com/` and `https://github.com/` (plus the CDN hosts GitHub redirects asset downloads to), HTTPS only | Not AniDB: no flood spacing and no cooldown. Anonymous: sends your IP address and `User-Agent: Animatic/VERSION`, no credentials or library data. Bounded sizes and timeouts. Used only for update checks and downloads you start, plus the optional startup check |
 
-The UDP client enforces AniDB packet spacing (2 s between packets for the first five, then
-4 s, resetting after 10 idle minutes) and re-authenticates when a session expires. A long
-queue therefore takes a long time; that is not a hang. The HTTP client is built with the
-HTTP library's defaults and Animatic sets no proxy of its own; the UDP API cannot use an HTTP
-proxy.
+Animatic enforces AniDB's request spacing for the whole program, not per run: UDP packets are
+2 s apart for the first five, then 4 s apart (10 idle minutes restart the burst), and HTTP
+requests 2 s apart. The time of each request is saved in the database before it is sent, so
+restarting Animatic does not shorten the gaps (after a restart the first packet waits 4 s from
+the last one). The client also re-authenticates when a session expires. A long queue therefore
+takes a long time; that is not a hang. AniDB also asks clients not to repeat requests: the
+title list is requested at most once per 24 hours, an anime at most once per 24 hours and a file
+at most once per 7 days (see [Request limits](AniDB-Synchronization.md#request-limits)). The
+HTTP client is built with the HTTP library's defaults and Animatic sets no proxy of its own; the
+UDP API cannot use an HTTP proxy.
 
 | Message | Cause and action |
 |---|---|
 | `network error: cannot resolve <server>: …` | DNS failure or a wrong server name in the account settings |
 | `network error: no IPv4 address for <server>` | The name resolves to IPv6 only. The UDP client needs an IPv4 address |
-| `network error: cannot bind UDP socket: …` | Neither the configured local port nor a random port could be opened. Check security software |
+| `network error: cannot bind UDP port N: …; the port is set by anidb.local_port …` | Another program already uses the local UDP port. Close it, or change `anidb.local_port` in the settings file (a free port above 1024; see the [Settings reference](Settings-Reference.md)). Animatic never picks another port by itself, because AniDB bans clients that show many different source ports. Nothing was sent and the commands stay queued; the next run is allowed after 60 s |
 | `no reply from AniDB (timeout)` | Outbound UDP to the server is blocked or lost. Allow outbound UDP to the server's port, and replies back to the local port (NAT and router behavior is outside Animatic) |
 | `HTTP error: HTTP status 5xx` | A server-side failure from the HTTP API; counted toward the command's retry budget |
 | `AniDB unavailable, retry in N min` | The server asked you to wait (or the HTTP API returned status 429, treated as a 30-minute wait) |
+| `no reply to the AniDB login (AUTH); the next try is allowed in …` | The login got no answer. Animatic waits longer after every further unanswered login: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 hours, and starts over after a successful login. The step survives restarts. Check the server name, the local port and your firewall |
+| `cannot save the AniDB request state, nothing was sent: …` | The database could not record the time of the request, so Animatic did not send it (disk full or database locked). Retried after 60 s |
 
 Transient network failures never lose queued work: the command stays in the queue and syncing
 pauses for 60 seconds (see [Cooldowns and bans](#cooldowns-and-bans)).
@@ -53,6 +60,7 @@ queued`, and leave the queue alone.
 | `authentication: API key not defined in your AniDB profile` / `no such user` | Encrypted-session setup failed (codes 309, 394) | Fatal, as above | Fix or clear the API key; check the user name |
 | `authentication: access denied` | A later command was refused (code 502) | Fatal, as above | Check the account |
 | `client version outdated - check the AniDB client registration` | Code 503 | Fatal, as above | Correct the client name or version registration |
+| `this AniDB client version is banned (reply 504): …` | Code 504: AniDB bans this client name and version | Fatal, as above, **no timed cooldown** | Register or use another client name or version (the client version is a settings-file value), or update Animatic; then **Retry failed** |
 | `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused the client | Fatal, as above | Verify the client name and version |
 
 After a fatal credential or client error the status bar shows **N blocked** and the Log shows
@@ -84,10 +92,11 @@ stores a cooldown so that it holds across restarts and new jobs:
 | Condition | Pause | What happens to the command |
 |---|---|---|
 | Connectivity failure: DNS, connect, TLS, timeout, no reply | 60 s | Stays queued, no attempt is counted |
+| No reply to the login (`AUTH`) | 30 s, then 2 min, 5 min, 10 min, 30 min, 2 h for each further unanswered login; reset by a successful login | Stays queued, no attempt counted |
 | UDP server code 604 | 60 s | Stays queued, no attempt counted |
 | UDP server codes 600, 601, 602 | 30 min | Stays queued; code 600 counts one attempt |
 | `AniDB unavailable, retry in N min` | The duration given (HTTP 429: 30 min) | Stays queued |
-| Ban: UDP codes 504, 510, 555; HTTP 403; HTTP `banned` / error 500 | 30 min (Animatic's conservative default when no duration is known) | Stays queued; a ban never blocks entries |
+| Ban: UDP codes 510, 555; HTTP 403; HTTP `banned` / error 500 | 30 min (Animatic's conservative default when no duration is known) | Stays queued; a ban never blocks entries |
 | HTTP status ≥ 500 or malformed server answers | 60 s | The command **counts an attempt**; after 5 counted attempts it is blocked |
 | Local storage errors while applying a reply | 60 s | Counts an attempt |
 | Code 598 (unknown command), 505 on a command (`illegal input: …`), unexpected reply codes, protocol errors, XML errors | none | That command is **blocked** and the run continues with the next |
@@ -170,8 +179,9 @@ Two connections write to the database: the background worker and the interface. 
   **Tools → Download anime
   titles** fetches the public titles dump only. `--full-update` (command-line only, no menu
   item) queues the titles dump plus lookups for the files and anime your **hashed local files**
-  already reference. Library content comes from an AOM import, from hashing and identifying
-  files, from the anime detail window's **Refresh from AniDB**, and from your own edits.
+  already reference, leaving out what was requested too recently (see the next point). Library
+  content comes from an AOM import, from hashing and identifying files, from the anime detail
+  window's **Refresh from AniDB**, and from your own edits.
 - Not every hashed file is known to AniDB. A file AniDB does not know logs `file unknown to
   AniDB`.
 - **Download anime titles** failures leave your existing titles and the "last updated"
@@ -181,8 +191,18 @@ Two connections write to the database: the background worker and the interface. 
   `unexpected data after the compressed titles dump`, `invalid compressed body: …` and `title
   longer than N bytes`. Format and size errors block the `TitlesDump` command; connectivity
   errors pause syncing instead (see [Cooldowns and bans](#cooldowns-and-bans)). After a block,
-  use **Retry failed** once the cause is gone, or queue the download again from the Tools
-  menu. A download is not resumable.
+  use **Retry failed** or queue the download again from the Tools menu once the cause is gone
+  **and** 24 hours have passed since the failed attempt (next point). A download is not
+  resumable.
+- **"Skipped" or "allowed after …" instead of a download or refresh.** AniDB asks clients not
+  to request the same data again and again, so Animatic does not send the title list more than
+  once per 24 hours, an anime more than once per 24 hours or a known file more than once per 7
+  days, **counted from the last request it sent, even if that request failed or was cut off**
+  (the time is saved before sending, so a crash or restart does not reset it). **Download anime
+  titles** and **Refresh from AniDB** then queue nothing and log `… allowed after <date time>`;
+  a command already in the queue finishes as `… skipped: …` without an error. Wait until the
+  time shown; there is no way to bypass it (and no setting), because sending sooner risks a ban.
+  See [Request limits](AniDB-Synchronization.md#request-limits).
 - Cached **MyList** displays include optimistic local state for queued edits; a blocked or
   cleared edit can leave the local view different from AniDB.
 - A file lookup that **explicitly** reports "not in MyList" removes the local MyList rows for

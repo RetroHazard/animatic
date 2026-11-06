@@ -3,7 +3,8 @@
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::io::{self, BufRead, BufReader, Read};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::EpNo;
 use crate::error::{AnidbError, Result};
+use crate::limits::Limits;
 
 pub const HTTP_API: &str = "http://api.anidb.net:9001/httpapi";
 pub const TITLES_DUMP: &str = "https://anidb.net/api/anime-titles.xml.gz";
@@ -773,16 +775,20 @@ pub fn read_titles_dump<R: Read, E: From<AnidbError>>(
     }
 }
 
-/// HTTP API client with the mandatory 2 second spacing between requests.
+/// HTTP client for the anime API, the title dump and images. Every request, whatever its kind,
+/// first takes a slot from the process-wide [`Limits`] (at least 2 s between requests, saved
+/// before sending), so no number of clients can exceed AniDB's HTTP rate.
 pub struct HttpClient {
     pub client: String,
     pub client_version: u32,
-    last: Option<Instant>,
+    limits: Arc<Limits>,
     agent: ureq::Agent,
+    anime_api: String,
+    titles_dump_url: String,
 }
 
 impl HttpClient {
-    pub fn new(client: impl Into<String>, client_version: u32) -> Self {
+    pub fn new(client: impl Into<String>, client_version: u32, limits: Arc<Limits>) -> Self {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(60)))
             .user_agent(format!("Animatic/{}", env!("CARGO_PKG_VERSION")))
@@ -791,22 +797,44 @@ impl HttpClient {
         HttpClient {
             client: client.into(),
             client_version,
-            last: None,
+            limits,
             agent,
+            anime_api: HTTP_API.to_string(),
+            titles_dump_url: TITLES_DUMP.to_string(),
         }
     }
 
-    fn pace(&mut self) {
-        if let Some(last) = self.last {
-            let since = last.elapsed();
-            if since < Duration::from_secs(2) {
-                std::thread::sleep(Duration::from_secs(2) - since);
-            }
+    /// Send the anime and title dump requests to local fixtures instead of AniDB, and never
+    /// through a proxy picked up from the environment. For tests only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_loopback_endpoints(
+        mut self,
+        anime_api: impl Into<String>,
+        titles_dump_url: impl Into<String>,
+    ) -> Self {
+        self.anime_api = anime_api.into();
+        self.titles_dump_url = titles_dump_url.into();
+        self.agent = ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(30)))
+            .user_agent(format!("Animatic/{}", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into();
+        self
+    }
+
+    /// The registered client name is required on every request; without it nothing is sent.
+    /// Callers that record a request attempt before sending check this first, so an unsendable
+    /// request is not counted as an attempt.
+    pub fn check_client(&self) -> Result<()> {
+        if self.client.is_empty() {
+            return Err(AnidbError::Auth("no AniDB client name configured".into()));
         }
-        self.last = Some(Instant::now());
+        Ok(())
     }
 
     pub fn get_bytes(&mut self, url: &str, limit: u64) -> Result<Vec<u8>> {
+        self.limits.wait_http()?;
         let mut resp = self.agent.get(url).call().map_err(transport_error)?;
         resp.body_mut()
             .with_config()
@@ -815,15 +843,13 @@ impl HttpClient {
             .map_err(transport_error)
     }
 
-    /// Fetch the full anime record. AniDB asks clients not to request the same anime more than once a day.
+    /// Fetch the full anime record. AniDB asks clients not to request the same anime more than
+    /// once a day; the caller (`animatic-core`) enforces that from the saved attempt time.
     pub fn anime(&mut self, aid: i64) -> Result<AnimeXml> {
-        if self.client.is_empty() {
-            return Err(AnidbError::Auth("no AniDB client name configured".into()));
-        }
-        self.pace();
+        self.check_client()?;
         let url = format!(
-            "{HTTP_API}?request=anime&client={}&clientver={}&protover=1&aid={aid}",
-            self.client, self.client_version
+            "{}?request=anime&client={}&clientver={}&protover=1&aid={aid}",
+            self.anime_api, self.client, self.client_version
         );
         let bytes = self.get_bytes(&url, 32 << 20)?;
         let text = decode_maybe_gzip(&bytes)?;
@@ -831,13 +857,15 @@ impl HttpClient {
     }
 
     /// Download the daily titles dump and stream its rows to `out` (see [`read_titles_dump`]
-    /// for the guarantees and for what the caller must do to stay atomic).
+    /// for the guarantees and for what the caller must do to stay atomic). The caller enforces
+    /// the once-a-day rule; this method sends one request every time it is called.
     pub fn titles_dump<E: From<AnidbError>>(
         &mut self,
         limits: &TitlesLimits,
         out: impl FnMut(DumpTitle) -> std::result::Result<(), E>,
     ) -> std::result::Result<usize, E> {
-        self.titles_dump_from(TITLES_DUMP, limits, out)
+        let url = self.titles_dump_url.clone();
+        self.titles_dump_from(&url, limits, out)
     }
 
     fn titles_dump_from<E: From<AnidbError>>(
@@ -846,6 +874,7 @@ impl HttpClient {
         limits: &TitlesLimits,
         out: impl FnMut(DumpTitle) -> std::result::Result<(), E>,
     ) -> std::result::Result<usize, E> {
+        self.limits.wait_http()?;
         let resp = self.agent.get(url).call().map_err(transport_error)?;
         let mut body = resp.into_body();
         // Unlimited here: `read_titles_dump` enforces the byte limits itself.
@@ -858,7 +887,11 @@ impl HttpClient {
         } else {
             server
         };
-        self.get_bytes(&format!("https://{server}/images/main/{picname}"), 16 << 20)
+        self.image_from(&format!("https://{server}"), picname)
+    }
+
+    fn image_from(&mut self, base: &str, picname: &str) -> Result<Vec<u8>> {
+        self.get_bytes(&format!("{base}/images/main/{picname}"), 16 << 20)
     }
 }
 
@@ -878,6 +911,7 @@ pub fn decode_maybe_gzip(bytes: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{HttpFixture, HttpReply, TestLimits, test_limits};
 
     #[test]
     fn transport_failures_are_classified_by_cause() {
@@ -1244,40 +1278,19 @@ mod tests {
         assert_eq!(seen, 1);
     }
 
-    /// Serve one canned HTTP response on a local socket and return its URL.
-    fn serve(status: &str, declared_len: usize, body: Vec<u8>) -> String {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/titles.xml.gz", listener.local_addr().unwrap());
-        let head = format!(
-            "HTTP/1.1 {status}\r\nContent-Length: {declared_len}\r\nConnection: close\r\n\r\n"
-        );
-        std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 512];
-            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
-                match s.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => request.extend_from_slice(&chunk[..n]),
-                }
-            }
-            let _ = s.write_all(head.as_bytes());
-            let _ = s.write_all(&body);
-        });
-        url
+    /// A client over its own manual clock that talks to `fixture` instead of AniDB.
+    fn client_for(fixture: &HttpFixture) -> (HttpClient, TestLimits) {
+        let t = test_limits();
+        let client = HttpClient::new("synthetic", 1, t.limits.clone())
+            .with_loopback_endpoints(fixture.url("/httpapi"), fixture.url("/titles.xml.gz"));
+        (client, t)
     }
 
-    fn fetch(url: &str) -> (Result<usize>, Vec<DumpTitle>) {
+    fn fetch(reply: HttpReply) -> (Result<usize>, Vec<DumpTitle>) {
+        let fixture = HttpFixture::start(move |_, _| reply.clone());
+        let (mut client, _t) = client_for(&fixture);
         let mut rows = Vec::new();
-        let mut client = HttpClient::new("synthetic", 1);
-        // Loopback fixture: never route through a proxy picked up from the environment.
-        client.agent = ureq::Agent::config_builder()
-            .proxy(None)
-            .timeout_global(Some(Duration::from_secs(30)))
-            .build()
-            .into();
-        let n = client.titles_dump_from(url, &TitlesLimits::default(), |t| {
+        let n = client.titles_dump(&TitlesLimits::default(), |t| {
             rows.push(t);
             Ok(())
         });
@@ -1286,26 +1299,106 @@ mod tests {
 
     #[test]
     fn titles_dump_streams_from_a_local_http_server() {
-        let body = gzip(DUMP.as_bytes());
-        let (n, rows) = fetch(&serve("200 OK", body.len(), body));
+        let (n, rows) = fetch(HttpReply::ok(gzip(DUMP.as_bytes())));
         assert_eq!(n.unwrap(), 3);
         assert_eq!(rows.len(), 3);
 
         // The connection ends before the announced length: a transient network failure.
-        let body = gzip(DUMP.as_bytes());
-        let announced = body.len();
-        let (n, _) = fetch(&serve("200 OK", announced, body[..announced / 2].to_vec()));
+        let (n, _) = fetch(HttpReply::truncated(gzip(DUMP.as_bytes())));
         assert!(matches!(n, Err(AnidbError::Network(_))), "{n:?}");
 
         // A corrupt compressed body is a permanent failure, not a network problem.
         let mut bad = gzip(DUMP.as_bytes());
         let crc = bad.len() - 8;
         bad[crc] ^= 0xff;
-        let (n, _) = fetch(&serve("200 OK", bad.len(), bad));
+        let (n, _) = fetch(HttpReply::ok(bad));
         assert!(matches!(n, Err(AnidbError::Xml(_))), "{n:?}");
 
-        let (n, rows) = fetch(&serve("503 Service Unavailable", 0, Vec::new()));
+        let (n, rows) = fetch(HttpReply::status("503 Service Unavailable"));
         assert!(matches!(n, Err(AnidbError::Http(_))), "{n:?}");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn every_kind_of_http_request_is_spaced_by_the_shared_limiter() {
+        let t = test_limits();
+        let arrivals = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (log, clock) = (arrivals.clone(), t.clock.clone());
+        let dump = gzip(DUMP.as_bytes());
+        let fixture = HttpFixture::start(move |index, _| {
+            use crate::limits::Clock;
+            log.lock().push(clock.now_ms());
+            match index {
+                0 => HttpReply::ok(SAMPLE.as_bytes().to_vec()),
+                1 => HttpReply::ok(dump.clone()),
+                _ => HttpReply::ok(b"picture".to_vec()),
+            }
+        });
+        let new_client = || {
+            HttpClient::new("synthetic", 1, t.limits.clone())
+                .with_loopback_endpoints(fixture.url("/httpapi"), fixture.url("/titles.xml.gz"))
+        };
+
+        // Different clients (as in different queue runs), all kinds of request, one limiter.
+        assert_eq!(new_client().anime(1).unwrap().aid, 1);
+        let mut sink_rows = 0;
+        new_client()
+            .titles_dump::<AnidbError>(&TitlesLimits::default(), |_| {
+                sink_rows += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(sink_rows, 3);
+        assert_eq!(
+            new_client().image_from(fixture.base(), "p.jpg").unwrap(),
+            b"picture"
+        );
+        assert_eq!(
+            new_client()
+                .get_bytes(&fixture.url("/other"), 1024)
+                .unwrap(),
+            b"picture"
+        );
+
+        let arrivals = arrivals.lock().clone();
+        assert_eq!(arrivals.len(), 4);
+        let gaps: Vec<i64> = arrivals.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(
+            gaps,
+            [2000, 2000, 2000],
+            "no request is exempt from the spacing"
+        );
+        assert_eq!(t.store.sends(crate::limits::Protocol::Http), arrivals);
+    }
+
+    #[test]
+    fn http_spacing_continues_after_a_restart() {
+        let fixture = HttpFixture::start(|_, _| HttpReply::ok(b"x".to_vec()));
+        let t = test_limits();
+        let mut first = HttpClient::new("synthetic", 1, t.limits.clone());
+        first.get_bytes(&fixture.url("/a"), 16).unwrap();
+        t.clock.advance(Duration::from_millis(700));
+        // A new process: new limiter, same saved state.
+        let restarted = crate::limits::Limits::new(t.clock.clone(), t.store.clone());
+        let before = t.clock.sleeps().len();
+        let mut second = HttpClient::new("synthetic", 1, restarted);
+        second.get_bytes(&fixture.url("/b"), 16).unwrap();
+        assert_eq!(
+            t.clock.sleeps()[before..],
+            [Duration::from_millis(1300)],
+            "2 s after the saved send time"
+        );
+    }
+
+    #[test]
+    fn a_client_without_a_name_sends_nothing_and_uses_no_slot() {
+        let fixture = HttpFixture::start(|_, _| HttpReply::ok(SAMPLE.as_bytes().to_vec()));
+        let t = test_limits();
+        let mut client = HttpClient::new("", 1, t.limits.clone())
+            .with_loopback_endpoints(fixture.url("/httpapi"), fixture.url("/titles.xml.gz"));
+        assert!(matches!(client.anime(1), Err(AnidbError::Auth(_))));
+        assert!(client.check_client().is_err());
+        assert_eq!(fixture.requests(), 0);
+        assert!(t.store.sends(crate::limits::Protocol::Http).is_empty());
     }
 }

@@ -11,7 +11,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 - Searchable library views, anime details, local-file identification and MyList
   watched/state editing.
 - Durable synchronization queue with latest-intent edits, retained failures and
-  restart-persistent cooldowns.
+  restart-persistent cooldowns; AniDB's request spacing and once-a-day limits hold across
+  runs and restarts.
 - HTTP anime metadata and bounded, validated public-title downloads.
 - Compatible rename expressions with diagnostics, preview and explicit confirmation.
 - Configurable players, AVDump integration and XML/INI statistics exports.

@@ -738,6 +738,36 @@ impl AnimaticApp {
         }
     }
 
+    /// Queue a title dump unless AniDB's once-a-day rule says to wait, and then say when it is
+    /// next allowed. The queue executor applies the same rule again when the command runs.
+    fn queue_titles_dump(&mut self) {
+        match self.db.titles_dump_next_allowed(format::now()) {
+            Ok(Some(until)) => self.log(animatic_core::limits::titles_dump_wait_message(until)),
+            Ok(None) => self.queue_command(animatic_core::sync::Command::TitlesDump),
+            Err(e) => {
+                log::warn!("cannot read the title dump attempt time: {e}");
+                self.queue_command(animatic_core::sync::Command::TitlesDump);
+            }
+        }
+    }
+
+    /// Queue a refresh of one anime unless it was requested within the last day, and then say
+    /// when it is next allowed. The queue executor applies the same rule again.
+    fn queue_anime_refresh(&mut self, aid: i64) {
+        use animatic_core::limits::{RequestKind, anime_wait_message};
+        match self
+            .db
+            .request_next_allowed(RequestKind::Anime, aid, format::now())
+        {
+            Ok(Some(until)) => self.log(anime_wait_message(aid, until)),
+            Ok(None) => self.queue_command(animatic_core::sync::Command::FetchAnime { aid }),
+            Err(e) => {
+                log::warn!("cannot read the attempt time of anime {aid}: {e}");
+                self.queue_command(animatic_core::sync::Command::FetchAnime { aid });
+            }
+        }
+    }
+
     fn retry_deferred(&mut self) {
         if self.deferred.is_empty() || self.last_deferred_retry.elapsed() < DEFERRED_RETRY {
             return;
@@ -1782,7 +1812,7 @@ impl AnimaticApp {
                         }
                     });
                     if ui.button("Download anime titles").clicked() {
-                        self.queue_command(animatic_core::sync::Command::TitlesDump);
+                        self.queue_titles_dump();
                         ui.close();
                     }
                     if ui.button("Fetch mylist statistics").clicked() {
@@ -2801,7 +2831,7 @@ impl AnimaticApp {
             self.selected_aid = None;
         }
         if refresh_requested {
-            self.queue_command(animatic_core::sync::Command::FetchAnime { aid });
+            self.queue_anime_refresh(aid);
         }
         for eid in episode_refresh {
             self.queue_command(animatic_core::sync::Command::FetchEpisode { eid });

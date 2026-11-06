@@ -272,18 +272,26 @@ into an issue, a commit or documentation.
 No automated test may contact production AniDB, and none may use fabricated or unregistered
 client credentials against it. The existing tests show the pattern:
 
-- **UDP:** the worker tests bind a fixture `UdpSocket` to `127.0.0.1:0`, point
-  `AnidbSettings::udp_server` at its address, set `local_port` to `0`, and reply with canned
-  lines. `AnidbSettings::default()` points at `api.anidb.net:9000`, so a test that forgets
-  the override targets the real server. Always set the server address and assert on the
-  fixture's packet count.
-- **HTTP:** `HttpClient::anime` and `HttpClient::titles_dump` use fixed production URLs
-  (`HTTP_API`, `TITLES_DUMP`), and `process_queue` in the worker builds its clients from
-  those. A worker-level test therefore must not queue `FetchAnime` or `TitlesDump`. HTTP
-  behavior is tested inside `animatic-anidb` against a loopback `TcpListener` through the
-  crate-private `titles_dump_from(url, …)`, with the proxy disabled (`.proxy(None)`, because
-  the default agent can pick up a proxy from the environment), or against byte fixtures
-  passed straight to the parsers.
+- **UDP:** the worker tests start `animatic_anidb::testing::UdpFixture` (a socket on
+  `127.0.0.1:0` that echoes the request tag and replies with canned lines; an empty reply
+  models a server that does not answer), point `AnidbSettings::udp_server` at its address, set
+  `local_port` to `0`, and reply with canned lines. `AnidbSettings::default()` points at
+  `api.anidb.net:9000`, so a test that forgets the override targets the real server. Always set
+  the server address and assert on the fixture's packet count.
+- **Spacing and time:** never sleep in a test. The clients take their send slots from a
+  `Limits` whose `Clock` is replaceable: `animatic_anidb::testing::ManualClock` only moves when
+  the limiter "sleeps", so a test reads exact packet gaps (record `clock.now_ms()` when the
+  fixture receives a packet) and a restart is a new `Limits` over the same store
+  (`MemoryStore`, or `animatic_core::limits::open_limits_with_clock` over the test database).
+- **HTTP:** `HttpClient::anime` and `HttpClient::titles_dump` use the fixed production URLs
+  (`HTTP_API`, `TITLES_DUMP`) unless a test calls `HttpClient::with_loopback_endpoints`, which
+  points both at `animatic_anidb::testing::HttpFixture` (a loopback server that counts requests)
+  and disables proxies (the default agent can pick one up from the environment). `process_queue`
+  in the worker builds its clients from the production URLs, so a worker-level test must not
+  run `FetchAnime` or `TitlesDump` against the network; the guard tests for those commands call
+  `sync::execute` with loopback clients (see `animatic-core/src/limits.rs`). The fixtures are
+  behind the `test-support` cargo feature of `animatic-anidb`, which only the
+  `[dev-dependencies]` of `animatic-core` and `animatic` enable.
 - **No registered production client exists in this repository.** Do not invent one, and do not
   put real credentials, API keys or session keys in tests, fixtures, logs or documentation.
 - Deliberate production contact is a manual, maintainer-run activity with that person's own

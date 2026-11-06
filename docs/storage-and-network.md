@@ -7,7 +7,8 @@ protocol handling, the title dump import, the GitHub update transport, and the p
 first. Source of truth: [`schema.sql`](../crates/animatic-core/src/db/schema.sql),
 [`db/mod.rs`](../crates/animatic-core/src/db/mod.rs),
 [`sync.rs`](../crates/animatic-core/src/sync.rs),
-[`store.rs`](../crates/animatic-core/src/store.rs) and the
+[`store.rs`](../crates/animatic-core/src/store.rs),
+[`limits.rs`](../crates/animatic-core/src/limits.rs) and the
 [`animatic-anidb`](../crates/animatic-anidb/src/lib.rs) modules. Generated item documentation:
 `cargo doc --workspace --no-deps`.
 
@@ -63,13 +64,19 @@ AniDB with unregistered client credentials.
 |---|---|---|---|
 | `schema_version` | `1` | `Db::open` when absent | nothing |
 | `sync_cooldown` | `<until epoch seconds>\n<reason>` | worker (`set_sync_cooldown`) | `Db::sync_cooldown` |
-| `titles_dump_date` | epoch seconds of the last successful dump import | `import_title_dump` | nothing in the application |
+| `titles_dump_date` | epoch seconds of the last **successful** dump import | `import_title_dump` | the title dump guard, as a lower bound only (see [Request guards](#request-guards)) |
+| `titles_dump_attempt` | epoch seconds of the last **attempt** to download the dump, saved before the request is sent, whether or not it succeeded | `sync::execute` (`Db::record_titles_dump_attempt`) | `Db::titles_dump_next_allowed` |
+| `udp_last_send_ms`, `http_last_send_ms` | epoch **milliseconds** of the last UDP packet / HTTP request, saved before sending | `animatic_core::limits::DbLimitStore` for the process-wide limiter | the same store, once per process, when the first request of that protocol is made |
+| `auth_backoff_step` | consecutive `AUTH` attempts without a reply (1 to 6); `0` after a successful login | `DbLimitStore` | `DbLimitStore` |
 | `mylist_stats` | JSON `{"fetched": <epoch seconds>, "stats": {…MylistStats fields…}}`: the latest `MYLISTSTATS` result with its arrival time (`StoredMylistStats`) | `Db::store_mylist_stats` (the `MylistStats` executor arm), replacing the previous value | `Db::mylist_stats_snapshot` (an unreadable value reads as absent), `LibraryProjection::account_stats`, Overview "AniDB account figures" |
 | `legacy_import_source`, `legacy_import_date` | databank path, epoch seconds | legacy import | nothing in the application |
 | `legacy_dump_date` | largest dump-date tag found in the databank (`legacy_dump_date_tmp` is a transient staging key) | legacy import | nothing in the application |
 
 An unreadable `sync_cooldown` value (no newline, non-numeric time, empty) is ignored and never
-locks syncing; a database *error* while reading it aborts the queue run instead.
+locks syncing; a database *error* while reading it aborts the queue run instead. The same holds
+for the saved attempt and send times above: a damaged value counts as none, while a database
+error while reading or writing them stops the request (nothing is sent without a saved send
+time).
 
 ### Tables
 
@@ -79,7 +86,7 @@ locks syncing; a database *error* while reading it aborts the queue run instead.
 |---|---|---|---|---|---|
 | `meta` | Key/value settings of the database | PK `key` | | `Db::set_meta` | See above |
 | `category` | Lookup names (`kind` = `cat`, `lang`, `qual`, `type`, `vcodec`, `acodec`, `res`, `sub`) | PK `(kind, id)` | | Legacy import; `category_or_insert` adds unknown `qual`/`type` names from FILE replies with `max(id)+1` | An empty name maps to id 1 |
-| `anime` | One row per anime | PK `aid` | | FILE replies, title dump (stub rows), HTTP anime XML, legacy | `fetched` is set only by a full HTTP record and means "has a full record"; `episodes = 0` means unknown/ongoing; ratings are stored x100 |
+| `anime` | One row per anime | PK `aid` | | FILE replies, title dump (stub rows), HTTP anime XML, legacy | `fetched` is set only by a full HTTP record and means "has a full record" (success only; attempts are in `request_attempt`); `episodes = 0` means unknown/ongoing; ratings are stored x100 |
 | `anime_title` | Titles per anime | PK `id` (rowid, **not** AUTOINCREMENT); no unique constraint on `(aid, name, lang)` | `aid`; `name COLLATE NOCASE` | FILE replies, dump merge, HTTP XML (replaces all titles of the anime when the document has titles), legacy | Uniqueness of `(aid,name,lang)` is enforced by code. `type`: 1 main, 2 synonym, 3 short, 4 official, 5 card, 6 kana |
 | `episode` | Episodes | PK `eid` | `aid` | FILE replies, HTTP XML, EPISODE replies, legacy | `length` in minutes; `type`: 1 regular, 2 special, 3 credit, 4 trailer, 5 parody, 6 other |
 | `episode_title` | Episode titles | PK `id` | `eid` | Same as episodes | One row per `(eid, lang)` by code (update, else insert) |
@@ -95,6 +102,7 @@ locks syncing; a database *error* while reading it aborts the queue run instead.
 | `local_hash` | Hashes of local content | PK `id`; **UNIQUE `(ed2k, size)`** | | `add_local_file` (upsert); legacy | Hashing fills only `ed2k, size, crc32, md5, sha1`; the media columns (`fps`, `video_*`, `audio_*`) are populated only by legacy import |
 | `local_file` | Paths of hashed files | PK `id`; **UNIQUE index on `path`** (exact text) | `hash_id` | `add_local_file` (upsert by path), `move_local_file`, legacy | `hash_id` softly references `local_hash.id`. `mtime` = modification time read after hashing. `remove_local_file` also deletes `local_hash` rows left without any path. Scan comparisons use a normalized key (slashes, and lower case on Windows) while the index is exact text |
 | `command_queue` | Persistent outbox of AniDB commands | PK `id` **AUTOINCREMENT** | `(blocked, priority, id)`; `lid`; `payload` | `sync.rs` queue operations, migration | See below |
+| `request_attempt` | When a request for one record was last **sent** to AniDB, successful or not | PK `(kind, id)`; `kind` is `anime` (`id` = `aid`, HTTP record) or `file` (`id` = `fid`, UDP `FILE`); `attempted` = epoch seconds | | `sync::execute` through `Db::record_request_attempt`, before the request | Created by the idempotent schema script, so existing databases gain it on the next open and lose nothing. See [Request guards](#request-guards) |
 
 Key relations (all soft):
 
@@ -288,18 +296,21 @@ Because `id` is never reused:
 
 `CommandError { message, transient, fatal, retry_after, counts_attempt }` is produced from
 `AnidbError` (`animatic_anidb::error`) or from core `Error`. Constants:
-`BAN_COOLDOWN = 30 min`, `TRANSIENT_COOLDOWN = 60 s`, `MAX_QUEUE_TRIES = 5`.
+`BAN_COOLDOWN = 30 min`, `TRANSIENT_COOLDOWN = 60 s`, `MAX_QUEUE_TRIES = 5`. The request limits
+(spacing, daily guards, `AUTH` backoff) are constants of their own, listed in
+[Where each limit lives](#where-each-limit-lives).
 
 | Error | Transient | Fatal | Retry after | Counts as attempt |
 |---|---|---|---|---|
-| `Network`, `Timeout` | yes | no | 60 s | no |
+| `Network`, `Timeout`, `Storage` (the send time could not be saved, so nothing was sent) | yes | no | 60 s | no |
+| `AuthTimeout(d)` (an `AUTH`, or the `ENCRYPT` before it, got no reply) | yes | no | `d`: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 h, persisted and reset by a successful `AUTH` | no |
 | `Http` (5xx, malformed HTTP) | yes | no | 60 s | **yes** |
 | `ServerUnavailable(d)` (local backoff, HTTP 429 = 30 min) | yes | no | `d` | no |
 | `ServerError(604)` | yes | no | 60 s | no |
 | `ServerError(600)` | yes | no | 30 min | **yes** |
 | `ServerError(601, 602, other)` | yes | no | 30 min | no |
 | `Banned` | no | yes | 30 min | no |
-| `Auth`, `ClientOutdated` | no | yes | none | no |
+| `Auth`, `ClientOutdated` (503), `ClientBanned` (504) | no | yes | none | no |
 | `IllegalInput`, `UnknownCommand`, `Unexpected`, `Protocol`, `Xml` | no | no | none | yes |
 | core `Error::Io` / `Error::Db` | yes | no | 60 s | yes |
 | other core `Error` (settings, JSON, legacy, rename, ...) | no | no | none | yes |
@@ -310,7 +321,7 @@ What the worker does with each class (`fail_command` in
 | Class | Action | Run continues |
 |---|---|---|
 | Fatal with a duration (ban) | `queue_deferred` (no try), persist cooldown | no |
-| Fatal without duration (credentials, outdated client) | `queue_block_all`: every runnable row blocked until corrected; "Blocked" event | no |
+| Fatal without duration (credentials, outdated or banned client) | `queue_block_all`: every runnable row blocked until corrected; "Blocked" event | no |
 | Transient, counted | `queue_failed` (+1 try, blocks at 5), persist cooldown (default 60 s) | no |
 | Transient, not counted | `queue_deferred`, persist cooldown | no |
 | Permanent (not transient, not fatal) | `queue_block` (+1 try, blocked), "Blocked" event | **yes**, next command |
@@ -324,8 +335,18 @@ Cooldown mechanics:
 - Offline mode (`anidb.offline`) is checked first and leaves the queue untouched.
 - Inside one `UdpClient`, a server-error reply also arms an in-memory backoff (600/601/602:
   30 min, 604: 60 s) during which `ServerUnavailable` is returned without sending a packet, and
-  a ban reply latches the client so it sends nothing further. Each queue run builds new clients,
-  which is why the persistent cooldown exists.
+  a ban reply (510, 555) latches the client so it sends nothing further. Each queue run builds
+  new clients, which is why the persistent cooldown exists.
+- `504` is not a timed ban: the client name and version are banned, so it blocks every runnable
+  row like an outdated client (`503`) until they are corrected, and sets no cooldown.
+- An `AUTH` without a reply escalates instead of using the flat 60 s: the `AuthTimeout`
+  duration comes from `meta.auth_backoff_step`, so the next try is allowed 30 s, 2 min, 5 min,
+  10 min, 30 min and from then on 2 h after the unanswered `AUTH`. It is stored as an ordinary
+  `sync_cooldown`, survives restarts, and a successful login resets the step. The command that
+  needed the login is deferred and counts no attempt.
+- A command that a request guard skips ([Request guards](#request-guards)) finishes as
+  `Outcome::Skipped`: it is removed from the queue and logged, with no failure, no counted
+  attempt and no cooldown.
 - A fresh cooldown does not take the maximum with an existing one; runs do not start while one
   is active, so none exists to compare.
 - Recovery: wait out the cooldown; correct credentials/client name/version in the Options
@@ -337,8 +358,9 @@ Cooldown mechanics:
 These are the rules AniDB publishes for clients, collected on 2026-11-06 by reading the pages
 with a browser (plain HTTP clients get 403). A client that breaks them gets its users banned,
 so every request path must follow them; the roadmap item
-[M1.8](roadmap.md#m18-honour-anidb-server-limits-across-runs-and-restarts) closes the gaps listed
-at the end. Entries marked *(not documented)* have no official text and are design choices.
+[M1.8](roadmap.md#m18-honour-anidb-server-limits-across-runs-and-restarts) made the limits
+hold across runs and restarts, and *Where Animatic stands* below says what each rule maps to.
+Entries marked *(not documented)* have no official text and are design choices.
 
 Sources: [UDP API definition](https://wiki.anidb.net/UDP_API_Definition) (spec 0.03.730,
 protover 3), [HTTP API definition](https://wiki.anidb.net/HTTP_API_Definition),
@@ -390,20 +412,68 @@ can take up to 24 h, completion is announced as an AniDB message, and the file i
 from the web export page (no documented API for fetching it). Request it only when the user asks,
 never on a schedule. `xml-plain-new` is the template meant for building a local database.
 
-**Where Animatic stands (code at `e71452c`).**
+**Where Animatic stands.**
 
 | Rule | Status |
 |---|---|
-| 2 s / 4 s UDP spacing | Within one `UdpClient` only; each queue run builds a new client, so the burst allowance restarts every run |
+| 2 s / 4 s UDP spacing | **Process-wide**: one `Limits` owned by the worker serves every `UdpClient` of every queue run, and each packet's send time is saved in `meta.udp_last_send_ms` *before* it is sent. After a restart the burst size is unknown, so the next packet keeps the 4 s spacing from the saved time |
 | No `AUTH`/`LOGOUT` per command | Per queue run, not per command; a session is not kept across runs |
-| Fixed local port | Uses `anidb.local_port` (default 29456), but **falls back to a random port** when binding fails, which risks port-churn bans |
-| `504` | Treated as a 30-minute ban; it should block until the client version changes |
-| `AUTH` no-reply backoff | A flat transient cooldown, not the escalating schedule |
-| HTTP one request per 2 s | Only `anime()` is paced, per client instance; title dump, images and `get_bytes` are not |
-| Same dataset once a day | Not enforced: no age check on `FetchAnime`; full updates re-query every known file |
-| Title dump once a day | Not enforced: `titles_dump_date` is written but never read |
+| Fixed local port | Uses `anidb.local_port` (default 29456) and **never another port**: a port that cannot be bound is an error that names the setting, and nothing is sent. Port `0` (a new OS-chosen port for every client) exists for tests only |
+| `504` | Fatal like an outdated client: every runnable row is blocked with "this AniDB client version is banned" until the client name and version are corrected; no timed ban |
+| `AUTH` no-reply backoff | Escalating and persisted: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 h; a successful login resets it |
+| HTTP one request per 2 s | **Process-wide** for every HTTP request (anime records, title dump, images, `get_bytes`); the send time is saved in `meta.http_last_send_ms` before sending |
+| Same dataset once a day | Enforced by a saved attempt time per anime (24 h) and per known file (7 days, a design choice); see [Request guards](#request-guards) |
+| Title dump once a day | Enforced by a saved attempt time (24 h); **Download anime titles**, full updates and queued retries skip it inside the window and say when it is next allowed |
 | `User-Agent` | Sent: `Animatic/VERSION` |
 | `nat=1`, `comp=1`, `imgserver=1` | Sent on `AUTH`; `PING` exists but is unused |
+
+### Where each limit lives
+
+Every limit is a named constant whose doc comment links the rule above.
+
+| Constant | Value | Defined in |
+|---|---|---|
+| `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING` | 5 packets at 2 s, then 4 s | [`animatic_anidb::limits`](../crates/animatic-anidb/src/limits.rs) |
+| `UDP_BURST_RESET` | 10 min of idle time restarts the burst allowance *(not documented)* | same |
+| `HTTP_SPACING` | 2 s between any two HTTP requests | same |
+| `AUTH_BACKOFF` | 30 s, 2 min, 5 min, 10 min, 30 min, 2 h (the last repeats) | same |
+| `TITLES_DUMP_MIN_INTERVAL` | 24 h from the last attempt | [`animatic_core::limits`](../crates/animatic-core/src/limits.rs) |
+| `ANIME_MIN_AGE` | 24 h from the last attempt, per anime | same |
+| `KNOWN_FILE_MIN_AGE` | 7 days from the last attempt, per file; a design choice, because AniDB only says "extended periods" | same |
+| `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN` | 30 min, 60 s | [`animatic_anidb::error`](../crates/animatic-anidb/src/error.rs) |
+
+### Request guards
+
+A guard stops a request from being repeated too soon. It counts **attempts, not successes**, so
+a failed, truncated or invalid download cannot be repeated inside the interval either.
+
+- **Order.** `sync::execute` checks the guard first. A request that is allowed saves its
+  attempt time (`meta.titles_dump_attempt`, or a `request_attempt` row) *before* anything is
+  sent, then sends. A failure, a crash right after sending, or a restart therefore cannot allow
+  a repeat. What is saved is durable against a process crash; like every commit with
+  `synchronous=NORMAL` it can still be lost in an operating-system crash or a power failure.
+- **What counts as an attempt.** Any request that was sent, whatever came back. Things that
+  happen before a request exists are not attempts: an empty client name (`HttpClient::check_client`),
+  a `FILE` request whose login failed first (`UdpClient::ensure_login` runs before the attempt
+  is saved), and the local spool of the title dump failing to start. A guard refusal is not an
+  attempt either.
+- **Minimum ages.** Title dump 24 h; one anime 24 h; one known file (`FetchFile`) 7 days.
+  `titles_dump_date` and `anime.fetched` keep recording only successes; for databases from
+  before attempts were saved, a success also counts as an attempt (the later of the two is
+  used). A saved time in the future (the clock was set back) is treated as now, so a guard
+  never blocks for longer than one interval, and a damaged value counts as none.
+- **Where it applies.**
+  - *Queue executor*: a queued `TitlesDump`, `FetchAnime` or `FetchFile` inside its window is
+    completed as `Outcome::Skipped` (removed from the queue, logged with the time it is allowed
+    again, not counted as a failure). This also covers a transient retry: the failed attempt
+    already started the window.
+  - *Full update* (`--full-update`, `Job::QueueFullUpdate`): leaves out the title dump and every
+    anime and file still inside its window, and reports how many it left out.
+  - *Desktop*: **Download anime titles** and the anime detail **Refresh from AniDB** check the
+    guard when clicked, queue nothing inside the window and log when the request becomes
+    available. The executor checks again when the command runs.
+- **Not guarded.** Hash lookups (`Identify`), `FetchEpisode`, `FetchGroup` and the other UDP
+  commands have no age guard; they are only subject to the shared spacing.
 
 ## UDP API
 
@@ -413,8 +483,12 @@ Implementation: [`udp.rs`](../crates/animatic-anidb/src/udp.rs) and
 
 **Socket.** One UDP socket per client. The server name is resolved once and the first IPv4
 address is used (IPv6 is ignored). The socket binds `0.0.0.0:local_port` (default setting
-`29456`) and falls back to an ephemeral port if that fails. Datagrams from any other source IP
-are ignored while waiting; the source port is not checked.
+`29456`) and **never falls back to another port**: if the bind fails, the exchange returns a
+`Network` error that names `anidb.local_port` and nothing is sent (many different source ports
+from one address get it banned). The socket is opened before the packet takes its send slot, so
+a bind failure uses up no spacing. `local_port = 0` asks the operating system for a port, a
+different one for every client; only tests use it. Datagrams from any other source IP are
+ignored while waiting; the source port is not checked.
 
 **Request format.** `COMMAND key=value&key=value`, values escaped (`&` becomes `&amp;`, line
 breaks become `<br />`), plus `&tag=tN` (counter 1-9999 cycling) on every packet. Replies:
@@ -422,9 +496,18 @@ breaks become `<br />`), plus `&tag=tN` (counter 1-9999 cycling) on every packet
 backtick becomes an apostrophe. A reply with the wrong tag is dropped as a stale answer; an
 untagged reply is accepted. A reply whose code is not three digits is a `Protocol` error.
 
-**Flood spacing (client side).** Before every packet the client sleeps so that consecutive
-packets are at least 2 s apart for the first five of a burst and 4 s apart afterwards; the burst
-counter resets after 10 idle minutes. `AUTH`, `ENCRYPT`, `LOGOUT` and `PING` are paced too.
+**Flood spacing (client side).** Spacing belongs to the process, not to a client: the
+application's worker creates one [`Limits`](../crates/animatic-anidb/src/limits.rs) and every
+`UdpClient` (one per queue run) takes its send slots from it. Before every packet `wait_udp`
+sleeps so that consecutive packets are at least 2 s apart for the first five of a burst and 4 s
+apart afterwards; the burst counter resets after 10 idle minutes. `AUTH`, `ENCRYPT`, `LOGOUT`
+and `PING` are paced too. The send time is saved in `meta.udp_last_send_ms` through
+`animatic_core::limits::DbLimitStore` *before* the packet is sent. A new process reads it on
+its first packet and, because the burst size is not saved, assumes the burst allowance is used
+up: its first packet is at least 4 s after the saved time (unless more than 10 minutes have
+passed). If the send time cannot be saved, no packet is sent (`Storage` error, 60 s cooldown).
+Time only matters through the injectable `Clock`, so tests drive the spacing with a manual
+clock and no waiting.
 
 **Timeouts and reply absence.** Each exchange waits up to `Config.timeout` (default 20 s) for the
 matching reply, then returns `AnidbError::Timeout`. `request` retries a timed-out attempt once.
@@ -437,14 +520,19 @@ is returned locally without any packet. 200/201 return the session key (first wo
 message; empty is a `Protocol` error) and the image server (first data line); 201 sets
 `new_version_available`. 500 is wrong credentials, 505 illegal input or unregistered client
 (both `Auth`); anything else is `Unexpected`. `LOGOUT` is sent at the end of each queue run.
+An `AUTH` (or the `ENCRYPT` before it) that gets no reply is not retried inside the run: it
+returns `AuthTimeout(wait)` with the next step of the escalating backoff, 30 s, 2 min, 5 min,
+10 min, 30 min, then 2 h, kept in `meta.auth_backoff_step` so it survives restarts and is reset
+by the next successful `AUTH`.
 
 **Authenticated requests.** `request(cmd, params)` logs in when there is no session, appends
 `s=<session>`, and on 501/506 (login required, invalid session) drops the session and cipher and
 retries once. 502 becomes `Auth("access denied")`, 505 `IllegalInput`.
 
-**Global reply classes.** 504, 510, 555 → `Banned` (510 is deliberately treated as a ban: no
-automatic retry); 503 → `ClientOutdated`; 598 → `UnknownCommand`; 600, 601, 602, 604 →
-`ServerError` plus backoff (above).
+**Global reply classes.** 510, 555 → `Banned` (510 is deliberately treated as a ban: no
+automatic retry); 503 → `ClientOutdated`; 504 → `ClientBanned` (the client name and version are
+banned: a fatal error that needs a correction, never a timed ban); 598 → `UnknownCommand`;
+600, 601, 602, 604 → `ServerError` plus backoff (above).
 
 **Compression.** `comp=1` is requested. A reply whose first two bytes are `00 00` is inflated
 (zlib, else raw deflate) after decryption.
@@ -471,18 +559,19 @@ clears a ban latch) when credentials, key, client name or version change.
 ## HTTP API
 
 Implementation: [`http.rs`](../crates/animatic-anidb/src/http.rs). `HttpClient::new(client,
-client_version)` builds one `ureq` agent with a **60 s global timeout** (covering connect,
-headers and body) and user agent `Animatic/<version>`.
+client_version, limits)` builds one `ureq` agent with a **60 s global timeout** (covering connect,
+headers and body) and user agent `Animatic/<version>`; `limits` is the process-wide
+[`Limits`](../crates/animatic-anidb/src/limits.rs) shared with every other client.
 
 | Item | Value |
 |---|---|
 | Anime documents | `GET http://api.anidb.net:9001/httpapi?request=anime&client=<name>&clientver=<n>&protover=1&aid=<id>` (`HTTP_API`; **plain HTTP**, not TLS) |
 | Credentials | None are sent; only the client name and version. The name is inserted into the URL without percent-encoding, so use a plain ASCII identifier |
-| Pacing | `anime()` sleeps to keep 2 s between its requests (per client instance). `titles_dump`, `image` and `get_bytes` are not paced |
+| Pacing | **Every** request (`anime()`, `titles_dump`, `image`, `get_bytes`) first takes a send slot from the shared `Limits`: at least 2 s after the previous HTTP request of the process, whichever client sent it. The send time is saved in `meta.http_last_send_ms` before sending, so a restart cannot shorten the gap, and a send time that cannot be saved stops the request |
 | Anime body limit | 32 MiB; gzip is decoded transparently and `decode_maybe_gzip` handles bodies still compressed |
 | Title dump | `GET https://anidb.net/api/anime-titles.xml.gz` (`TITLES_DUMP`), TLS via `ureq`'s default rustls setup |
 | Images | `GET https://<image_server>/images/main/<picname>` (default `cdn.anidb.net`), 16 MiB limit. **No caller uses `HttpClient::image`** and the desktop shows no pictures; the `anidb.image_server` setting is stored only |
-| Daily-limit etiquette | AniDB asks clients not to request the same dataset more than once a day (see [AniDB server limits](#anidb-server-limits)). The code does not enforce this (a full update queues one `FetchAnime` per anime id found among the identified hashed local files, but there is no age check) |
+| Daily-limit etiquette | AniDB asks clients not to request the same dataset more than once a day (see [AniDB server limits](#anidb-server-limits)). Enforced by the [request guards](#request-guards): an anime is not requested again within 24 h of the last attempt, by the executor, the full update and the detail window |
 
 Error mapping (`transport_error`, `api_error`): HTTP 403 → `Banned`; 429 →
 `ServerUnavailable(30 min)`; other 5xx → `Http` (counted); other 4xx and redirect loops →
@@ -501,6 +590,15 @@ relations and `100000+` tag links when the document supplies them.
 `read_titles_dump(source, limits, out)` → `Db::import_title_dump`. It imports the **public anime
 title list** into `anime` and `anime_title`. It does not touch MyList, files, episodes or the
 command queue, and it is not an account download.
+
+**Once a day.** The dump is requested at most once per 24 h, counted from the last *attempt*
+(`meta.titles_dump_attempt`, saved right before the request and after the local spool exists),
+not from the last success (`meta.titles_dump_date`): a failed, truncated or invalid download, a
+crash and a restart all still block a repeat inside the day. **Download anime titles**,
+`--full-update` and a retry of a transiently failed `TitlesDump` all skip it inside the window;
+the user is told when the next download is allowed, and a queued `TitlesDump` that reaches
+execution inside the window completes as skipped (removed, not a failure). See
+[Request guards](#request-guards).
 
 | Limit (`TitlesLimits::default()`) | Value |
 |---|---|
@@ -702,6 +800,7 @@ durable contracts.
 | `sync` | `Command`, `Outcome`, `QueueEntry`, `CommandError`, `MAX_QUEUE_TRIES`, `manager_mylist_edit(&FileManager) -> MylistEdit`, `apply_edit_locally(&Db, i64, &MylistEdit)`, `execute(queue_id: i64, &Command, &Db, &mut UdpClient, &mut HttpClient) -> Result<Outcome, CommandError>`; on `Db`: `queue_push(&Command) -> Result<i64>`, `queue_push_many(&[Command]) -> Result<usize>`, `queue_edit_mylist(i64, &MylistEdit) -> Result<i64>`, `overlay_pending_mylist(&mut MylistEntry)`, `mylist_has_pending_intent(i64) -> Result<bool>`, `queue_peek() -> Result<Option<(i64, Command, i64)>>`, `queue_remove(i64)`, `queue_failed(i64, &str)`, `queue_deferred(i64, &str)`, `queue_block(i64, &str)`, `queue_block_all(&str) -> Result<usize>`, `queue_retry_failed() -> Result<usize>`, `queue_len()`, `queue_blocked_len()`, `queue_list() -> Result<Vec<QueueEntry>>`, `queue_clear()` |
 | `store` | `TITLES_DUMP_DATE_KEY`, `MYLIST_STATS_KEY`, `StoredMylistStats { fetched, stats }`, `TitleImport { titles, added }`; on `Db`: `store_file_info(&FileInfo)`, `store_api_mylist(&MylistEntry)` (anidb type), `upsert_mylist(&library::MylistEntry)`, `delete_mylist(i64)`, `store_mylist_stats(&MylistStats, i64)`, `mylist_stats_snapshot() -> Result<Option<StoredMylistStats>>`, `store_anime_xml(&AnimeXml)`, `store_anime_info`, `store_episode_info`, `store_group_info`, `import_title_dump::<E>(read)`, `add_local_file(&str, &Hashes, i64) -> Result<i64>`, `remove_local_file`, `clear_local_files`, `move_local_file(i64, &str)`, `local_file_id_by_path(&str)` |
 | `library` | Display types (`Anime`, `Episode`, `FileRec`, `Group`, `MylistEntry`, `MylistItem`, `LocalFile` (with `mylist_add_pending`), `MylistPending`, `Review`, `AnimeDetail`), `LibraryProjection::load(&Db) -> Result<LibraryProjection>` (including `account_stats` and `mylist_pending`), `pending_by_lid(&[QueueEntry])`, `LibrarySummary`, `SearchKeys`, name/id helpers (`anime_type_name`, `title_kind_id`, `relation_id`, ...); read queries on `Db` (`all_anime`, `anime`, `anime_detail`, `mylist_entry`, `mylist_items`, `local_files`, `file`, `group`, `genres`, ...) |
+| `limits` | `TITLES_DUMP_MIN_INTERVAL`, `ANIME_MIN_AGE`, `KNOWN_FILE_MIN_AGE`, the `meta` key names, `RequestKind::{Anime, File}`, `DbLimitStore` (the `LimitStore` over `meta`), `open_limits(&Path) -> Arc<Limits>`, `open_limits_with_clock`, message helpers (`titles_dump_wait_message`, `anime_wait_message`, `file_wait_message`); on `Db`: `titles_dump_next_allowed(now) -> Result<Option<i64>>`, `record_titles_dump_attempt(i64)`, `request_next_allowed(RequestKind, i64, now) -> Result<Option<i64>>`, `record_request_attempt(RequestKind, i64, i64)`, `request_last_attempt`, `recent_requests(RequestKind, now) -> Result<HashSet<i64>>` |
 | `hash` | `hash_file(&Path, Ed2kVariant, Control) -> Result<Hashes>`, `hash_bytes(&[u8], Ed2kVariant) -> Hashes`, `Control { cancel: &AtomicBool, pause: &AtomicBool, progress: &mut dyn FnMut(u64, u64) }`, `Hashes::{ed2k_link, export}`, `Ed2k`, `Ed2kVariant::{Red, Blue}`, `ED2K_CHUNK` |
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>`, `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path)`, `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
@@ -719,10 +818,12 @@ durable contracts.
 
 | Module | Principal public items |
 |---|---|
-| `udp` | `UdpClient::{new(Config), config(), set_config(Config), is_logged_in(), banned_reason(), auth(), logout(), request(&str, &[(&str, String)]) -> Result<Response>, ping()}`, public fields `image_server`, `new_version_available`; `Config { server, local_port, client, client_version, username, password, api_key: Option<String>, timeout }` (`Default`: `api.anidb.net:9000`, port 0, version 1, 20 s); `Response::{parse, fields}`, `escape`, `unescape`, `split_fields`, `DEFAULT_SERVER`, `PROTOVER` |
+| `udp` | `UdpClient::{new(Config, Arc<Limits>), config(), set_config(Config), is_logged_in(), banned_reason(), auth(), ensure_login(), logout(), request(&str, &[(&str, String)]) -> Result<Response>, ping()}`, public fields `image_server`, `new_version_available`; `Config { server, local_port, client, client_version, username, password, api_key: Option<String>, timeout }` (`Default`: `api.anidb.net:9000`, port 0, version 1, 20 s); `Response::{parse, fields}`, `escape`, `unescape`, `split_fields`, `DEFAULT_SERVER`, `PROTOVER` |
 | `commands` | `file_by_hash(&mut UdpClient, u64, &str)`, `file_by_fid`, `anime`, `episode`, `group`, `mylist_add(&mut UdpClient, &FileRef, &MylistEdit, edit_existing: bool) -> Result<MylistAddResult>`, `mylist_del`, `mylist`, `mylist_stats`; types `FileRef::{Fid, Hash{size, ed2k}, Lid}`, `MylistEdit` (all-`Option` fields, `Default`), `MylistEntry`, `FileInfo`, `AnimeInfo`, `EpisodeInfo`, `GroupInfo`, `MylistStats`, `MylistAddResult`, `EpNo` |
-| `http` | `HttpClient::{new, anime(i64) -> Result<AnimeXml>, titles_dump::<E>(&TitlesLimits, sink), image(&str, &str), get_bytes(&str, u64)}`, `read_titles_dump::<R, E>(R, &TitlesLimits, sink) -> Result<usize, E>`, `parse_anime_xml(&str)`, `decode_maybe_gzip(&[u8])`, `TitlesLimits`, `DumpTitle { aid, kind, lang, name }`, `AnimeXml`, `HTTP_API`, `TITLES_DUMP`, `DEFAULT_IMAGE_SERVER` |
-| `error` | `AnidbError` with `is_transient()`, `is_fatal()`, `retry_after()`; `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN`; `Result<T, E = AnidbError>` |
+| `http` | `HttpClient::{new(client, version, Arc<Limits>), check_client(), anime(i64) -> Result<AnimeXml>, titles_dump::<E>(&TitlesLimits, sink), image(&str, &str), get_bytes(&str, u64)}`, `read_titles_dump::<R, E>(R, &TitlesLimits, sink) -> Result<usize, E>`, `parse_anime_xml(&str)`, `decode_maybe_gzip(&[u8])`, `TitlesLimits`, `DumpTitle { aid, kind, lang, name }`, `AnimeXml`, `HTTP_API`, `TITLES_DUMP`, `DEFAULT_IMAGE_SERVER` |
+| `limits` | `Limits::{new(Arc<dyn Clock>, Arc<dyn LimitStore>) -> Arc<Limits>, wait_udp(), wait_http(), auth_unanswered() -> Result<Duration>, auth_answered()}`, traits `Clock` (`SystemClock`) and `LimitStore`, `Protocol::{Udp, Http}`, constants `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING`, `UDP_BURST_RESET`, `HTTP_SPACING`, `AUTH_BACKOFF` |
+| `error` | `AnidbError` with `is_transient()`, `is_fatal()`, `retry_after()` (variants include `ClientBanned`, `AuthTimeout(Duration)` and `Storage(String)`); `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN`; `Result<T, E = AnidbError>` |
+| `testing` (feature `test-support`, enabled by the dev-dependencies of `animatic-core` and `animatic` only) | `ManualClock`, `MemoryStore`, `test_limits()`, `HttpFixture`/`HttpReply` (loopback HTTP server), `UdpFixture` (loopback UDP server), and `HttpClient::with_loopback_endpoints` |
 
 `animatic-core` depends on `animatic-anidb`; library users typically add both as path (or git)
 dependencies, because persisted `MylistEdit`/`FileRef` values come from `animatic_anidb::commands`.
@@ -824,32 +925,36 @@ every failure into the right queue state, and stop or continue accordingly. That
 which is not a library API. An alternative executor that skips any step can hammer AniDB, lose
 or duplicate work, or turn a recoverable outage into blocked commands.
 
-What `process_queue(db_path, AnidbSettings, events, cancel)` does, in order:
+What `process_queue(db_path, AnidbSettings, events, cancel, network)` does, in order (`network` is
+the worker's long-lived `Network`: the process-wide `Limits` plus the UDP reply timeout):
 
 1. If `AnidbSettings.offline` is set, report and return; the queue is untouched.
 2. `Db::open`, then `Db::sync_cooldown()`. An active cooldown (or a database error reading it)
    ends the run before any network client exists.
 3. Build `UdpClient` from `animatic_anidb::udp::Config` (server, local port, client name and
-   version, username, password, optional API key) and `HttpClient::new(client, version)` from
-   the settings.
+   version, username, password, optional API key, timeout) and
+   `HttpClient::new(client, version, limits)` from the settings. Both take their send slots from
+   the shared `Limits` (`network.limits`), so a new pair per run cannot restart the spacing.
 4. Loop until cancelled: `Db::queue_peek()` yields `(id, Command, tries)`, lowest priority
    then oldest first; none left ends the run.
 5. Call [`sync::execute`](../crates/animatic-core/src/sync.rs)`(id, &command, &db, &mut udp,
    &mut http)`. On `Ok(Outcome)` acknowledge with `Db::queue_remove(id)`; if that write fails,
-   report it and stop the run rather than continue.
+   report it and stop the run rather than continue. `Outcome::Skipped` (a [request
+   guard](#request-guards) refused the request) is acknowledged the same way and logged.
 6. On `Err(CommandError)` apply the single failure policy in `fail_command`, exactly the table in
    [Failure classes and cooldowns](#failure-classes-and-cooldowns): ban defers the command and
-   persists a 30-minute cooldown; rejected credentials or an outdated client block every
-   runnable row; transient errors count (`queue_failed`) or do not count (`queue_deferred`),
-   persist a cooldown and stop; permanent errors `queue_block` that command and continue. If
-   even recording the failure fails, the run stops.
+   persists a 30-minute cooldown; rejected credentials or an outdated or banned client version
+   block every runnable row; transient errors count (`queue_failed`) or do not count
+   (`queue_deferred`), persist a cooldown (an unanswered `AUTH` the escalating one) and stop;
+   permanent errors `queue_block` that command and continue. If even recording the failure
+   fails, the run stops.
 7. At the end, `UdpClient::logout()`.
 
 For your own front end, reuse these library pieces rather than the loop: `Db::queue_*` for
 state, `sync_cooldown`/`set_sync_cooldown` for pauses, `sync::execute` for execution, and the
 `CommandError` fields (`fatal`, `transient`, `retry_after`, `counts_attempt`) to classify. Port
 the whole policy above, including the offline check and the cooldown, and test it against local
-fixtures like the UDP fixture in the `worker.rs` tests. Never run it with fabricated or
+fixtures such as `animatic_anidb::testing::UdpFixture`. Never run it with fabricated or
 unregistered client credentials against production AniDB.
 
 
@@ -870,8 +975,10 @@ unregistered client credentials against production AniDB.
    only when none fits and update `is_transient`, `is_fatal`, `retry_after` and the table above.
 5. **UI**: enqueue through `AnimaticApp::queue_command` (deferral when the database is busy) and
    show the outcome; update [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
-6. **Tests**: queue persistence, reply parsing and state application with local fixtures (see the
-   UDP fixture in `worker.rs` tests); never the production API.
+6. **Tests**: queue persistence, reply parsing and state application with local fixtures (see
+   `animatic_anidb::testing::UdpFixture` and the `worker.rs` tests); never the production API.
+   If the command repeats data AniDB asks clients to cache, give it a request guard (see
+   [Request guards](#request-guards)). Every new request path goes through the shared `Limits`.
 
 ### Recipe 5: add a column to an existing table
 
