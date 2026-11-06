@@ -64,7 +64,7 @@ flowchart LR
 | M1.1 | Player and AVDump argument safety | Planned |
 | M1.2 | Atomic, off-thread exports | Planned |
 | M1.3 | One-snapshot statistics | Planned |
-| M1.4 | Mark controls whose feature is not built yet | Decision needed |
+| M1.4 | Disable controls whose feature is not built yet | Planned |
 | M1.5 | Legacy import target and leftovers | Planned |
 | M1.6 | Remove unused dependencies | Planned |
 | M1.7 | Linux runtime and production AniDB verification | Planned |
@@ -95,7 +95,7 @@ flowchart LR
 | M7.4 | Player open and enqueue actions | Planned |
 | M7.5 | Opt-in media properties through `ffprobe` | Research |
 | M8.1 | Credentials in the operating-system keystore | Planned |
-| M8.2 | Shell integration and single-instance handoff | Decision needed |
+| M8.2 | Shell integration (user toggle) and single-instance handoff | Planned |
 | M8.3 | System tray, best effort | Planned |
 | M8.4 | Client version field | Planned |
 
@@ -135,7 +135,7 @@ controls or exports suggest, or where it could exceed AniDB's limits.
   also groundwork for the "difference in stats" research lead.
 - **Depends:** none. M3.5 reuses this when it compares local figures with AniDB's.
 
-### M1.4 Mark controls whose feature is not built yet
+### M1.4 Disable controls whose feature is not built yet
 
 - **Problem:** five Options controls are AOM settings carried over so that the AOM settings
   import keeps them, but no code reads them yet. Ticking one does nothing, and the UI does not
@@ -153,7 +153,7 @@ controls or exports suggest, or where it could exceed AniDB's limits.
   control and show "Not active yet" with the planned behavior in its tooltip. The item that
   builds the feature enables the control again.
 - **Acceptance:** every enabled control in Options changes behavior.
-- **Decision needed:** disable with a note (recommended) or hide (see [Decisions](#decisions)).
+- **Decided:** disabled until implemented, not hidden, so imported AOM values stay visible.
 
 ### M1.5 Legacy import target and leftovers
 
@@ -309,8 +309,8 @@ items expose the commands in the desktop application.
 
 - **Change:** give `update_file_information` ("Update known file information") a meaning: when a
   file that is already identified is hashed again, queue a `FetchFile` to refresh its AniDB
-  record, subject to the M1.8 minimum ages. This meaning is inferred from the AOM label; confirm
-  it before building.
+  record, subject to the M1.8 minimum ages. The maintainer confirmed this matches AOM's
+  behavior.
 - **Acceptance:** with the option off, re-hashing a known file sends nothing; with it on, it
   queues one refresh, and none while a recent one exists.
 - **Depends:** M1.8 and M1.4.
@@ -491,12 +491,20 @@ Each of these items is platform-specific and goes behind a cross-platform abstra
   the settings file and say so in Options. Migrate existing plaintext values on the first save.
 - **Constraints:** rules 12 and 17 (load and recovery never expose secret values).
 
-### M8.2 Shell integration and single-instance handoff
+### M8.2 Shell integration (user toggle) and single-instance handoff
 
-- **Change:** register "Hash with Animatic" (a per-user Windows registry entry and a Linux
-  `.desktop` action), and forward the paths to an already running instance instead of opening a
-  second one. This gives `integrate_into_shell` a meaning.
-- **Decision needed:** build it, or declare it a deliberate non-port.
+- **Decided:** implement it, controlled by a user toggle that is off by default.
+- **Change:**
+  - `integrate_into_shell` becomes an Options toggle. Saving it on registers "Hash with
+    Animatic" for the current user (a per-user Windows registry entry, a Linux `.desktop`
+    action); saving it off removes only the entries Animatic created. Options shows whether the
+    registration is actually present.
+  - Importing AOM settings never registers anything; only the Options toggle does.
+  - A launch with paths forwards them to an already running instance that uses the same
+    database instead of opening a second window; with a different `--database` it starts
+    normally.
+- **Acceptance:** toggling on and off leaves the user's shell configuration exactly as it was
+  before; no elevation is needed on either platform.
 
 ### M8.3 System tray, best effort
 
@@ -523,8 +531,9 @@ Each of these items is platform-specific and goes behind a cross-platform abstra
 | M1.8 server limits | Decided: a hard requirement for every request path |
 | M7.1 covers | Decided: retrieve them, within AniDB's image server usage conditions |
 | M4.3 full MyList download | Decided: research the maintained route first |
-| M1.4 inactive controls | **Open:** disable with "Not active yet" (recommended, keeps imported AOM values visible) or hide |
-| M8.2 shell integration | **Open:** build, or declare a deliberate non-port |
+| M1.4 inactive controls | Decided: disabled with "Not active yet" until implemented |
+| M8.2 shell integration | Decided: implement, behind a user toggle that is off by default |
+| M4.2 meaning | Decided: confirmed as re-querying AniDB when a known file is hashed again |
 
 ## Not planned
 
