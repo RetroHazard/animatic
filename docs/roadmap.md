@@ -61,7 +61,7 @@ flowchart LR
 
 | Item | Title | Status |
 |---|---|---|
-| M1.1 | Player and AVDump argument safety | Planned |
+| M1.1 | Player and AVDump argument safety | Done |
 | M1.2 | Atomic, off-thread exports | Planned |
 | M1.3 | One-snapshot statistics | Planned |
 | M1.4 | Disable controls whose feature is not built yet | Planned |

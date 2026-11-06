@@ -16,24 +16,18 @@ arguments are:
 Placeholders: `{path}` (the file), `{user}` (the AniDB username from Options), `{key}` (the
 AVDump API key) and `{port}` (the AniDB local UDP port). Players also accept `%file%` for the path.
 
-How arguments are built (`external.rs`, the `shell-words` crate): placeholders are substituted
-into the text **first**, then the whole string is split with POSIX-shell rules (spaces separate
-words; `'…'`, `"…"` and `\` quote; `#` starts a comment) and the program is started directly,
-without a shell. For a player whose arguments do not contain a path placeholder the file is
-**appended as one safe argument**. Consequences:
+How arguments are built (`external.rs`, the `shell-words` crate): the template is split into
+words with POSIX-shell rules first (spaces separate words; `'…'`, `"…"` and `\` quote; `#` starts
+a comment), then the placeholders are substituted inside each word, and the program is started
+directly, without a shell. For a player whose arguments do not contain a path placeholder the
+file is **appended as one argument**. Consequences:
 
-- Prefer leaving the path placeholder out of player arguments (use flags only): the path is then
-  appended as its own unparsed argument, the only fully intact route. AVDump has no such route; its
-  arguments always go through substitution and splitting, so its `{path}`, `{user}` and `{key}` values
-  are raw text.
-- Quoting `{path}` is only a mitigation, not escaping: the value is substituted as raw text
-  before splitting. On Windows an unquoted path loses its backslashes, because `\` is an escape
-  character in this syntax; inside double quotes backslashes survive except before `"`, `\`, `$`
-  and `` ` ``. A path with a double quote can break a quoted token and add arguments (no shell is
-  involved, so it cannot run commands, but it can change what the program receives).
+- A path, username or key with spaces, quotes or option-like text always arrives as part of the
+  one argument that held its placeholder; it cannot add or split arguments. Quoting a
+  placeholder is unnecessary.
+- Backslashes typed into the template itself are escape characters unless inside double quotes;
+  substituted values are never affected.
 - Unbalanced quotes are rejected: `invalid external command arguments: …`.
-- `{user}`, `{key}` are inserted unquoted; values with spaces, quotes or backslashes will be
-  mis-split.
 - Animatic does **not** wait for, capture or import the child's output: the ED2K link
   AVDump prints is not shown or stored. The process inherits the application's output
   streams, and its arguments, including your API key, are visible in the process's command

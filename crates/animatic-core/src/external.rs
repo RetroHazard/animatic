@@ -63,18 +63,7 @@ fn launch(
     if executable.trim().is_empty() {
         return Err(Error::Other("external executable is not configured".into()));
     }
-    let mut expanded = template.to_string();
-    let mut had_path = false;
-    for (needle, value) in replacements {
-        if expanded.contains(needle) {
-            if *needle == "{path}" || *needle == "%file%" {
-                had_path = true;
-            }
-            expanded = expanded.replace(needle, value);
-        }
-    }
-    let mut args = shell_words::split(&expanded)
-        .map_err(|e| Error::Other(format!("invalid external command arguments: {e}")))?;
+    let (mut args, had_path) = expand_arguments(template, replacements)?;
     if append_path
         && !had_path
         && let Some((_, path)) = replacements.first()
@@ -85,6 +74,39 @@ fn launch(
         .args(args)
         .spawn()
         .map_err(Error::from)
+}
+
+/// Split `template` into arguments with POSIX-style quoting rules *first*, then substitute the
+/// placeholders inside each argument. A substituted value therefore always stays inside the
+/// argument that contained its placeholder, whatever spaces, quotes or option-like text it holds,
+/// and is never scanned for further placeholders. Returns the arguments and whether a path
+/// placeholder (`{path}` or `%file%`) was used.
+fn expand_arguments(template: &str, replacements: &[(&str, &str)]) -> Result<(Vec<String>, bool)> {
+    let words = shell_words::split(template)
+        .map_err(|e| Error::Other(format!("invalid external command arguments: {e}")))?;
+    let mut had_path = false;
+    let args = words
+        .into_iter()
+        .map(|word| {
+            let mut out = String::with_capacity(word.len());
+            let mut rest = word.as_str();
+            'scan: while !rest.is_empty() {
+                for (needle, value) in replacements {
+                    if let Some(tail) = rest.strip_prefix(needle) {
+                        had_path |= *needle == "{path}" || *needle == "%file%";
+                        out.push_str(value);
+                        rest = tail;
+                        continue 'scan;
+                    }
+                }
+                let ch = rest.chars().next().expect("rest is not empty");
+                out.push(ch);
+                rest = &rest[ch.len_utf8()..];
+            }
+            out
+        })
+        .collect();
+    Ok((args, had_path))
 }
 
 #[cfg(test)]
@@ -107,5 +129,54 @@ mod tests {
         };
         let err = launch_player(&p, PlayerAction::Play, Path::new("x.mkv")).unwrap_err();
         assert!(err.to_string().contains("invalid external command"));
+    }
+
+    const HOSTILE: &str = r#"C:\Media Root\it's "quoted" --fullscreen {user}.mkv"#;
+
+    fn player_args(template: &str, path: &str) -> (Vec<String>, bool) {
+        expand_arguments(template, &[("{path}", path), ("%file%", path)]).unwrap()
+    }
+
+    #[test]
+    fn substituted_values_stay_one_argument() {
+        for template in ["{path}", "\"{path}\"", "'{path}'", "%file%", "\"%file%\""] {
+            assert_eq!(
+                player_args(template, HOSTILE),
+                (vec![HOSTILE.to_string()], true),
+                "{template}"
+            );
+        }
+        let (args, had_path) = player_args("--start 0 /play \"%file%\" --close", HOSTILE);
+        assert!(had_path);
+        assert_eq!(args, ["--start", "0", "/play", HOSTILE, "--close"]);
+    }
+
+    #[test]
+    fn values_are_not_rescanned_for_placeholders() {
+        let (args, _) = expand_arguments(
+            "-u {user} -k {key} {path}",
+            &[
+                ("{path}", "{key}.mkv"),
+                ("{user}", "a b {path}"),
+                ("{key}", "--x \"y\""),
+            ],
+        )
+        .unwrap();
+        assert_eq!(args, ["-u", "a b {path}", "-k", "--x \"y\"", "{key}.mkv"]);
+    }
+
+    #[test]
+    fn placeholders_inside_a_word_keep_the_surrounding_text() {
+        let (args, had_path) = player_args("--file={path} --title=\"x %file% y\"", "a b.mkv");
+        assert!(had_path);
+        assert_eq!(args, ["--file=a b.mkv", "--title=x a b.mkv y"]);
+    }
+
+    #[test]
+    fn a_template_without_a_path_placeholder_reports_it() {
+        assert_eq!(
+            player_args("--fullscreen", HOSTILE),
+            (vec!["--fullscreen".to_string()], false)
+        );
     }
 }

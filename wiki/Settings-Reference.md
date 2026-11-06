@@ -384,30 +384,26 @@ ed2k://|file|<file name>|<size in bytes>|<ed2k hash>|/
 Applies to `players[].play` / `open` / `enqueue` and `avdump.arguments`. No shell is involved: the
 program in `path` / `executable` is started directly with an argument list.
 
-1. Placeholders are replaced by plain text substitution in the raw template first:
+1. The template is split into arguments with POSIX-style quoting (the `shell-words` crate). An
+   unterminated quote is an error and nothing is started.
+2. Placeholders are then replaced inside each argument:
    - Players: `{path}` or `%file%` become the full media path.
    - AVDump: `{path}`, `{user}` (`anidb.username`), `{key}` (`avdump.key`) and `{port}`
      (`anidb.local_port`).
-2. The expanded string is then split into arguments with POSIX-style quoting (the `shell-words`
-   crate). An unterminated quote is an error and nothing is started.
 3. For players only: if the template contains neither `{path}` nor `%file%`, the path is appended
    as one separate, unparsed last argument.
 
 Practical notes that follow from this order:
 
-- **Quotes in the template do not protect substituted values.** The value is spliced into the text
-  before splitting, so whitespace, quotes, backslashes, `$` or backticks inside a username, key or
-  file name are interpreted as if you had typed them. An unquoted `{user}:{key}` containing a
-  space becomes two arguments; a `"` inside a path substituted into `"{path}"` (on platforms
-  whose file names may contain quotes) ends the quote and can create additional arguments. This
-  is argument injection into the launched program, not shell command execution, since no shell is
-  involved. Do not rely on template quoting for arbitrary values.
-- The only way a media path reaches a player intact is to leave `{path}` and `%file%` out of the
-  `play` template, so that it is appended as its own argument. AVDump has no equivalent.
-- Because splitting happens after substitution, an unquoted backslash is an escape character, so a
-  Windows path substituted without quotes would lose its separators. Inside double quotes only
-  `\\`, `\"`, `$`, `` ` `` and a trailing newline are escapes, so `"C:\Videos\a.mkv"` survives but
-  a UNC path such as `\\server\share\a.mkv` inside quotes collapses its leading `\\` to one `\`.
+- **A substituted value always stays inside the argument that held its placeholder.** Spaces,
+  quotes, backslashes or option-like text (`--x`) inside a file name, username or key are passed
+  through unchanged and can never split into extra arguments. A value is not scanned again, so a
+  file name that happens to contain `{key}` stays literal.
+- Quoting a placeholder is not needed for the value, only for template text around it:
+  `--title="Now playing {path}"` is one argument.
+- Backslashes and quotes typed into the *template itself* follow the quoting rules: an unquoted
+  `\` is an escape character, so write literal Windows paths in a template inside double quotes.
+  This never affects substituted values.
 - `{key}` and `{user}` become part of the AVDump process's command line, which other local
   programs can usually see in the process list. The default template places them there.
 - AVDump's template has no automatic path argument: if `{path}` is missing nothing is appended.

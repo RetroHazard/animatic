@@ -187,14 +187,13 @@ before going online (see the [Settings reference](Settings-Reference.md)).
 
 - `player executable is not configured`: set a player in **Options → External player**.
 - `invalid external command arguments: …`: the argument template could not be split (for
-  example an unbalanced quote). Templates are split into an argument list after placeholder
+  example an unbalanced quote). Templates are split into an argument list before placeholder
   substitution, with no shell involved; see the [Settings reference](Settings-Reference.md)
   for placeholders.
 - `AVDump integration is disabled` / `external executable is not configured`: enable and
-  configure it in **Options → AVDump**. Templates are expanded as raw text and then split into
-  arguments, so a value containing a space or quote (the user name, key or a path) can split
-  into extra arguments; quoting a placeholder is only a mitigation. A template that uses `{key}`
-  places that key on the child process's command line.
+  configure it in **Options → AVDump**. Each placeholder value (user name, key, path) is
+  substituted inside its own argument, so spaces or quotes in it cannot split it. A template
+  that uses `{key}` places that key on the child process's command line.
 - `Hash export failed: …`, `Automatic statistics export failed: …` or a manual statistics
   export error: the destination is not writable or the path is invalid. These write to the path
   you chose; they reveal your library, so keep them out of the repository.
