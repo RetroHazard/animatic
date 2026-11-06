@@ -184,12 +184,10 @@ impl Outcome {
         }
     }
 
-    /// True when the change affects what the library views display.
+    /// True when the change affects what the library views display. Account statistics are
+    /// stored for the overview, so they count.
     pub fn changes_library(&self) -> bool {
-        !matches!(
-            self,
-            Outcome::Stats(_) | Outcome::Unknown | Outcome::NotFound(_)
-        )
+        !matches!(self, Outcome::Unknown | Outcome::NotFound(_))
     }
 }
 
@@ -917,7 +915,11 @@ pub fn execute(
             }
             None => Ok(Outcome::NotFound(format!("no file {fid}"))),
         },
-        Command::MylistStats => Ok(Outcome::Stats(commands::mylist_stats(udp)?)),
+        Command::MylistStats => {
+            let stats = commands::mylist_stats(udp)?;
+            db.store_mylist_stats(&stats, format::now())?;
+            Ok(Outcome::Stats(stats))
+        }
         Command::TitlesDump => {
             // The download is spooled outside the library database; it is only written to
             // (in one short transaction) once the whole dump has been validated.
@@ -1717,5 +1719,259 @@ mod tests {
         .unwrap();
         let e = db.mylist_entry(1).unwrap().unwrap();
         assert_eq!((e.viewed, e.viewdate, e.state), (false, 0, 3));
+    }
+
+    #[test]
+    fn entry_editor_edits_merge_clear_fields_and_keep_the_view_date() {
+        let db = Db::memory().unwrap();
+        db.upsert_mylist(&MylistEntry {
+            lid: 1,
+            fid: 2,
+            storage: Some("Shelf".into()),
+            source: Some("Retail".into()),
+            other: Some("Note".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        // Checked and empty clears the field; unchecked fields stay out of the edit.
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                storage: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A watched date edit merges with the pending storage edit instead of replacing it.
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                state: Some(2),
+                viewed: Some(true),
+                viewdate: Some(1_700_000_000),
+                other: Some("Revised".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (_, edit) = sole_edit(&db, 1);
+        assert_eq!(
+            edit,
+            MylistEdit {
+                state: Some(2),
+                viewed: Some(true),
+                viewdate: Some(1_700_000_000),
+                storage: Some(String::new()),
+                source: None,
+                other: Some("Revised".into()),
+            }
+        );
+        let local = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!(local.storage.as_deref(), Some(""));
+        assert_eq!(local.source.as_deref(), Some("Retail"), "left unchanged");
+        assert_eq!(local.other.as_deref(), Some("Revised"));
+        assert_eq!((local.viewed, local.viewdate), (true, 1_700_000_000));
+
+        // Correcting only the date of an entry that is watched keeps it watched.
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                viewed: Some(true),
+                viewdate: Some(1_700_100_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(sole_edit(&db, 1).1.viewdate, Some(1_700_100_000));
+        assert_eq!(db.mylist_entry(1).unwrap().unwrap().viewdate, 1_700_100_000);
+
+        // Marking it unwatched drops the date locally and in the queued edit.
+        db.queue_edit_mylist(1, &unwatched()).unwrap();
+        let (_, edit) = sole_edit(&db, 1);
+        assert_eq!((edit.viewed, edit.viewdate), (Some(false), None));
+        let local = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!((local.viewed, local.viewdate), (false, 0));
+        assert_eq!(edit.storage.as_deref(), Some(""), "earlier fields survive");
+    }
+
+    #[test]
+    fn queued_add_survives_a_restart_and_is_not_queued_twice() {
+        let path = temp_db_path("add-restart");
+        let add = Command::MylistAdd {
+            file: FileRef::Hash {
+                size: 1234,
+                ed2k: "00112233445566778899aabbccddeeff".into(),
+            },
+            edit: MylistEdit {
+                state: Some(1),
+                viewed: Some(true),
+                viewdate: Some(10),
+                storage: Some("Shelf".into()),
+                other: Some(String::new()),
+                ..Default::default()
+            },
+        };
+        let id = {
+            let db = Db::open(&path).unwrap();
+            let id = db.queue_push(&add).unwrap();
+            assert_ne!(id, 0);
+            assert_eq!(
+                db.queue_push(&add).unwrap(),
+                0,
+                "an identical add is skipped"
+            );
+            id
+        };
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.queue_peek().unwrap(), Some((id, add.clone(), 0)));
+        assert_eq!(db.queue_len().unwrap(), 1);
+        // An add runs before lookups and bulk refreshes.
+        db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+        assert_eq!(db.queue_peek().unwrap().unwrap().1, add);
+        drop(db);
+        remove_db_files(&path);
+    }
+
+    #[test]
+    fn removal_keeps_the_row_until_the_acknowledgement_and_a_blocked_one_stays_queued() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        let delete = db.queue_push(&Command::MylistDelete { lid: 1 }).unwrap();
+        assert!(
+            db.mylist_entry(1).unwrap().is_some(),
+            "queueing the removal leaves the local row"
+        );
+        // The command fails: it is blocked, still listed, and the row is untouched.
+        db.queue_block(delete, "synthetic failure").unwrap();
+        assert!(db.mylist_entry(1).unwrap().is_some());
+        let listed = db.queue_list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].blocked);
+        assert_eq!(listed[0].last_error.as_deref(), Some("synthetic failure"));
+        // Only the acknowledgement removes the row.
+        assert_eq!(
+            mylist_deleted_on_anidb(&db, delete, 1).unwrap(),
+            Outcome::MylistDeleted
+        );
+        assert!(db.mylist_entry(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_edit_after_an_in_flight_removal_wins_in_queue_order() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        let delete = db.queue_push(&Command::MylistDelete { lid: 1 }).unwrap();
+        // Still queued: the removal is the latest intent and refuses the edit.
+        assert_eq!(db.queue_edit_mylist(1, &state(2)).unwrap(), 0);
+        // The removal left the queue (cleared while in flight), then the user edited again.
+        db.queue_clear().unwrap();
+        let edit = db.queue_edit_mylist(1, &state(2)).unwrap();
+        assert!(edit > delete);
+        let outcome = mylist_deleted_on_anidb(&db, delete, 1).unwrap();
+        assert!(matches!(outcome, Outcome::Updated(_)));
+        assert_eq!(
+            db.mylist_entry(1).unwrap().unwrap().state,
+            2,
+            "the newer edit keeps the entry and its local state"
+        );
+        assert_eq!(sole_edit(&db, 1), (edit, state(2)));
+    }
+
+    #[test]
+    fn refresh_commands_are_queued_once_and_never_count_as_local_intent() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        let commands = [
+            Command::MylistRefresh { lid: 1 },
+            Command::FetchEpisode { eid: 10 },
+            Command::FetchGroup { gid: 7 },
+        ];
+        assert_eq!(db.queue_push_many(&commands).unwrap(), 3);
+        assert_eq!(db.queue_push_many(&commands).unwrap(), 0);
+        let listed: Vec<_> = db
+            .queue_list()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.description)
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                "Fetch episode 10",
+                "Fetch group 7",
+                "Refresh mylist entry 1"
+            ]
+        );
+        assert!(!db.mylist_has_pending_intent(1).unwrap());
+    }
+
+    #[test]
+    fn refreshed_entry_data_replaces_the_cache_but_keeps_pending_edits() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                state: Some(3),
+                storage: Some("Mine".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.queue_push(&Command::MylistRefresh { lid: 1 }).unwrap();
+        db.store_api_mylist(&animatic_anidb::commands::MylistEntry {
+            lid: 1,
+            fid: 101,
+            state: 1,
+            storage: Some("Old".into()),
+            source: Some("Fresh source".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let e = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!(e.state, 3, "pending state edit wins");
+        assert_eq!(e.storage.as_deref(), Some("Mine"));
+        assert_eq!(
+            e.source.as_deref(),
+            Some("Fresh source"),
+            "the rest is refreshed"
+        );
+    }
+
+    #[test]
+    fn account_statistics_are_stored_with_their_time_and_reload_after_a_restart() {
+        let path = temp_db_path("stats");
+        let stats = commands::MylistStats {
+            animes: 12,
+            episodes: 345,
+            files: 678,
+            size_mb: 9_000,
+            viewed_episodes: 300,
+            ..Default::default()
+        };
+        {
+            let db = Db::open(&path).unwrap();
+            assert_eq!(db.mylist_stats_snapshot().unwrap(), None);
+            db.store_mylist_stats(&commands::MylistStats::default(), 1)
+                .unwrap();
+            db.store_mylist_stats(&stats, 1_700_000_000).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let stored = db.mylist_stats_snapshot().unwrap().unwrap();
+        assert_eq!(
+            stored.fetched, 1_700_000_000,
+            "the latest result replaces the old one"
+        );
+        assert_eq!(stored.stats, stats);
+        // An unreadable value is no statistics, not a failure of the whole library view.
+        db.set_meta(crate::store::MYLIST_STATS_KEY, "not json")
+            .unwrap();
+        assert_eq!(db.mylist_stats_snapshot().unwrap(), None);
+        assert!(
+            Outcome::Stats(stats).changes_library(),
+            "the library view reloads to show them"
+        );
+        drop(db);
+        remove_db_files(&path);
     }
 }

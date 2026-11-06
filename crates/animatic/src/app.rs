@@ -19,6 +19,8 @@ use crate::worker::{
 use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
 
+mod mylist_editor;
+
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
 const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
 /// Longest the UI thread waits on a database lock held by the worker before reporting it.
@@ -458,6 +460,7 @@ pub struct AnimaticApp {
     views: TableViews,
     detail: Option<DetailCache>,
     mylist_overlay: HashMap<i64, MylistOverlay>,
+    mylist_ui: mylist_editor::MylistUi,
     /// Queue pushes that hit a busy database, retried until saved.
     deferred: Vec<animatic_core::sync::Command>,
     last_deferred_retry: Instant,
@@ -550,6 +553,7 @@ impl AnimaticApp {
             views: TableViews::default(),
             detail: None,
             mylist_overlay: HashMap::new(),
+            mylist_ui: mylist_editor::MylistUi::default(),
             deferred: Vec::new(),
             last_deferred_retry: Instant::now(),
             cooldown: None,
@@ -1891,6 +1895,7 @@ impl AnimaticApp {
         let summary = self.projection.summary;
         let known = summary.local_known;
         let local_total = self.projection.local.len();
+        ui.heading("Local library figures");
         ui.columns(4, |cols| {
             metric(
                 &mut cols[0],
@@ -1925,6 +1930,8 @@ impl AnimaticApp {
         if unknown > 0 {
             ui.label(format!("{unknown} files are not identified yet"));
         }
+        ui.add_space(20.0);
+        self.account_figures(ui);
         ui.add_space(20.0);
         ui.horizontal(|ui| {
             if ui
@@ -2151,6 +2158,7 @@ impl AnimaticApp {
 
     fn mylist_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, "My list", true);
+        self.mylist_toolbar(ui);
         let key = (self.loader.version, self.query.to_ascii_lowercase());
         // (lid, edit, resulting state, resulting watched flag)
         let mut edits: Vec<(i64, animatic_anidb::commands::MylistEdit, i64, bool)> = Vec::new();
@@ -2160,6 +2168,7 @@ impl AnimaticApp {
                 views,
                 selected_aid,
                 mylist_overlay,
+                mylist_ui,
                 ..
             } = self;
             views
@@ -2177,6 +2186,7 @@ impl AnimaticApp {
                     ("State", 120.0),
                     ("Watched", 80.0),
                     ("Size", 100.0),
+                    ("Queue", 140.0),
                 ],
             )
             .body(|body| {
@@ -2198,12 +2208,16 @@ impl AnimaticApp {
                         }
                     });
                     row.col(|ui| {
-                        ui.label(
-                            item.episode
-                                .as_ref()
-                                .map(|e| e.epno_str())
-                                .unwrap_or_default(),
-                        );
+                        let epno = item
+                            .episode
+                            .as_ref()
+                            .map_or_else(|| "—".to_string(), |e| e.epno_str());
+                        if ui
+                            .selectable_label(mylist_ui.selected_lid == Some(lid), epno)
+                            .clicked()
+                        {
+                            mylist_ui.selected_lid = Some(lid);
+                        }
                     });
                     row.col(|ui| {
                         ui.label(
@@ -2232,6 +2246,14 @@ impl AnimaticApp {
                                 .map(|f| format::size_short(f.size))
                                 .unwrap_or_default(),
                         );
+                    });
+                    row.col(|ui| {
+                        if let Some(p) = projection.mylist_pending.get(&lid) {
+                            let response = ui.label(p.label());
+                            if let Some(error) = &p.error {
+                                response.on_hover_text(error);
+                            }
+                        }
                     });
                     if state != shown_state || watched != shown_viewed {
                         edits.push((
@@ -2335,6 +2357,16 @@ impl AnimaticApp {
             {
                 self.avdump_selected();
             }
+            if ui
+                .add_enabled(
+                    self.selected_local.is_some() || !self.mylist_ui.marked_locals.is_empty(),
+                    egui::Button::new("Add to MyList…"),
+                )
+                .on_hover_text("Ctrl+click or Shift+click selects several files")
+                .clicked()
+            {
+                self.open_add_dialog();
+            }
             let shown = self.views.local.rows.len();
             let total = self.projection.local.len();
             ui.label(if shown == total {
@@ -2348,6 +2380,7 @@ impl AnimaticApp {
                 projection,
                 views,
                 selected_local,
+                mylist_ui,
                 ..
             } = self;
             let rows = &views.local.rows;
@@ -2368,11 +2401,19 @@ impl AnimaticApp {
                 body.rows(row_height, rows.len(), |mut row| {
                     let f = &projection.local[rows[row.index()]];
                     row.col(|ui| {
-                        if ui
-                            .selectable_label(*selected_local == Some(f.id), f.file_name())
-                            .clicked()
-                        {
-                            *selected_local = Some(f.id);
+                        let chosen = mylist_ui.marked_locals.contains(&f.id)
+                            || *selected_local == Some(f.id);
+                        if ui.selectable_label(chosen, f.file_name()).clicked() {
+                            let (toggle, extend) =
+                                ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+                            mylist_editor::click_selection(
+                                selected_local,
+                                &mut mylist_ui.marked_locals,
+                                f.id,
+                                toggle,
+                                extend,
+                                || rows.iter().map(|&i| projection.local[i].id).collect(),
+                            );
                         }
                     });
                     row.col(|ui| {
@@ -2386,11 +2427,11 @@ impl AnimaticApp {
                         );
                     });
                     row.col(|ui| {
-                        ui.label(
-                            f.lid
-                                .map(|id| format!("lid {id}"))
-                                .unwrap_or_else(|| "—".into()),
-                        );
+                        ui.label(match (f.lid, f.mylist_add_pending) {
+                            (Some(id), _) => format!("lid {id}"),
+                            (None, true) => "Add queued".to_string(),
+                            (None, false) => "—".to_string(),
+                        });
                     });
                     row.col(|ui| {
                         ui.label(if f.crc_mismatch() {
@@ -2418,6 +2459,7 @@ impl AnimaticApp {
         let Self {
             projection, views, ..
         } = self;
+        let mut refresh_groups: Vec<i64> = Vec::new();
         views
             .groups
             .refresh(&key, || filter_groups(projection, &key.1));
@@ -2432,6 +2474,7 @@ impl AnimaticApp {
                 ("Rating", 80.0),
                 ("Votes", 80.0),
                 ("Website", 100.0),
+                ("Refresh", 90.0),
             ],
         )
         .body(|body| {
@@ -2458,8 +2501,20 @@ impl AnimaticApp {
                         ui.label("—");
                     }
                 });
+                row.col(|ui| {
+                    if ui
+                        .link("Refresh")
+                        .on_hover_text("Queues a request that re-reads this group from AniDB")
+                        .clicked()
+                    {
+                        refresh_groups.push(g.gid);
+                    }
+                });
             });
         });
+        for gid in refresh_groups {
+            self.queue_command(animatic_core::sync::Command::FetchGroup { gid });
+        }
     }
 
     fn genres_page(&mut self, ui: &mut egui::Ui) {
@@ -2619,6 +2674,7 @@ impl AnimaticApp {
             _ => self.db.anime_detail(aid).ok().flatten(),
         };
         let mut refresh_requested = false;
+        let mut episode_refresh: Vec<i64> = Vec::new();
         let mut open = true;
         egui::Window::new(format!("Anime #{aid}"))
             .open(&mut open)
@@ -2655,6 +2711,15 @@ impl AnimaticApp {
                             ui.horizontal(|ui| {
                                 ui.monospace(e.epno_str());
                                 ui.label(&e.name);
+                                if ui
+                                    .small_button("Refresh")
+                                    .on_hover_text(
+                                        "Queues a request that re-reads this episode from AniDB",
+                                    )
+                                    .clicked()
+                                {
+                                    episode_refresh.push(e.eid);
+                                }
                             });
                         }
                     });
@@ -2718,6 +2783,9 @@ impl AnimaticApp {
         }
         if refresh_requested {
             self.queue_command(animatic_core::sync::Command::FetchAnime { aid });
+        }
+        for eid in episode_refresh {
+            self.queue_command(animatic_core::sync::Command::FetchEpisode { eid });
         }
     }
 
@@ -3609,6 +3677,7 @@ impl eframe::App for AnimaticApp {
         self.leftover_import_window(&ctx);
         self.library_safety_windows(&ctx);
         self.rename_window(&ctx);
+        self.mylist_windows(&ctx);
         if self.about_open {
             let mut open = true;
             egui::Window::new("About Animatic")

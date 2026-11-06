@@ -63,7 +63,7 @@ Jobs and what the controls do:
 Jobs run one at a time in submission order. Library snapshots and the statistics and hash exports run on
 their own thread and do not show a progress bar or take part in Cancel.
 
-**NOT saved yet.** Identify, title-download, statistics-fetch and anime-refresh commands are
+**NOT saved yet.** Identify, MyList add, removal and refresh, episode and group refresh, title-download, statistics-fetch and anime-refresh commands are
 written to the durable queue. If the worker holds the database lock, the command is kept in
 memory, flagged in the status bar and retried every 500 ms with no retry-count ceiling. Up to 1000
 distinct unsaved commands can be held at once; a new command is refused with `NOT queued: …` only
@@ -121,7 +121,7 @@ Semantics (from `app.rs` and `library.rs`):
 | Tools | Options… | Opens [Options](Options-Window.md). |
 | Tools | Scan managed folders | Starts a [scan](Managed-Folders-and-Scans.md). Disabled during a settings review. |
 | Tools | Download anime titles | Queues the title-list download (nothing is sent yet). |
-| Tools | Fetch mylist statistics | Queues a MyList-statistics request. When run, only a log line (`N anime, N episodes, N files in mylist`) is produced; the result is not stored. |
+| Tools | Fetch mylist statistics | Queues a MyList-statistics request. When run, the figures are stored with the time they arrived and shown on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures; the log also gets a line (`N anime, N episodes, N files in mylist`). |
 | Tools | Check library | Runs [`integrity_check` and `foreign_key_check`](Backups-and-Recovery.md#check-and-compact-the-library) in the background; never repairs. Disabled while a job runs, during an import or settings review, or during a restore. |
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
 | Tools | Edit AniDB data ▸ | Opens AniDB web pages in the browser: Add anime, Add episode, Add file, Submit change request (`anidb.net/anime/add`, `/episode/add`, `/file/add`, `/creq`). |
@@ -130,5 +130,6 @@ Semantics (from `app.rs` and `library.rs`):
 | Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
 | Help | About Animatic | Version and link, plus **View license** and **Third-party notices** buttons that open the license documents next to the program: the versioned `LICENSE-vVERSION` / `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `LICENSE` / `THIRD-PARTY-NOTICES.html`. A button is disabled when neither file exists (for example a bare executable copied out of an archive). |
 
-There is no menu item for a full update (command line only), for adding or removing MyList
-entries, or for downloading images.
+There is no menu item for a full update (command line only) or for downloading images. MyList
+adds, removals and refreshes are buttons on the [Hashed files](Library-Pages.md#hashed-files) and
+[My list](Library-Pages.md#my-list) pages.

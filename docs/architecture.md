@@ -196,6 +196,17 @@ The UI additionally keeps a short-lived in-memory overlay for the edited row, di
 projection requested after the write arrives. "Clear queue" deletes every row, blocked ones
 included, but does **not** revert optimistic local changes already applied to `mylist`.
 
+Adds, removals and refreshes use the plain queue (`queue_command`, with the same deferral when the
+database is busy). A `MylistAdd` for a file id or hash has no `lid` yet, so no local `mylist` row
+exists before AniDB answers; `LibraryProjection` derives `LocalFile::mylist_add_pending` from the
+queue snapshot so **Hashed files** shows `Add queued`. A removal never touches the `mylist` row
+until `execute` has AniDB's `MYLISTDEL` reply (`mylist_deleted_on_anidb`, which keeps the row when
+newer intent was queued after the delete); `LibraryProjection::mylist_pending` (from
+`pending_by_lid`) shows `Edit queued`, `Removal queued` and the `blocked` forms on **My list**. The
+latest `MYLISTSTATS` result is stored in `meta.mylist_stats` with its arrival time and exposed as
+`LibraryProjection::account_stats`; the Overview labels it as AniDB account figures, apart from
+the local counts.
+
 ### Library projections
 
 `LibraryProjection::load` reads every table the UI shows inside one deferred read transaction
@@ -515,6 +526,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Topic | Anchor |
 |---|---|
 | Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
+| MyList editor, add, remove, refresh, account figures | `crates/animatic/src/app/mylist_editor.rs`: `MylistForm::build`, `mylist_toolbar`, `entry_editor_window`, `open_add_dialog`/`add_window`, `remove_window`, `click_selection`, `account_figures`; `library.rs`: `pending_by_lid`, `mark_pending_adds`; `store.rs`: `store_mylist_stats`, `mylist_stats_snapshot` |
 | Search filters | `app.rs`: `filter_anime`, `filter_search`, `matches_anime`, `aid_query`; `library.rs`: `SearchKeys`, `LibraryProjection::assemble` |
 | Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan` |
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |

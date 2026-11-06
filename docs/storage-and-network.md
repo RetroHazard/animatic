@@ -64,6 +64,7 @@ AniDB with unregistered client credentials.
 | `schema_version` | `1` | `Db::open` when absent | nothing |
 | `sync_cooldown` | `<until epoch seconds>\n<reason>` | worker (`set_sync_cooldown`) | `Db::sync_cooldown` |
 | `titles_dump_date` | epoch seconds of the last successful dump import | `import_title_dump` | nothing in the application |
+| `mylist_stats` | JSON `{"fetched": <epoch seconds>, "stats": {…MylistStats fields…}}`: the latest `MYLISTSTATS` result with its arrival time (`StoredMylistStats`) | `Db::store_mylist_stats` (the `MylistStats` executor arm), replacing the previous value | `Db::mylist_stats_snapshot` (an unreadable value reads as absent), `LibraryProjection::account_stats`, Overview "AniDB account figures" |
 | `legacy_import_source`, `legacy_import_date` | databank path, epoch seconds | legacy import | nothing in the application |
 | `legacy_dump_date` | largest dump-date tag found in the databank (`legacy_dump_date_tmp` is a transient staging key) | legacy import | nothing in the application |
 
@@ -189,6 +190,7 @@ Payload shapes (synthetic values):
 {"FetchAnime":{"aid":1}}
 "MylistStats"
 {"MylistEdit":{"lid":1,"edit":{"state":null,"viewed":true,"viewdate":1700000000,"storage":null,"source":null,"other":null}}}
+{"MylistAdd":{"file":{"Hash":{"size":1234,"ed2k":"00112233445566778899aabbccddeeff"}},"edit":{"state":1,"viewed":null,"viewdate":null,"storage":"","source":null,"other":null}}}
 ```
 
 A `null` field means "leave unchanged"; an empty string means "clear". Both states survive
@@ -200,20 +202,21 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 
 | Command | Prio | Transport and reply | Local effect | Enqueued by the desktop UI |
 |---|---|---|---|---|
-| `MylistAdd {file, edit}` | 0 | UDP (`FILE` for a hash reference), `MYLISTADD` | Stores the new entry; if present already, applies the edit | No |
-| `MylistEdit {lid, edit}` | 0 | UDP `MYLISTADD edit=1` | `apply_edit_locally`; missing entry blocks the edit | Yes: My list state/watched |
-| `MylistDelete {lid}` | 0 | UDP `MYLISTDEL` (211, or 411 = already gone) | Deletes the local entry unless newer intent exists | No |
+| `MylistAdd {file, edit}` | 0 | UDP (`FILE` for a hash reference), `MYLISTADD` | Stores the new entry; if present already, applies the edit | Yes: Hashed files "Add to MyList…" (`FileRef::Fid` for an identified file, `FileRef::Hash` otherwise) |
+| `MylistEdit {lid, edit}` | 0 | UDP `MYLISTADD edit=1` | `apply_edit_locally`; missing entry blocks the edit | Yes: My list state/watched, "Edit…" (state, watched, view date, storage, source, other) |
+| `MylistDelete {lid}` | 0 | UDP `MYLISTDEL` (211, or 411 = already gone) | Deletes the local entry only after the reply, and not when newer intent exists | Yes: My list "Remove from MyList…" (after confirmation) |
 | `Identify {size, ed2k, add}` | 1 | UDP `FILE` by hash; optional `MYLISTADD` by `fid` | `store_file_info`; mylist entry stored | Yes: after hashing, if enabled |
 | `FetchFile {fid}` | 2 | UDP `FILE` by fid | `store_file_info` | Only through `--full-update` |
-| `FetchEpisode {eid}` | 2 | UDP `EPISODE` | `store_episode_info` | No |
-| `FetchGroup {gid}` | 2 | UDP `GROUP` | `store_group_info` | No |
+| `FetchEpisode {eid}` | 2 | UDP `EPISODE` | `store_episode_info` | Yes: the episode "Refresh" button of the anime detail window |
+| `FetchGroup {gid}` | 2 | UDP `GROUP` | `store_group_info` | Yes: Groups "Refresh" |
 | `FetchAnime {aid}` | 3 | HTTP anime XML | `store_anime_xml` | Yes: detail "Refresh"; full update |
-| `MylistStats` | 3 | UDP `MYLISTSTATS` | None stored; summary is logged only | Yes: Tools menu |
+| `MylistStats` | 3 | UDP `MYLISTSTATS` | Stored in `meta.mylist_stats` with the arrival time; the summary is also logged | Yes: Tools menu |
 | `TitlesDump` | 3 | HTTPS title dump | Spool then merge | Yes: Tools menu; full update |
-| `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry, or deletes it if AniDB says it is gone and no local intent is queued | No |
+| `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry (queued edits overlaid), or deletes it if AniDB says it is gone and no local intent is queued | Yes: My list "Refresh entry" |
 
-"No" means no desktop path exists today; the capability is available to library callers and to
-the tests. See [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
+Every command can be queued from the desktop application, except `FetchFile`, which only
+`--full-update` queues. See
+[Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 
 ### Enqueue rules
 
@@ -227,7 +230,15 @@ the tests. See [Feature parity](https://github.com/RetroHazard/animatic/wiki/Fea
   `viewdate`; `viewed = true` without a date is stamped with the time of the edit, not of
   delivery. It returns 0 when the entry has a pending delete or the merged edit is empty.
 - `MylistDelete` removes the entry's queued edits (an edit already in flight just finishes)
-  and refuses a second delete. After a delete is queued, new edits for that `lid` return 0.
+  and refuses a second delete. After a delete is queued, new edits for that `lid` return 0. The
+  local `mylist` row is deleted only by the executor after AniDB's `MYLISTDEL` reply, in one
+  transaction with the check that nothing was queued for the `lid` after the delete's id; a
+  blocked delete leaves the row in place and visible in the queue.
+- `MylistAdd` with `FileRef::Fid`/`FileRef::Hash` has no `lid` (the entry does not exist yet),
+  so it is a plain duplicate-checked insert and no local `mylist` row is written before AniDB
+  answers; the projection marks the matching hashed files (`LocalFile::mylist_add_pending`,
+  from the queue snapshot) so the desktop shows `Add queued`. `store_added_entry` writes the
+  row from the reply, or the existing entry is refreshed and the edit applied.
 - `queue_push_many` inserts a batch in one transaction and returns how many were added.
 - `queue_clear` deletes every row, blocked and unreadable ones included, and does not revert
   optimistic changes already applied to `mylist`.
@@ -682,8 +693,8 @@ durable contracts.
 |---|---|
 | `db` | `SCHEMA_VERSION`; `Db::{open(&Path), memory(), path(), conn(), conn_mut(), meta(&str), set_meta(&str,&str), meta_i64(&str), sync_cooldown() -> Result<Option<(i64, String)>>, set_sync_cooldown(i64, &str), clear_sync_cooldown(), is_empty()}` |
 | `sync` | `Command`, `Outcome`, `QueueEntry`, `CommandError`, `MAX_QUEUE_TRIES`, `manager_mylist_edit(&FileManager) -> MylistEdit`, `apply_edit_locally(&Db, i64, &MylistEdit)`, `execute(queue_id: i64, &Command, &Db, &mut UdpClient, &mut HttpClient) -> Result<Outcome, CommandError>`; on `Db`: `queue_push(&Command) -> Result<i64>`, `queue_push_many(&[Command]) -> Result<usize>`, `queue_edit_mylist(i64, &MylistEdit) -> Result<i64>`, `overlay_pending_mylist(&mut MylistEntry)`, `mylist_has_pending_intent(i64) -> Result<bool>`, `queue_peek() -> Result<Option<(i64, Command, i64)>>`, `queue_remove(i64)`, `queue_failed(i64, &str)`, `queue_deferred(i64, &str)`, `queue_block(i64, &str)`, `queue_block_all(&str) -> Result<usize>`, `queue_retry_failed() -> Result<usize>`, `queue_len()`, `queue_blocked_len()`, `queue_list() -> Result<Vec<QueueEntry>>`, `queue_clear()` |
-| `store` | `TITLES_DUMP_DATE_KEY`, `TitleImport { titles, added }`; on `Db`: `store_file_info(&FileInfo)`, `store_api_mylist(&MylistEntry)` (anidb type), `upsert_mylist(&library::MylistEntry)`, `delete_mylist(i64)`, `store_anime_xml(&AnimeXml)`, `store_anime_info`, `store_episode_info`, `store_group_info`, `import_title_dump::<E>(read)`, `add_local_file(&str, &Hashes, i64) -> Result<i64>`, `remove_local_file`, `clear_local_files`, `move_local_file(i64, &str)`, `local_file_id_by_path(&str)` |
-| `library` | Display types (`Anime`, `Episode`, `FileRec`, `Group`, `MylistEntry`, `MylistItem`, `LocalFile`, `Review`, `AnimeDetail`), `LibraryProjection::load(&Db) -> Result<LibraryProjection>`, `LibrarySummary`, `SearchKeys`, name/id helpers (`anime_type_name`, `title_kind_id`, `relation_id`, ...); read queries on `Db` (`all_anime`, `anime`, `anime_detail`, `mylist_entry`, `mylist_items`, `local_files`, `file`, `group`, `genres`, ...) |
+| `store` | `TITLES_DUMP_DATE_KEY`, `MYLIST_STATS_KEY`, `StoredMylistStats { fetched, stats }`, `TitleImport { titles, added }`; on `Db`: `store_file_info(&FileInfo)`, `store_api_mylist(&MylistEntry)` (anidb type), `upsert_mylist(&library::MylistEntry)`, `delete_mylist(i64)`, `store_mylist_stats(&MylistStats, i64)`, `mylist_stats_snapshot() -> Result<Option<StoredMylistStats>>`, `store_anime_xml(&AnimeXml)`, `store_anime_info`, `store_episode_info`, `store_group_info`, `import_title_dump::<E>(read)`, `add_local_file(&str, &Hashes, i64) -> Result<i64>`, `remove_local_file`, `clear_local_files`, `move_local_file(i64, &str)`, `local_file_id_by_path(&str)` |
+| `library` | Display types (`Anime`, `Episode`, `FileRec`, `Group`, `MylistEntry`, `MylistItem`, `LocalFile` (with `mylist_add_pending`), `MylistPending`, `Review`, `AnimeDetail`), `LibraryProjection::load(&Db) -> Result<LibraryProjection>` (including `account_stats` and `mylist_pending`), `pending_by_lid(&[QueueEntry])`, `LibrarySummary`, `SearchKeys`, name/id helpers (`anime_type_name`, `title_kind_id`, `relation_id`, ...); read queries on `Db` (`all_anime`, `anime`, `anime_detail`, `mylist_entry`, `mylist_items`, `local_files`, `file`, `group`, `genres`, ...) |
 | `hash` | `hash_file(&Path, Ed2kVariant, Control) -> Result<Hashes>`, `hash_bytes(&[u8], Ed2kVariant) -> Hashes`, `Control { cancel: &AtomicBool, pause: &AtomicBool, progress: &mut dyn FnMut(u64, u64) }`, `Hashes::{ed2k_link, export}`, `Ed2k`, `Ed2kVariant::{Red, Blue}`, `ED2K_CHUNK` |
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>`, `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path)`, `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |

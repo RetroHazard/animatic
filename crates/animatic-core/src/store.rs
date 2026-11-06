@@ -1,7 +1,7 @@
 //! Write side: persisting AniDB replies, mylist changes and hashed files.
 
 use animatic_anidb::commands::{
-    AnimeInfo, EpisodeInfo, FileInfo, GroupInfo, MylistEntry as ApiMylistEntry,
+    AnimeInfo, EpisodeInfo, FileInfo, GroupInfo, MylistEntry as ApiMylistEntry, MylistStats,
 };
 use animatic_anidb::http::{AnimeXml, DumpTitle};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -14,6 +14,19 @@ use crate::library::{MylistEntry, anime_type_id, relation_id, title_kind_id};
 
 /// Metadata key holding the completion time of the last successful titles dump import.
 pub const TITLES_DUMP_DATE_KEY: &str = "titles_dump_date";
+
+/// Metadata key holding the latest MYLISTSTATS result as JSON ([`StoredMylistStats`]).
+pub const MYLIST_STATS_KEY: &str = "mylist_stats";
+
+/// The latest MyList statistics AniDB reported for the account, with the time they were
+/// fetched. These describe the whole AniDB account, a different population from the local
+/// library tables, so they are kept apart from them and never mixed into local counts.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoredMylistStats {
+    /// Unix time the statistics were received.
+    pub fetched: i64,
+    pub stats: MylistStats,
+}
 
 /// What a titles dump import read and what it newly stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -701,6 +714,23 @@ impl Db {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
+    }
+
+    /// Keep the latest MYLISTSTATS result and when it arrived, replacing the previous one.
+    pub fn store_mylist_stats(&self, stats: &MylistStats, fetched: i64) -> Result<()> {
+        let stored = StoredMylistStats {
+            fetched,
+            stats: stats.clone(),
+        };
+        self.set_meta(MYLIST_STATS_KEY, &serde_json::to_string(&stored)?)
+    }
+
+    /// The stored AniDB account statistics. A value this version cannot read is reported as
+    /// absent rather than failing the whole library projection.
+    pub fn mylist_stats_snapshot(&self) -> Result<Option<StoredMylistStats>> {
+        Ok(self
+            .meta(MYLIST_STATS_KEY)?
+            .and_then(|json| serde_json::from_str(&json).ok()))
     }
 }
 

@@ -32,11 +32,16 @@ What the user-reachable commands do:
 | Command | Effect on the local database |
 |---|---|
 | Identify | Stores AniDB's file record; optionally adds the file to MyList (see above) |
-| Edit mylist entry | Sends state/watched changes; on success updates the local entry (keeping any newer pending edit on top) |
+| Edit mylist entry | Sends the merged state, watched, view date, storage, source and other changes; on success updates the local entry (keeping any newer pending edit on top) |
+| Add to mylist | From **Hashed files → Add to MyList…**. An identified file is added by file id; an unidentified one by size and ED2K hash, which AniDB looks up first (a file it does not know is dropped with the log line `file unknown to AniDB`). A new entry is stored locally with the values you set; if the file is already in MyList the entry is refreshed and your values are applied as an edit. Until then **Hashed files** shows `Add queued`. |
+| Remove mylist entry | From **My list → Remove from MyList…**. Deletes the entry on AniDB. The local row is removed only after AniDB acknowledges (or says the entry no longer exists), and not at all if you queued something for the entry afterwards. Never touches your media file. |
+| Refresh mylist entry | From **My list → Refresh entry**. Re-reads the entry and replaces the cached row, keeping edits that are still queued on top. If AniDB says the entry is gone, the row is removed unless changes for it are queued. |
 | Fetch anime N | Downloads the HTTP-API anime record: titles, episodes, genres, relations, reviews, metadata |
 | Fetch file N | Updates a file record (from a full update) |
+| Fetch episode N | From the **Refresh** button of an episode in the [anime detail window](Library-Pages.md#anime-detail-window). Replaces the cached episode record |
+| Fetch group N | From the **Refresh** link on the [Groups page](Library-Pages.md#groups). Replaces the cached group record |
 | Download anime title list | Streams `anime-titles.xml.gz` into a temporary store, validates it, then merges atomically in one transaction. Creates an anime row for every unknown id and replaces titles only of anime without a full HTTP record (imported AOM anime count as such). Failure leaves titles and the completion time untouched. Limits: 32 MiB compressed, 128 MiB decoded, 250 000 anime, 2 000 000 titles, 2048 bytes per name. |
-| Fetch mylist statistics | Log line only |
+| Fetch mylist statistics | Stores AniDB's account figures with the time they arrived (replacing the previous ones) and shows them on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures. The log line `N anime, N episodes, N files in mylist` is still written |
 
 A full update (`--full-update`) queues the title list plus one file lookup and one anime refresh for
 each file id and anime id that your **identified hashed local files** resolve to (not the whole local
@@ -44,7 +49,8 @@ cache or the title catalog); it does not run them.
 
 ## MyList editing
 
-On **My list**, changing **State** or toggling **Watched** is a *local-first* edit:
+On **My list**, changing **State** or toggling **Watched**, or saving the **Edit…** dialog (state,
+watched, view date, storage, source, other), is a *local-first* edit:
 
 1. In one database transaction the edit is saved to the outbox **and** the stored MyList entry is
    updated, so the row shows the new value immediately (even before the next snapshot) and
@@ -53,7 +59,9 @@ On **My list**, changing **State** or toggling **Watched** is a *local-first* ed
 3. Further edits of the same entry before that are **merged** into one fresh queue row with a new,
    never-reused id: unset fields keep the older value, and the last watched/unwatched choice wins
    (watched → unwatched → watched ends watched at the latest time). Marking watched stamps the
-   time of your click, not the time AniDB hears of it; unmarking clears the date.
+   time of your click, not the time AniDB hears of it; unmarking clears the date. A field the
+   editor sent as an empty string (ticked, empty) is a real value that clears it on AniDB and
+   stays in the merge; a field you did not tick is simply absent.
 4. When AniDB acknowledges, the local entry is rewritten with the acknowledged values **plus** any
    newer pending edit. An acknowledgement or reply for an older command cannot erase newer
    intent. Queued edits that can be read are re-applied over AniDB data fetched meanwhile, so it
@@ -73,9 +81,13 @@ Failures and edge cases:
 - If the database is locked by a background write the edit is refused with a visible message;
   repeat it.
 - An entry with a queued removal ignores edits (`Mylist entry N is pending removal; edit
-  ignored`); no screen queues removals.
-- Storage, source, other and view date are not editable on screen; they are set only by a folder
-  rule's add policy.
+  ignored`); the editor says so and its **Save** is disabled. **Remove from MyList…** queues the
+  removal (and discards the entry's queued edits, which are moot). The local row stays and shows
+  `Removal queued` until AniDB acknowledges; a removal that fails permanently stays queued and
+  blocked (`Removal blocked`, last error on hover) and the row is kept, until you **Retry failed**
+  or clear it. If the removal left the queue while it was being sent (for example **Clear queue**
+  during a run) and you then edit the entry, that newer edit wins: the acknowledgement does not
+  delete the row.
 
 ## Failure handling
 

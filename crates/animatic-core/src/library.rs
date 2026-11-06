@@ -477,6 +477,8 @@ pub struct LocalFile {
     pub viewed: bool,
     pub anidb_crc: Option<String>,
     pub file_state: i64,
+    /// Not in MyList yet, but an add for this file (by id or hash) waits in the command queue.
+    pub mylist_add_pending: bool,
 }
 
 impl LocalFile {
@@ -1036,6 +1038,7 @@ impl Db {
                     viewed: r.get::<_, i64>(14)? != 0,
                     anidb_crc: r.get(15)?,
                     file_state: r.get(16)?,
+                    mylist_add_pending: false,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1164,6 +1167,99 @@ pub struct LibrarySummary {
     pub queue_blocked: usize,
 }
 
+/// What the command queue still holds for one mylist entry; it is the user's latest intent,
+/// shown until AniDB acknowledges it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MylistPending {
+    /// An edit waits.
+    pub edit: bool,
+    /// A removal waits. The local row stays until AniDB confirms it.
+    pub delete: bool,
+    /// A command of the entry is blocked (permanent failure or out of attempts).
+    pub blocked: bool,
+    /// The last error of a command of the entry.
+    pub error: Option<String>,
+}
+
+impl MylistPending {
+    /// Short status for a table cell.
+    pub fn label(&self) -> &'static str {
+        match (self.delete, self.blocked) {
+            (true, true) => "Removal blocked",
+            (true, false) => "Removal queued",
+            (false, true) => "Edit blocked",
+            (false, false) => "Edit queued",
+        }
+    }
+}
+
+/// Pending intent per mylist entry (by `lid`), derived from the queue snapshot.
+pub fn pending_by_lid(queue: &[crate::sync::QueueEntry]) -> HashMap<i64, MylistPending> {
+    let mut out: HashMap<i64, MylistPending> = HashMap::new();
+    for entry in queue {
+        let Some(command) = &entry.command else {
+            continue;
+        };
+        let delete = matches!(command, crate::sync::Command::MylistDelete { .. });
+        let edit = matches!(
+            command,
+            crate::sync::Command::MylistEdit { .. }
+                | crate::sync::Command::MylistAdd {
+                    file: animatic_anidb::commands::FileRef::Lid(_),
+                    ..
+                }
+        );
+        let (true, Some(lid)) = (delete || edit, command.mylist_lid()) else {
+            continue;
+        };
+        let pending = out.entry(lid).or_default();
+        pending.delete |= delete;
+        pending.edit |= edit;
+        pending.blocked |= entry.blocked;
+        if entry.last_error.is_some() {
+            pending.error.clone_from(&entry.last_error);
+        }
+    }
+    out
+}
+
+/// Mark the hashed files an add waits for. A file counts by file id or by hash, so an
+/// unidentified file (hash reference) is covered as well.
+fn mark_pending_adds(local: &mut [LocalFile], queue: &[crate::sync::QueueEntry]) {
+    use animatic_anidb::commands::FileRef;
+    let mut fids: HashSet<i64> = HashSet::new();
+    let mut hashes: HashSet<(String, i64)> = HashSet::new();
+    for command in queue.iter().filter_map(|e| e.command.as_ref()) {
+        match command {
+            crate::sync::Command::MylistAdd {
+                file: FileRef::Fid(fid),
+                ..
+            } => {
+                fids.insert(*fid);
+            }
+            crate::sync::Command::MylistAdd {
+                file: FileRef::Hash { size, ed2k },
+                ..
+            }
+            | crate::sync::Command::Identify {
+                size,
+                ed2k,
+                add: Some(_),
+            } => {
+                hashes.insert((ed2k.to_ascii_lowercase(), *size as i64));
+            }
+            _ => {}
+        }
+    }
+    if fids.is_empty() && hashes.is_empty() {
+        return;
+    }
+    for file in local.iter_mut().filter(|f| f.lid.is_none()) {
+        file.mylist_add_pending = file.fid.is_some_and(|fid| fids.contains(&fid))
+            || hashes.contains(&(file.ed2k.to_ascii_lowercase(), file.size));
+    }
+}
+
 /// Lower-cased search keys parallel to the projection tables, built once off the UI thread so
 /// filtering never allocates per row.
 #[derive(Debug, Clone, Default)]
@@ -1196,6 +1292,10 @@ pub struct LibraryProjection {
     pub queue: Vec<crate::sync::QueueEntry>,
     /// Active sync cooldown as (epoch seconds until, reason).
     pub cooldown: Option<(i64, String)>,
+    /// Latest AniDB account statistics (fetched by **Fetch mylist statistics**), if any.
+    pub account_stats: Option<crate::store::StoredMylistStats>,
+    /// Queued intent per mylist entry.
+    pub mylist_pending: HashMap<i64, MylistPending>,
     pub summary: LibrarySummary,
     pub keys: SearchKeys,
 }
@@ -1212,10 +1312,13 @@ impl LibraryProjection {
         let genres = db.genres()?;
         let queue = db.queue_list()?;
         let cooldown = db.sync_cooldown()?;
+        let account_stats = db.mylist_stats_snapshot()?;
         drop(tx);
-        Ok(Self::assemble(
+        let mut projection = Self::assemble(
             anime, mylist, states, local, groups, genres, queue, cooldown,
-        ))
+        );
+        projection.account_stats = account_stats;
+        Ok(projection)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1223,7 +1326,7 @@ impl LibraryProjection {
         anime: Vec<Anime>,
         mylist: Vec<MylistItem>,
         states: HashMap<i64, AnimeMylistState>,
-        local: Vec<LocalFile>,
+        mut local: Vec<LocalFile>,
         groups: Vec<Group>,
         genres: Vec<(i64, String, i64)>,
         queue: Vec<crate::sync::QueueEntry>,
@@ -1253,6 +1356,8 @@ impl LibraryProjection {
             let title = mylist_title(item, idx.map(|i| &anime[i]));
             keys.mylist.push(title.to_ascii_lowercase());
         }
+        mark_pending_adds(&mut local, &queue);
+        let mylist_pending = pending_by_lid(&queue);
         let summary = LibrarySummary {
             local_known: local.iter().filter(|f| f.known()).count(),
             local_crc_mismatch: local.iter().filter(|f| f.crc_mismatch()).count(),
@@ -1269,6 +1374,8 @@ impl LibraryProjection {
             genres,
             queue,
             cooldown,
+            account_stats: None,
+            mylist_pending,
             summary,
             keys,
         }
@@ -1434,5 +1541,123 @@ mod tests {
         );
         assert_eq!(p.summary.local_bytes, 1005);
         assert_eq!(p.summary.mylist_watched, 2);
+    }
+
+    #[test]
+    fn queued_adds_show_on_the_hashed_files_until_acknowledged() {
+        use crate::sync::Command;
+        use animatic_anidb::commands::{FileRef, MylistEdit};
+        let db = sample_db();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO file(fid, aid, eid, gid, size, ed2k) VALUES (103, 1, 11, 7, 40, 'dd');
+                 INSERT INTO local_hash(id, ed2k, size) VALUES (3, 'dd', 40);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (3, 3, '/a/new.mkv');",
+            )
+            .unwrap();
+        let pending = |db: &Db| -> Vec<(String, bool)> {
+            LibraryProjection::load(db)
+                .unwrap()
+                .local
+                .iter()
+                .map(|f| (f.file_name().to_string(), f.mylist_add_pending))
+                .collect()
+        };
+        assert!(pending(&db).iter().all(|(_, queued)| !queued));
+
+        // An identified file is added by file id, an unidentified one by size and hash.
+        db.queue_push(&Command::MylistAdd {
+            file: FileRef::Fid(103),
+            edit: MylistEdit::default(),
+        })
+        .unwrap();
+        db.queue_push(&Command::MylistAdd {
+            file: FileRef::Hash {
+                size: 5,
+                ed2k: "ZZ".into(),
+            },
+            edit: MylistEdit::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            pending(&db),
+            vec![
+                ("new.mkv".to_string(), true),
+                ("unknown.mkv".to_string(), true),
+                ("x.mkv".to_string(), false),
+            ]
+        );
+
+        // A file that is already in MyList never shows as waiting for an add.
+        db.queue_push(&Command::MylistAdd {
+            file: FileRef::Fid(100),
+            edit: MylistEdit::default(),
+        })
+        .unwrap();
+        assert!(
+            !pending(&db)
+                .iter()
+                .any(|(name, queued)| name == "x.mkv" && *queued)
+        );
+
+        // Once AniDB acknowledged the add and the row exists, the entry replaces the marker.
+        db.queue_clear().unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO mylist(lid, fid, eid, aid, gid) VALUES (2000, 103, 11, 1, 7);",
+            )
+            .unwrap();
+        let p = LibraryProjection::load(&db).unwrap();
+        let new = p.local.iter().find(|f| f.file_name() == "new.mkv").unwrap();
+        assert_eq!((new.lid, new.mylist_add_pending), (Some(2000), false));
+    }
+
+    #[test]
+    fn blocked_removal_stays_visible_with_its_row_and_error() {
+        use crate::sync::Command;
+        use animatic_anidb::commands::MylistEdit;
+        let db = sample_db();
+        let delete = db.queue_push(&Command::MylistDelete { lid: 1001 }).unwrap();
+        db.queue_edit_mylist(
+            1000,
+            &MylistEdit {
+                state: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let p = LibraryProjection::load(&db).unwrap();
+        assert_eq!(p.mylist_pending[&1001].label(), "Removal queued");
+        assert_eq!(p.mylist_pending[&1000].label(), "Edit queued");
+        assert!(!p.mylist_pending.contains_key(&1002));
+
+        db.queue_block(delete, "synthetic failure").unwrap();
+        let p = LibraryProjection::load(&db).unwrap();
+        let blocked = &p.mylist_pending[&1001];
+        assert_eq!(blocked.label(), "Removal blocked");
+        assert_eq!(blocked.error.as_deref(), Some("synthetic failure"));
+        assert_eq!(p.summary.queue_blocked, 1);
+        assert!(
+            p.mylist.iter().any(|m| m.entry.lid == 1001),
+            "a failed delete never removes the local row"
+        );
+    }
+
+    #[test]
+    fn account_statistics_are_part_of_the_projection_and_kept_apart_from_local_counts() {
+        use animatic_anidb::commands::MylistStats;
+        let db = sample_db();
+        assert_eq!(LibraryProjection::load(&db).unwrap().account_stats, None);
+        let stats = MylistStats {
+            animes: 1200,
+            files: 34567,
+            ..Default::default()
+        };
+        db.store_mylist_stats(&stats, 1_700_000_000).unwrap();
+        let p = LibraryProjection::load(&db).unwrap();
+        let stored = p.account_stats.unwrap();
+        assert_eq!((stored.fetched, stored.stats), (1_700_000_000, stats));
+        assert_eq!(p.anime.len(), 1, "local figures are not replaced");
+        assert_eq!(p.mylist.len(), 3);
     }
 }

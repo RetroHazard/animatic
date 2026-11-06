@@ -165,7 +165,8 @@ Two connections write to the database: the background worker and the interface. 
 ## The library is missing entries
 
 - **A full-account bootstrap is not implemented.** Animatic never downloads your whole AniDB
-  MyList. **Tools → Fetch mylist statistics** only fetches counts. **Tools → Download anime
+  MyList. **Tools → Fetch mylist statistics** only fetches counts (kept and shown on Overview).
+  **Tools → Download anime
   titles** fetches the public titles dump only. `--full-update` (command-line only, no menu
   item) queues the titles dump plus lookups for the files and anime your **hashed local files**
   already reference. Library content comes from an AOM import, from hashing and identifying
