@@ -18,7 +18,7 @@ AniDB with unregistered client credentials.
 
 ### Files, connections and pragmas
 
-- One SQLite file (default `animatic.sqlite3`, see [Getting started](getting-started.md)) plus
+- One SQLite file (default `animatic.sqlite3`, see [Getting started](https://github.com/RetroHazard/animatic/wiki/Installation)) plus
   the WAL side files `<name>-wal` and `<name>-shm` while it is open. Copy or back up the main
   file only with the application closed, or copy all three together; recent commits can still be
   in the WAL.
@@ -180,7 +180,7 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 | `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry, or deletes it if AniDB says it is gone and no local intent is queued | No |
 
 "No" means no desktop path exists today; the capability is available to library callers and to
-the tests. See [Feature parity](feature-parity.md).
+the tests. See [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 
 ### Enqueue rules
 
@@ -286,7 +286,7 @@ Cooldown mechanics:
   is active, so none exists to compare.
 - Recovery: wait out the cooldown; correct credentials/client name/version in the Options
   window or settings file; use **Retry failed**; discard hopeless rows with **Clear queue**.
-  See [Troubleshooting](troubleshooting.md).
+  See [Troubleshooting](https://github.com/RetroHazard/animatic/wiki/Troubleshooting).
 
 ## UDP API
 
@@ -434,8 +434,8 @@ Implementation: [`update.rs`](../crates/animatic-core/src/update.rs) in `animati
 separate transport from AniDB: it has its own `UpdateClient`, its own `UpdateError`/`Result`, no
 AniDB flood spacing, no AniDB session and no cooldown. A failed update request never touches the
 command queue, `meta` cooldown keys or the AniDB clients, and an AniDB ban never blocks an update
-check. Product flow: [User guide](user-guide.md#updating-animatic); settings:
-[`updates.auto_check`](settings-reference.md#updates).
+check. Product flow: [User guide](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic); settings:
+[`updates.auto_check`](https://github.com/RetroHazard/animatic/wiki/Settings-Reference#updates).
 
 **Endpoints and identity.** Only the repository `RetroHazard/animatic`, only HTTPS, only to
 `api.github.com` (the release listing) and `github.com` (assets and release pages). Redirects are
@@ -742,7 +742,7 @@ unregistered client credentials against production AniDB.
 4. **Failures**: classification is automatic through `AnidbError`; add a new `AnidbError` variant
    only when none fits and update `is_transient`, `is_fatal`, `retry_after` and the table above.
 5. **UI**: enqueue through `AnimaticApp::queue_command` (deferral when the database is busy) and
-   show the outcome; update [Feature parity](feature-parity.md).
+   show the outcome; update [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 6. **Tests**: queue persistence, reply parsing and state application with local fixtures (see the
    UDP fixture in `worker.rs` tests); never the production API.
 

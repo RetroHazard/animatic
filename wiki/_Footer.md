@@ -1,0 +1,1 @@
+Published from [`wiki/`](https://github.com/RetroHazard/animatic/tree/main/wiki) in the repository; edits made here are overwritten. Never paste credentials, file names or library data into an issue: see [Reporting problems](Reporting-Problems.md).

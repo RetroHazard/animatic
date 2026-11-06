@@ -3,8 +3,8 @@
 Animatic is a native desktop application built from three Rust crates. This page explains the
 dependency graph, the threads, the data flows and the guarantees the code actually provides.
 Table-level and protocol-level detail lives in [Storage and network contracts](storage-and-network.md);
-user-visible behavior is in the [user guide](user-guide.md); desktop reachability of each
-capability is in [Feature parity](feature-parity.md).
+user-visible behavior is in the [user guide](https://github.com/RetroHazard/animatic/wiki); desktop reachability of each
+capability is in [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 
 ## Crate graph
 
@@ -265,7 +265,7 @@ clean last-writer-wins rule. `load_with_recovery` reads the backup only when the
 forces offline mode, and the UI then blocks the exit-time autosave until an explicit Save. On a
 normal exit the application otherwise saves the current in-memory settings (Options edits are
 live), so the file can change without pressing Save. See
-the [settings reference](settings-reference.md) for fields.
+the [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) for fields.
 
 ### Updater thread
 
@@ -348,7 +348,7 @@ Rules the code relies on:
 returns a `Plan`; `Plan::can_apply` is false for errors, warnings, or no target. Nothing in
 planning touches the filesystem. Applying is one file at a time on the **UI thread**:
 `file_manager::move_file` and then the path update. Language reference:
-[Rename language](rename-language.md).
+[Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language).
 
 ## What the code guarantees, and what it does not
 
@@ -412,7 +412,7 @@ Compatibility targets user-visible behavior and data migration, not Delphi imple
 artifacts. Animatic deliberately replaces retired metadata-change commands with AniDB's web
 editors, Windows-only COM/shell integration with CLI and file pickers, MDI tabs and custom trees
 with fixed views, and unreachable or developer-only AOM dialogs with nothing. See
-[Feature parity](feature-parity.md).
+[Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 
 ## Extending the system
 
@@ -424,7 +424,7 @@ Worked examples with real signatures, including a compilable offline snippet, ar
 | New persistent field or table | New table: add `CREATE TABLE IF NOT EXISTS` to `schema.sql`. New column on an existing table: also add an idempotent migration in `db::init` *before* the schema script (the script cannot add columns). Update store writes, library reads and import mapping; test an existing database and a new one |
 | New AniDB command | Typed request/reply in `animatic-anidb::commands`; a `Command` variant in `core::sync` (`describe`, `priority`, `mylist_lid` when it targets an entry) and an arm in `sync::execute`; reply application in `store` using `write_tx` and pending-intent overlays; UI producer; tests with local fixtures, never production AniDB |
 | New background operation | `Job` and `Event` in `worker.rs`; keep blocking work off `app.rs`; define progress, cancellation and failure events; reload only affected projections; exercise the real UI path |
-| New setting | Field with `#[serde(default)]` in `settings.rs`; a runtime consumer; an entry in the [settings reference](settings-reference.md). A persisted field with no consumer must be documented as stored-only. `AOM import` builds on `Settings::default()`, so a preference AOM does not know (like `updates`) must be carried over in `keep_preferences_unknown_to_legacy` |
+| New setting | Field with `#[serde(default)]` in `settings.rs`; a runtime consumer; an entry in the [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference). A persisted field with no consumer must be documented as stored-only. `AOM import` builds on `Settings::default()`, so a preference AOM does not know (like `updates`) must be carried over in `keep_preferences_unknown_to_legacy` |
 
 ## Security and privacy
 
@@ -440,3 +440,22 @@ release archives are checksummed but unsigned (see
 Migration crypto constants are format-interoperability material, not credentials. Legacy tests
 build records and pages from explicit synthetic values; encoded dumps or ciphertext copied from
 a real databank are private artifacts and must never be used as fixtures.
+
+## Source anchors
+
+Line numbers are for this tree and may drift; search for the function name.
+
+| Topic | Anchor |
+|---|---|
+| Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
+| Search filters | `app.rs`: `filter_anime`, `filter_search`, `matches_anime`, `aid_query`; `library.rs`: `SearchKeys`, `LibraryProjection::assemble` |
+| Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan` |
+| Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |
+| Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
+| Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `move_file`; `settings.rs`: `FileManagerSettings::matching_manager_for` |
+| Rename | `crates/animatic-core/src/rename/plan.rs`, `rename/mod.rs` (`target_path`), `app.rs`: `preview_rename`, `rename_window`, `pattern_editor_ui` |
+| Exports | `crates/animatic-core/src/stats.rs`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` |
+| External tools | `crates/animatic-core/src/external.rs` |
+| Migration | `crates/animatic-core/src/legacy/{crypto,blob,import}.rs`, `settings.rs`: `import_legacy_settings`, `app.rs`: `legacy_settings_review_window` |
+| Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
+| Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |

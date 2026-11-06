@@ -83,12 +83,12 @@ tar -xzf animatic-v2026.11.0-linux-x86_64.tar.gz
 fails. The executable bit is set inside the tarball, so no `chmod` is needed after extraction.
 
 The Linux binary is built on Ubuntu 22.04 against the GTK 3, xkbcommon, Wayland and OpenSSL
-libraries installed by the CI job (see [Getting started](getting-started.md#option-b-build-from-source)
+libraries installed by the CI job (see [Getting started](https://github.com/RetroHazard/animatic/wiki/Installation#option-b-build-from-source)
 for the package names). **Runtime compatibility on other distributions or on a machine without
 those libraries is not verified by the workflow**, and no Linux desktop launch of a released
 binary is recorded by the project.
 
-Start Animatic **offline** and follow [Getting started](getting-started.md#first-launch).
+Start Animatic **offline** and follow [Getting started](https://github.com/RetroHazard/animatic/wiki/First-Launch#first-launch).
 Archives contain no settings, databases, media or credentials; Animatic creates its own data at
 first run.
 
@@ -101,7 +101,7 @@ not included.
 ## In-app updates
 
 An installed Animatic can check for, download, verify and install a newer release of itself.
-The user-facing flow is in the [User guide](user-guide.md#updating-animatic); the transport,
+The user-facing flow is in the [User guide](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic); the transport,
 limits and install contract are in
 [Storage and network](storage-and-network.md#github-update-transport); the threading model is in
 [Architecture](architecture.md#updater-thread). This section records what the **release process
@@ -140,7 +140,7 @@ been run against a real GitHub release or on Linux by the project.
 - **Privacy and consent.** Checks are anonymous: they send the user's IP address and
   `Animatic/VERSION` to GitHub; there is no account, token or library data and no credential
   configuration. Nothing is installed without the user's confirmation. See
-  [Settings reference → Updates](settings-reference.md#updates) for `updates.auto_check`.
+  [Settings reference → Updates](https://github.com/RetroHazard/animatic/wiki/Settings-Reference#updates) for `updates.auto_check`.
 - **Publishing consequences.** Because installed copies see a release as soon as it is published,
   and merging a release pull request publishes it, a maintainer should rehearse the release (a dry
   **Release** run, see [Maintainer procedure](#maintainer-procedure)) and check the archive layout

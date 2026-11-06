@@ -22,8 +22,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
 There is **no full-account MyList bootstrap, scheduled folder scanning, automatic
 renaming, cover-art UI, or media-deletion UI**. See the
-[feature-parity matrix](docs/feature-parity.md) and
-[settings reference](docs/settings-reference.md) before relying on an imported option.
+[feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity) and
+[settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) before relying on an imported option.
 
 ## Install or build
 
@@ -51,7 +51,7 @@ does not prove who produced it; releases are unsigned. Contacting GitHub exposes
 address and the Animatic version to GitHub; no account, token or library data is sent. The
 startup check is controlled by **Check for updates at startup** (`updates.auto_check`, on by
 default) and is skipped while *Work offline* is set or settings were recovered from a backup.
-See [Updating Animatic](docs/user-guide.md#updating-animatic) and
+See [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic) and
 [Releases](docs/releases.md#in-app-updates).
 
 ### Build from source
@@ -74,17 +74,17 @@ The executable is `target/release/animatic.exe` on Windows or
 
 Start **offline**. Before synchronizing, configure your AniDB credentials and a registered
 client identifier. Do not test production AniDB with invented client credentials.
-The [getting-started guide](docs/getting-started.md) covers downloads, first run,
+The [getting-started guide](https://github.com/RetroHazard/animatic/wiki/Installation) covers downloads, first run,
 portable paths and the complete CLI. A source-checkout or package-manager executable
 can run the updater but should normally be updated through its own workflow; see
-[Updating Animatic](docs/user-guide.md#updating-animatic).
+[Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic).
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): pages, hashing, scans, MyList, migration and exports.
-- [Settings reference](docs/settings-reference.md): defaults, JSON, UI exposure and
+- [User guide](https://github.com/RetroHazard/animatic/wiki): pages, hashing, scans, MyList, migration and exports.
+- [Settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference): defaults, JSON, UI exposure and
   which compatibility fields actually affect runtime behavior.
-- [Troubleshooting and recovery](docs/troubleshooting.md): backups, startup failures,
+- [Troubleshooting and recovery](https://github.com/RetroHazard/animatic/wiki/Troubleshooting): backups, startup failures,
   queue/network problems, renaming and privacy-safe diagnostics.
 - [Releases](docs/releases.md): versioning, changelog, release workflows, archive contents,
   checksum verification and the in-app update contract.
