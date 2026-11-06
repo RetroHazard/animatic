@@ -216,30 +216,52 @@ Limits and exact semantics are in [Title dump](storage-and-network.md#title-dump
 ### Legacy migration
 
 1. `find_databank` accepts a `kowai` directory or an install directory containing one.
-2. For each present collection (fixed order, lookup tables first) the encrypted pages are
-   decrypted to a plaintext SQLite copy in a temporary directory (the desktop uses a folder named
-   `import-temp` next to the database; the command-line example uses the output path with its
-   extension replaced by `import-temp`, so `library.sqlite3` gives `library.import-temp`).
-3. The copy is attached and imported in **one transaction per collection** with
+2. **File > Import AOM databank...** submits `Job::ImportLegacy { source, temp_root, confirmed }`.
+   The worker calls `open_for_legacy_import`: when the database is not empty (`Db::is_empty`:
+   no anime, MyList entry or local file) and the job is not `confirmed`, nothing is written and
+   the job answers `Event::LegacyImportNeedsConfirmation`. The UI thread never inspects the
+   database for this (rule 1); it shows the **Import into a database that has data?** dialog,
+   where **Continue** resubmits the job with `confirmed: true` and **Cancel** drops it. Deciding
+   inside the job keeps the database read off the UI thread and makes the decision and the
+   import see the same database. An empty database imports directly.
+3. `import_databank` creates an `ImportWorkdir` below `temp_root` (the desktop and the example pass
+   `legacy::workdir::default_temp_root()`, the system temporary directory; tests pass their own):
+   a directory named `animatic-legacy-import-<random>` (`tempfile`, private to the user on Unix)
+   whose marker file `.animatic-legacy-import` is created, and exclusively locked, **before** any
+   decrypted byte is written. No work folder is created when the source has no collection files.
+4. For each present collection (fixed order, lookup tables first) the encrypted pages are
+   decrypted to a plaintext SQLite copy inside that folder.
+5. The copy is attached and imported in **one transaction per collection** with
    `INSERT OR REPLACE` keyed by the legacy ids. A failing collection rolls back, is recorded in
-   `ImportReport::skipped`/`warnings`, and the import continues; committed collections stay.
-4. Derived columns are recomputed and `legacy_import_*` metadata is stored.
+   `ImportReport::skipped`/`warnings` (the worker logs each warning as an error line), and the
+   import continues; committed collections stay.
+6. Derived columns are recomputed and `legacy_import_*` metadata is stored.
 
-The source databank is only read. The plaintext copy is deleted after each collection when its
-merge succeeds, fails and rolls back, or the import is cancelled before the merge. Any other
-failure (an error while decrypting, `ATTACH`, `COMMIT` or `DETACH`) returns immediately without
-deleting that copy, and a crash leaves it too, so **plaintext of your library can remain after
-any failed import**. The temporary folder is not private to the importer and can already hold
-unrelated files: never delete the whole folder blindly. Inspect it and remove only the files you
-recognize as importer output (the decrypted copies are named `<collection>.sqlite`, for example
-`mylist.sqlite`).
+The source databank is only read (rule 6). The plaintext copy is deleted after each collection,
+and `import_databank` detaches the legacy copy and removes the whole work folder however it ends
+(success, a decryption error or any other `?` exit, cancel); the `Drop` of `ImportWorkdir`
+covers a panic. A removal failure after success is added to `ImportReport::warnings`. Only a
+crash, a kill or a power loss can leave the folder behind.
+
+**Leftover folders.** The exclusive lock on the marker file is held while the import runs and is
+released by the operating system when the process ends, however it ends, so a folder whose
+marker can be locked belongs to no running import (this process or another Animatic). At startup
+`AnimaticApp::new` submits `Job::FindLegacyLeftovers`; `find_leftover_workdirs` returns only real
+directories directly below the temporary root whose name has the prefix, that hold a regular marker
+file, and whose marker can be locked. Symbolic links never qualify and an unreadable or locked
+marker keeps the folder. A non-empty result becomes `Event::LegacyLeftovers` and the **Leftover
+import files** notice; **Remove** submits `Job::RemoveLegacyLeftovers`, and
+`remove_leftover_workdirs` re-checks each folder (parent equal to the temporary root, prefix,
+marker, unlocked) before `remove_dir_all`, reporting the rest as kept
+(`Kept leftover import folder <path>: <reason>`). Unmarked folders, other files in the temporary
+directory and anything outside it are never touched; an `import-temp` folder created by an older
+version carries no marker and is not offered.
 
 Cancellation is checked while decrypting and before each collection is merged, not inside the
 final transaction or the derived-data step. A cancel requested late can therefore still end in a
 successful import, and a large collection decrypts to completion before the cancel is noticed.
-The import is designed for a new database: nothing merges with pre-existing rows that share ids,
-and the desktop does not check that the database is empty (`Db::is_empty` exists but has no
-caller in the application crates).
+The import still replaces rows that share ids; the confirmation exists because of that. The
+`import-legacy` example does not ask, since it writes the file the caller names.
 
 ### Legacy settings migration
 
@@ -459,6 +481,6 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Rename | `crates/animatic-core/src/rename/plan.rs`, `rename/mod.rs` (`target_path`), `app.rs`: `preview_rename`, `rename_window`, `pattern_editor_ui` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs` |
-| Migration | `crates/animatic-core/src/legacy/{crypto,blob,import}.rs`, `settings.rs`: `import_legacy_settings`, `app.rs`: `legacy_settings_review_window` |
+| Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |

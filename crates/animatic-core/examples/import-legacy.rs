@@ -11,7 +11,7 @@ fn main() -> animatic_core::Result<()> {
     let output = PathBuf::from(args.next().ok_or_else(|| {
         animatic_core::Error::Other("usage: import-legacy <AOM/kowai> <output.sqlite3>".into())
     })?);
-    let temp = output.with_extension("import-temp");
+    let temp = animatic_core::legacy::workdir::default_temp_root();
     let mut db = Db::open(&output)?;
     let report = import_databank(&mut db, &source, &temp, &mut |stage, fraction| {
         eprintln!("{:>6.1}%  {stage}", fraction * 100.0);

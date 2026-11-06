@@ -142,14 +142,22 @@ folder (containing `mylist.data`, `local_files.data` or `animes.data`) or the AO
 above it is accepted; anything else is rejected with `No AOM databank found in <path> (choose
 the AOM folder or its kowai folder)`.
 
-The import reads the source files only (they are never modified), decrypts each collection
-into `import-temp/`, imports it in **one transaction per collection**, and tries to remove the
-plaintext (a failure can leave it behind). Results to be aware of:
+The import reads the source files only (they are never modified). Before it starts, the
+worker checks the database: if it already holds anime, MyList entries or hashed local files, the
+**Import into a database that has data?** dialog says that rows with the same ids will be
+replaced and offers **Continue** or **Cancel**; Cancel logs `Import cancelled; the database was
+not changed`. To keep the current database, cancel and start Animatic with `--database FILE`
+(a new file). An empty database imports without a question. The import decrypts each collection
+into a marked work folder in the system temporary folder (a name starting
+`animatic-legacy-import-` with the marker file `.animatic-legacy-import`), imports it in **one
+transaction per collection**, and removes that folder when it ends, on success, failure or cancel.
+If the folder cannot be removed the Log shows `Legacy import warning: could not remove the
+temporary import folder …`. Results to be aware of:
 
 - **Partial results.** A collection that fails to import is rolled back and skipped, and the
-  import continues. The interface reports only `Imported N records from M collections`; the
-  per-collection warnings and skipped list are not shown. If M is smaller than the number of
-  recognized `.data` files in the folder, some collections were skipped.
+  import continues. The Log reports `Imported N records from M collections` and one error line
+  `Legacy import warning: <collection>: <error>` per skipped collection. If M is smaller than
+  the number of recognized `.data` files in the folder, some collections were skipped.
 - **A decryption error aborts the run.** The text is `Legacy import failed: <error>`.
   Collections already committed stay in the database; the remaining ones and the final
   derived-data step (highest episode, special counts, group fix-up) did not run, and the
@@ -165,8 +173,15 @@ plaintext (a failure can leave it behind). Results to be aware of:
   rows instead of duplicating them; that also means a rerun overwrites rows with the
   databank's older values, so import into a fresh database, or one you have backed up, rather
   than into a library with newer synchronized data.
-- Remove leftover decrypted files as described in
-  [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers).
+- **Leftover decrypted files.** At every start Animatic looks in the system temporary folder for
+  import folders (name starting `animatic-legacy-import-`, containing the marker file
+  `.animatic-legacy-import`) that an interrupted import left behind and that no running import is
+  using. If it finds any, **Leftover import files** lists them; **Remove** deletes only those
+  folders, **Keep for now** asks again at the next start. A removal that fails is logged as
+  `Kept leftover import folder <path>: <reason>`. A folder without the marker, such as the
+  `import-temp` folder of an older version, is never offered; see
+  [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers)
+  for removing it by hand.
 - The import menu items are disabled while an import or settings review is pending, and other
   job submissions are blocked until the review ends.
 

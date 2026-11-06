@@ -6,6 +6,7 @@ use rusqlite::{Connection, params};
 
 use super::blob;
 use super::crypto;
+use super::workdir::ImportWorkdir;
 use crate::db::Db;
 use crate::error::{Error, Result};
 
@@ -83,13 +84,19 @@ struct Ctx<'a> {
     report: ImportReport,
 }
 
+/// Import every present collection of the databank in `kowai` into `db`.
+///
+/// Decrypted copies are written only inside a marked, Animatic-owned work folder created below
+/// `temp_root` (see [`super::workdir`]); it is removed when the import ends, however it ends.
+/// Rows that share an id with an existing row replace it, so callers importing into a database
+/// that already holds data ([`Db::is_empty`]) should ask the user first. The databank files are
+/// only read.
 pub fn import_databank(
     db: &mut Db,
     kowai: &Path,
-    temp_dir: &Path,
+    temp_root: &Path,
     progress: Progress,
 ) -> Result<ImportReport> {
-    std::fs::create_dir_all(temp_dir)?;
     let present: Vec<&str> = LEGACY_FILES
         .iter()
         .copied()
@@ -101,6 +108,29 @@ pub fn import_databank(
             kowai.display()
         )));
     }
+    let work = ImportWorkdir::create(temp_root)?;
+    let result = import_collections(db, kowai, &present, work.path(), progress);
+    // A failure can leave the legacy copy attached, which would keep its file open on Windows.
+    let _ = db.conn().execute_batch("DETACH DATABASE legacy");
+    let removal = work.remove();
+    match (result, removal) {
+        (Ok(mut report), Err(e)) => {
+            report.warnings.push(format!(
+                "could not remove the temporary import folder (Animatic offers to remove it at the next start): {e}"
+            ));
+            Ok(report)
+        }
+        (result, _) => result,
+    }
+}
+
+fn import_collections(
+    db: &mut Db,
+    kowai: &Path,
+    present: &[&str],
+    temp_dir: &Path,
+    progress: Progress,
+) -> Result<ImportReport> {
     let weights: Vec<u64> = present
         .iter()
         .map(|n| std::fs::metadata(kowai.join(format!("{n}.data"))).map_or(1, |m| m.len().max(1)))
@@ -180,7 +210,6 @@ pub fn import_databank(
         db.conn()
             .execute("DELETE FROM meta WHERE key = 'legacy_dump_date_tmp'", [])?;
     }
-    let _ = std::fs::remove_dir(temp_dir);
     progress("Import complete", 1.0);
     Ok(report)
 }
@@ -569,6 +598,108 @@ fn import_categories(conn: &Connection) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::legacy::workdir::{WORKDIR_MARKER, WORKDIR_PREFIX, find_leftover_workdirs};
+
+    /// A synthetic collection: a plain SQLite file with an empty `dataTable`, which the importer
+    /// accepts as an already decrypted copy.
+    fn synthetic_collection(kowai: &Path, name: &str) -> Vec<u8> {
+        std::fs::create_dir_all(kowai).unwrap();
+        let path = kowai.join(format!("{name}.data"));
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE dataTable (id INTEGER PRIMARY KEY, data BLOB);")
+            .unwrap();
+        drop(conn);
+        std::fs::read(path).unwrap()
+    }
+
+    fn work_folders(root: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(WORKDIR_PREFIX)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_import_decrypts_into_a_marked_folder_that_is_removed_and_never_touches_the_source() {
+        let root = tempfile::tempdir().unwrap();
+        let kowai = root.path().join("animatic-test-root").join("kowai");
+        let before = synthetic_collection(&kowai, "mylist");
+        let temp_root = root.path().join("temp");
+        std::fs::create_dir_all(&temp_root).unwrap();
+        std::fs::write(temp_root.join("unrelated.txt"), b"keep").unwrap();
+        let mut db = Db::open(&root.path().join("library.sqlite")).unwrap();
+
+        let mut seen_during_import = None;
+        let report = import_databank(&mut db, &kowai, &temp_root, &mut |stage, _| {
+            if stage.starts_with("Decrypting") {
+                let folders = work_folders(&temp_root);
+                seen_during_import = Some((
+                    folders.len(),
+                    folders.iter().all(|f| {
+                        f.join(WORKDIR_MARKER).is_file() && f.join("mylist.sqlite").is_file()
+                    }),
+                    find_leftover_workdirs(&temp_root).unwrap(),
+                ));
+            }
+            true
+        })
+        .unwrap();
+
+        assert_eq!(report.count("mylist"), 0);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(
+            seen_during_import,
+            Some((1, true, Vec::new())),
+            "one marked folder holds the decrypted copy, and a running import is not a leftover"
+        );
+        assert!(work_folders(&temp_root).is_empty(), "work folder removed");
+        assert_eq!(
+            std::fs::read(temp_root.join("unrelated.txt")).unwrap(),
+            b"keep"
+        );
+        assert_eq!(std::fs::read(kowai.join("mylist.data")).unwrap(), before);
+        assert!(db.meta("legacy_import_source").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_import_removes_its_work_folder_too() {
+        let root = tempfile::tempdir().unwrap();
+        let kowai = root.path().join("animatic-test-root").join("kowai");
+        synthetic_collection(&kowai, "mylist");
+        // Too small to be a databank: decryption fails after the folder exists.
+        std::fs::write(kowai.join("animes.data"), b"synthetic").unwrap();
+        let temp_root = root.path().join("temp");
+        let mut db = Db::open(&root.path().join("library.sqlite")).unwrap();
+
+        let failed = import_databank(&mut db, &kowai, &temp_root, &mut |_, _| true);
+        assert!(failed.is_err(), "{failed:?}");
+        assert!(work_folders(&temp_root).is_empty(), "removed after failure");
+
+        std::fs::remove_file(kowai.join("animes.data")).unwrap();
+        let cancelled = import_databank(&mut db, &kowai, &temp_root, &mut |_, _| false);
+        assert!(matches!(cancelled, Err(Error::Cancelled)), "{cancelled:?}");
+        assert!(work_folders(&temp_root).is_empty(), "removed after cancel");
+    }
+
+    #[test]
+    fn a_folder_without_databank_files_creates_no_work_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let empty = root.path().join("kowai");
+        std::fs::create_dir_all(&empty).unwrap();
+        let temp_root = root.path().join("temp");
+        let mut db = Db::open(&root.path().join("library.sqlite")).unwrap();
+
+        let result = import_databank(&mut db, &empty, &temp_root, &mut |_, _| true);
+
+        assert!(matches!(result, Err(Error::Legacy(_))), "{result:?}");
+        assert!(!temp_root.exists());
+    }
 
     #[test]
     fn databank_is_found_from_the_kowai_folder_or_the_aom_folder_above_it() {

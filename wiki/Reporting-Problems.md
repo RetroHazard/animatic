@@ -7,7 +7,7 @@ Sanitize first, then use the
 - **Settings and backups:** `settings.json`, `settings.json.bak` and any `.tmp` copy hold the
   AniDB password, API key and AVDump key in plain text. Never attach or paste them.
 - **The database** (`animatic.sqlite3` and its `-wal`/`-shm`), exports (statistics XML/INI,
-  hash lists) and `import-temp` contents are personal data: viewing history, file paths and
+  hash lists) and `animatic-legacy-import-*` temporary folders are personal data: viewing history, file paths and
   names, hashes, AniDB identifiers.
 - **The Log page** is the only diagnostic channel, and it is kept in memory only (older lines
   are discarded as it grows, **Clear** empties it, and it is lost on exit; there is no log

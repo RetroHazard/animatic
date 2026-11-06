@@ -213,23 +213,27 @@ name, so the first thing to do is open **Tools → Options…**, tick **Work off
 | Settings save | The settings folder | A temporary file and the backup are written there |
 | Anime titles download | The system temporary directory | The download is spooled into a private SQLite temporary database, then merged atomically. The download limits are 32 MiB compressed, 128 MiB decoded, 250,000 anime, 2,000,000 titles and 2,048 bytes per name. Keep comfortable free space on the volume that holds the temp directory |
 | Update download | The system temporary directory (a private staging folder) and the executable's folder | Up to the archive (limit 256 MiB) plus the extracted executable (limit 512 MiB) are staged in the temporary directory; the install then needs room for a copy of the new executable beside the current one |
-| AOM databank import | The folder `import-temp` beside the database | One decrypted collection at a time, roughly the size of the largest source `.data` file in addition to the database growth |
+| AOM databank import | The system temporary directory (a marked `animatic-legacy-import-*` folder) | One decrypted collection at a time, roughly the size of the largest source `.data` file in addition to the database growth |
 
 ### Leftover files and what is safe to delete
 
 Close Animatic first, confirm no import is running, and keep anything you are unsure about
 until you have a verified backup.
 
-- `import-temp/` (UI import) or `<output>.import-temp` (the example; for an output of
-  `library.sqlite3` it is `library.import-temp`): holds **decrypted plaintext SQLite copies of
-  your private databank collections** (`<name>.sqlite`, where `<name>` is a collection such as
-  `animes` or `mylist`). Each plaintext file is removed after its collection is processed, and
-  the (empty) folder is removed after a successful import. After a failure of any step
-  (decryption, attaching, committing, detaching), a cancel or a crash, a partial or complete
-  plaintext file can remain. The importer does not require the folder to be new or empty, so
-  it may also hold files that are not Animatic's. **Look inside first**, delete only the
-  `<collection>.sqlite` files you recognize as importer output, and remove the folder itself
-  only when it is then empty. The original databank is never modified.
+- `animatic-legacy-import-*` folders in the system temporary directory (UI import and the
+  `import-legacy` example): each holds **decrypted plaintext SQLite copies of your private
+  databank collections** (`<name>.sqlite`, where `<name>` is a collection such as `animes` or
+  `mylist`) and a marker file `.animatic-legacy-import`. The importer removes the folder when it
+  ends, whether it succeeded, failed or was cancelled. A crash, a kill or a power loss can leave
+  it behind. At the next start Animatic lists such folders (those with the name prefix **and** the
+  marker that no running import uses) in **Leftover import files** and removes them only if you
+  choose **Remove**; it never touches anything else in the temporary directory. If you prefer to
+  delete one yourself, close Animatic, make sure no import is running, and delete only a folder
+  that has this name prefix and contains the marker file. A folder named `import-temp`, beside the
+  database or `<output>.import-temp` next to an example output, comes from an older version: it is
+  not offered, may hold files that are not Animatic's, so **look inside first**, delete only the
+  `<collection>.sqlite` files you recognize, and remove the folder once it is empty. The original
+  databank is never modified.
 - `settings.json.tmp`, `settings.json.bak.tmp`: see
   [Save failures and leftover files](#save-failures-and-leftover-files).
 - SQLite's anonymous temporary files (the title spool and sort temporaries) are removed by

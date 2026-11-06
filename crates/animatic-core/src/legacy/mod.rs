@@ -3,3 +3,4 @@
 pub mod blob;
 pub mod crypto;
 pub mod import;
+pub mod workdir;

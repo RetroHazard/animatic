@@ -26,14 +26,29 @@ pub enum Job {
         settings: FileManagerSettings,
         extensions: String,
     },
+    /// Import an AOM databank. A database that already holds data is not written until the user
+    /// confirms (`confirmed`), because rows with the same ids are replaced; without the
+    /// confirmation the job only answers with `Event::LegacyImportNeedsConfirmation`.
+    /// Decrypted copies go to a marked folder below `temp_root` (see `legacy::workdir`).
     ImportLegacy {
         source: PathBuf,
-        temp: PathBuf,
+        temp_root: PathBuf,
+        confirmed: bool,
     },
     ImportLegacySettings {
         source: PathBuf,
     },
     ProcessQueue(AnidbSettings),
+    /// Look for leftover marked import folders below `temp_root` (see `legacy::workdir`).
+    FindLegacyLeftovers {
+        temp_root: PathBuf,
+    },
+    /// Remove the given leftover import folders. Only unused marked folders directly below
+    /// `temp_root` are removed.
+    RemoveLegacyLeftovers {
+        temp_root: PathBuf,
+        folders: Vec<PathBuf>,
+    },
     /// Queue the commands of a full update from the hashed local files, off the UI thread.
     QueueFullUpdate,
     /// Reload the library read model on the projection thread (see `Worker::submit`).
@@ -76,6 +91,15 @@ pub enum Event {
     },
     Imported {
         summary: String,
+    },
+    /// The database already holds data and the import has not been confirmed; nothing was written.
+    LegacyImportNeedsConfirmation {
+        source: PathBuf,
+    },
+    /// Unused marked import folders found at startup.
+    LegacyLeftovers {
+        temp_root: PathBuf,
+        folders: Vec<PathBuf>,
     },
     LegacySettingsImported(Box<Settings>),
     LegacySettingsImportFailed(String),
@@ -501,27 +525,41 @@ fn run(
                 }
                 let _ = events.send(Event::Finished);
             }
-            Job::ImportLegacy { source, temp } => {
+            Job::ImportLegacy {
+                source,
+                temp_root,
+                confirmed,
+            } => {
+                let mut db = match open_for_legacy_import(&db_path, confirmed) {
+                    Ok(Some(db)) => db,
+                    Ok(None) => {
+                        let _ = events.send(Event::LegacyImportNeedsConfirmation { source });
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Legacy import failed: {e}")));
+                        let _ = events.send(Event::Finished);
+                        continue;
+                    }
+                };
                 let _ = events.send(Event::Started {
                     label: "Importing legacy databank".into(),
                     total: 1,
                 });
-                let result = Db::open(&db_path).and_then(|mut db| {
-                    animatic_core::legacy::import::import_databank(
-                        &mut db,
-                        &source,
-                        &temp,
-                        &mut |label, fraction| {
-                            let _ = events.send(Event::Progress {
-                                label: label.into(),
-                                current: 1,
-                                total: 1,
-                                fraction,
-                            });
-                            !cancel.load(Ordering::Relaxed)
-                        },
-                    )
-                });
+                let result = animatic_core::legacy::import::import_databank(
+                    &mut db,
+                    &source,
+                    &temp_root,
+                    &mut |label, fraction| {
+                        let _ = events.send(Event::Progress {
+                            label: label.into(),
+                            current: 1,
+                            total: 1,
+                            fraction,
+                        });
+                        !cancel.load(Ordering::Relaxed)
+                    },
+                );
                 match result {
                     Ok(report) => {
                         let records: usize = report.imported.iter().map(|(_, n)| *n).sum();
@@ -531,12 +569,45 @@ fn run(
                                 report.imported.len()
                             ),
                         });
+                        for warning in report.warnings {
+                            let _ = events
+                                .send(Event::Error(format!("Legacy import warning: {warning}")));
+                        }
                     }
                     Err(e) => {
                         let _ = events.send(Event::Error(format!("Legacy import failed: {e}")));
                     }
                 }
                 let _ = events.send(Event::Finished);
+            }
+            Job::FindLegacyLeftovers { temp_root } => {
+                match animatic_core::legacy::workdir::find_leftover_workdirs(&temp_root) {
+                    Ok(folders) if !folders.is_empty() => {
+                        let _ = events.send(Event::LegacyLeftovers { temp_root, folders });
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("could not look for leftover import folders: {e}"),
+                }
+            }
+            Job::RemoveLegacyLeftovers { temp_root, folders } => {
+                let outcome =
+                    animatic_core::legacy::workdir::remove_leftover_workdirs(&temp_root, &folders);
+                if !outcome.removed.is_empty() {
+                    let _ = events.send(Event::Synced {
+                        description: format!(
+                            "Removed {} leftover import folder(s) from {}",
+                            outcome.removed.len(),
+                            temp_root.display()
+                        ),
+                        changed: false,
+                    });
+                }
+                for (folder, reason) in outcome.kept {
+                    let _ = events.send(Event::Error(format!(
+                        "Kept leftover import folder {}: {reason}",
+                        folder.display()
+                    )));
+                }
             }
         }
     }
@@ -1161,6 +1232,17 @@ fn process_queue(
     let _ = events.send(Event::Finished);
 }
 
+/// Open the database for a legacy import, or return `None` when the user must confirm first:
+/// the import replaces rows that share an id with a databank row, so a database that already
+/// holds data is only written after confirmation. An empty database needs none.
+fn open_for_legacy_import(db_path: &Path, confirmed: bool) -> animatic_core::Result<Option<Db>> {
+    let db = Db::open(db_path)?;
+    if !confirmed && !db.is_empty()? {
+        return Ok(None);
+    }
+    Ok(Some(db))
+}
+
 /// Queue the commands of a full update (`--full-update`): the titles dump plus every anime and
 /// file known from hashed local files.
 fn queue_full_update(db_path: &Path) -> animatic_core::Result<usize> {
@@ -1625,5 +1707,150 @@ mod tests {
             "queueing is idempotent"
         );
         assert_eq!(db.open().queue_len().unwrap(), 4);
+    }
+
+    /// A synthetic databank folder: one plain SQLite collection, which the importer accepts as
+    /// an already decrypted copy and imports as zero records.
+    fn synthetic_databank(db: &TempDb) -> PathBuf {
+        let kowai = db.dir.join("animatic-test-root").join("kowai");
+        std::fs::create_dir_all(&kowai).unwrap();
+        drop(Db::open(&kowai.join("mylist.data")).unwrap());
+        kowai
+    }
+
+    fn import_job(db: &TempDb, kowai: &Path, confirmed: bool) -> Job {
+        Job::ImportLegacy {
+            source: kowai.to_path_buf(),
+            temp_root: db.dir.join("temp"),
+            confirmed,
+        }
+    }
+
+    #[test]
+    fn importing_into_a_populated_database_waits_for_confirmation() {
+        let db = TempDb::new();
+        db.open()
+            .conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/s/1');",
+            )
+            .unwrap();
+        let kowai = synthetic_databank(&db);
+        let source_before = std::fs::read(kowai.join("mylist.data")).unwrap();
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(import_job(&db, &kowai, false));
+        let event = wait_for(&worker, |e| {
+            matches!(
+                e,
+                Event::LegacyImportNeedsConfirmation { .. } | Event::Started { .. }
+            )
+        });
+        assert!(
+            matches!(&event, Event::LegacyImportNeedsConfirmation { source } if *source == kowai),
+            "{event:?}"
+        );
+        assert!(
+            db.open().meta("legacy_import_source").unwrap().is_none(),
+            "nothing was imported"
+        );
+        assert!(
+            !db.dir.join("temp").exists(),
+            "no decrypted copy was started"
+        );
+
+        worker.submit(import_job(&db, &kowai, true));
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::Imported { .. } | Event::Error(_))
+        });
+        assert!(matches!(event, Event::Imported { .. }), "{event:?}");
+        assert!(db.open().meta("legacy_import_source").unwrap().is_some());
+        assert_eq!(
+            std::fs::read(kowai.join("mylist.data")).unwrap(),
+            source_before,
+            "the databank is only read"
+        );
+    }
+
+    #[test]
+    fn importing_into_an_empty_database_needs_no_confirmation() {
+        let db = TempDb::new();
+        drop(db.open());
+        let kowai = synthetic_databank(&db);
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(import_job(&db, &kowai, false));
+        let event = wait_for(&worker, |e| {
+            matches!(
+                e,
+                Event::Imported { .. }
+                    | Event::LegacyImportNeedsConfirmation { .. }
+                    | Event::Error(_)
+            )
+        });
+        assert!(matches!(event, Event::Imported { .. }), "{event:?}");
+    }
+
+    #[test]
+    fn the_gate_opens_only_for_empty_or_confirmed_targets() {
+        let db = TempDb::new();
+        assert!(open_for_legacy_import(&db.path, false).unwrap().is_some());
+        db.open()
+            .conn()
+            .execute_batch("INSERT INTO anime(aid) VALUES (1);")
+            .unwrap();
+        assert!(open_for_legacy_import(&db.path, false).unwrap().is_none());
+        assert!(open_for_legacy_import(&db.path, true).unwrap().is_some());
+    }
+
+    #[test]
+    fn leftover_import_folders_are_reported_and_only_marked_ones_removed() {
+        use animatic_core::legacy::workdir::{WORKDIR_MARKER, WORKDIR_PREFIX};
+        let db = TempDb::new();
+        drop(db.open());
+        let temp_root = db.dir.join("temp");
+        let marked = temp_root.join(format!("{WORKDIR_PREFIX}synthetic"));
+        let unmarked = temp_root.join(format!("{WORKDIR_PREFIX}unmarked"));
+        let unrelated = temp_root.join("unrelated.txt");
+        std::fs::create_dir_all(&marked).unwrap();
+        std::fs::create_dir_all(&unmarked).unwrap();
+        std::fs::write(marked.join(WORKDIR_MARKER), b"").unwrap();
+        std::fs::write(marked.join("animes.sqlite"), b"synthetic").unwrap();
+        std::fs::write(&unrelated, b"keep").unwrap();
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::FindLegacyLeftovers {
+            temp_root: temp_root.clone(),
+        });
+        let event = wait_for(&worker, |e| matches!(e, Event::LegacyLeftovers { .. }));
+        let Event::LegacyLeftovers { folders, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(folders, vec![marked.clone()]);
+
+        // Even when asked to remove more, only the marked folder goes.
+        worker.submit(Job::RemoveLegacyLeftovers {
+            temp_root: temp_root.clone(),
+            folders: vec![marked.clone(), unmarked.clone(), unrelated.clone()],
+        });
+        let event = wait_for(&worker, |e| matches!(e, Event::Synced { .. }));
+        assert!(
+            matches!(&event, Event::Synced { description, changed: false } if description.contains("Removed 1")),
+            "{event:?}"
+        );
+        assert!(!marked.exists());
+        assert!(unmarked.is_dir());
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep");
+
+        worker.submit(Job::FindLegacyLeftovers { temp_root });
+        worker.submit(Job::QueueFullUpdate);
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::LegacyLeftovers { .. } | Event::Finished)
+        });
+        assert!(
+            matches!(event, Event::Finished),
+            "no leftovers are reported once removed"
+        );
     }
 }

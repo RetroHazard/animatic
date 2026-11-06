@@ -30,7 +30,7 @@ Companion files you will meet:
 | `animatic.sqlite3-wal`, `animatic.sqlite3-shm` | While the database is open (SQLite WAL mode) | Same folder as the database. Copy all three together, and only with Animatic closed. |
 | `settings.json.bak` | Written by **Save** when the previous primary parsed as valid | The backup name replaces the settings file's last extension with `.json.bak`. `my-settings.json` → `my-settings.json.bak`; a name without `.json` such as `custom.cfg` → `custom.json.bak`. |
 | `settings.json.tmp`, `settings.json.bak.tmp` | Briefly during a save | Same replacement rule; removed after the atomic rename. |
-| `import-temp/` | During a databank import | Created in the database's folder. Holds one decrypted (plaintext) collection file such as `animes.sqlite` at a time and is normally removed. After a failed import, inspect it and delete only the confirmed collection files; the folder may contain unrelated files. See [Migration](Migrating-from-AOM.md#migrate-an-aom-databank). |
+| `animatic-legacy-import-*/` | During a databank import | Created in the system temporary folder (not the database's folder), with a marker file `.animatic-legacy-import`. Holds one decrypted (plaintext) collection file such as `animes.sqlite` at a time and is removed when the import ends. After a crash the next start offers to remove marked folders that no running import uses; only those are removed. An older version's `import-temp/` folder beside the database is not offered. See [Migration](Migrating-from-AOM.md#migrate-an-aom-databank). |
 
 Runtime files store your AniDB password and API key in plain text, and the `.bak` copy holds the
 *previous* valid settings (possibly credentials you have since removed). Nothing is encrypted at

@@ -11,6 +11,8 @@ Before you start: close AOM, **back up the `kowai` folder**, and decide the targ
 writes into the database Animatic currently has open (default location or `--database`). For a
 clean result start with an empty database (a fresh `--database` file) and keep a copy of any
 existing database made while Animatic is closed (the database file plus its `-wal`/`-shm` files).
+Animatic asks for confirmation when that database already holds data, but it cannot undo an
+import.
 
 1. **File → Import AOM databank…** (or the Overview first-run card). Choose the `kowai` folder or
    the AOM folder directly above it; the folder picker does not list the `.data` files inside.
@@ -30,12 +32,14 @@ What happens (`legacy::import::import_databank`):
   animes, animetitles, animegenres, animerelations, episodes, episodetitles, files,
   fileepisoderelations, filerelations, reviews, mylist, local_hashes, local_files`.
   If none exist the import fails with `no legacy databank files found`.
-- For each collection one file is decrypted into a plain SQLite file in a temporary folder,
-  attached, imported inside **one transaction per collection**, committed, detached and the
-  temporary file deleted. Progress is weighted by file size.
+- For each collection one file is decrypted into a plain SQLite file in the temporary work
+  folder (see **Temporary files** below), attached, imported inside **one transaction per
+  collection**, committed, detached and the temporary file deleted. Progress is weighted by file
+  size.
 - **Atomicity is per collection, not for the whole import.** A collection that fails is rolled back
   and skipped while later collections still run. The Log summary reports only how many
-  collections were imported, not which failed, so compare `M` with the number of recognized
+  collections were imported, and each skipped collection is also logged as an error line
+  `Legacy import warning: <collection>: <error>`, so compare `M` with the number of recognized
   `.data` files you have. Unreadable individual records inside a collection are dropped silently.
   A failure while *decrypting* (for example a truncated file) aborts the entire import with
   `Legacy import failed: …`; collections already committed stay in the database.
@@ -53,7 +57,11 @@ What happens (`legacy::import::import_databank`):
   import does not supply return to their defaults (so imported anime have no "fetched" marker
   and a later title-list merge may replace their titles). Rows that exist only in your database,
   and the command queue, are left alone. Re-importing the same databank converges to the same
-  result.
+  result. Because of that, **File → Import AOM databank…** asks first when the database already
+  holds anime, MyList entries or hashed local files: **Import into a database that has data?**
+  explains that rows with the same ids will be replaced. **Continue** starts the import,
+  **Cancel** changes nothing. To keep the current database untouched, cancel and start Animatic
+  with `--database FILE` (a new file) instead. An empty database imports without the question.
 - After the last collection the highest/special episode counts are recomputed, missing MyList
   group ids are filled from file records, and the source folder plus date are recorded in the
   database.
@@ -64,20 +72,25 @@ What happens (`legacy::import::import_databank`):
   exist; *Remove missing* only acts under an explicit folder rule whose directory exists, so
   they remain as stale records until you configure rules or remove them.
 - **Temporary files.** Decrypted collections are plaintext copies of your library. They are
-  written to `import-temp` next to the database file (for example
-  `<database folder>/import-temp/animes.sqlite`) and deleted after each collection. The folder is
-  removed on success. After **any failed or interrupted import** (a decrypt, attach, commit or detach
-  error, a crash or a kill) a plain copy can remain, so look in `import-temp` after every failed
-  import. The folder name is generic and may already have existed with **unrelated files**; do not
-  delete the whole folder blindly. Inspect it and remove only files you can confirm were written by
-  the import: `<collection>.sqlite` where the collection is one of the names listed above (for
-  example `animes.sqlite`). Delete the folder itself only when it is then empty. A cancelled import
-  deletes the file it was working on and may leave the empty folder.
+  written to a folder that only Animatic creates, directly in the system temporary folder: its
+  name starts with `animatic-legacy-import-` and it contains a marker file named
+  `.animatic-legacy-import`, created before any decrypted data is written (on Linux the folder
+  is private to your user). Each copy is deleted after its collection, and the whole
+  folder is removed when the import ends, whether it succeeded, failed or was cancelled; if the
+  folder cannot be removed the Log says so. A crash, a kill or a power loss can still leave it
+  behind. At the **next start** Animatic looks for such folders in the temporary folder and, if
+  it finds any that no running import is using, shows **Leftover import files** with their paths.
+  **Remove** deletes only those folders (a folder counts only if its name has the prefix **and** it
+  holds the marker); **Keep for now** leaves them and Animatic asks again at the next start.
+  Nothing else in the temporary folder, and never the AOM databank, is touched. A folder that
+  lacks the marker (for example one left by an older version, which used an `import-temp` folder
+  next to the database) is not offered and has to be inspected and removed by hand.
 - The `import-legacy` example in `animatic-core` (`cargo run -p animatic-core --example
-  import-legacy -- <kowai> <output.sqlite3>`) runs the same import against a database file with
-  `output.with_extension("import-temp")` as the temporary folder (an output named `library.sqlite3`
-  gives `library.import-temp`, next to it, not `library.sqlite3.import-temp`); use it only with a copy of the data outside the
-  repository and delete outputs afterwards ([development](https://github.com/RetroHazard/animatic/blob/main/docs/development.md)).
+  import-legacy -- <kowai> <output.sqlite3>`) runs the same import against a database file with the
+  system temporary folder as the temporary root (the same marked folder, removed the same way);
+  it does not ask before writing into an existing file. Use it only with a copy of the data
+  outside the repository and delete outputs afterwards
+  ([development](https://github.com/RetroHazard/animatic/blob/main/docs/development.md)).
 
 ## Import AOM settings
 

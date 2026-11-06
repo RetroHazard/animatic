@@ -87,7 +87,7 @@ Files you may find next to them:
 | `animatic.sqlite3-wal`, `animatic.sqlite3-shm` | SQLite write-ahead-log companions. They exist while the database is open and may remain after exit |
 | `settings.json.bak` | Copy of the previous valid settings, made on a save |
 | `settings.json.tmp`, `settings.json.bak.tmp` | Transient files during a save |
-| `import-temp/` (in the database's folder) | Decrypted intermediates during an AOM databank import |
+| `animatic-legacy-import-*/` (system temporary folder) | Decrypted intermediates during an AOM databank import; a marker file inside identifies it, and Animatic offers to remove leftovers at the next start |
 
 The backup and temporary names replace the settings file's extension: for
 `ANIMATIC_SETTINGS=/x/custom.cfg` they are `/x/custom.json.bak` and `/x/custom.json.tmp`.
@@ -126,8 +126,8 @@ error. If double-clicking appears to do nothing, run it from a terminal to read 
 
 Permission checklist for the folders involved:
 
-1. The database folder must allow creating and writing files (the database, `-wal`, `-shm`
-   and the `import-temp` folder are created there).
+1. The database folder must allow creating and writing files (the database, `-wal` and `-shm`
+   are created there); the system temporary folder must allow creating the import's work folder.
 2. The settings folder must allow creating `settings.json.tmp`, `settings.json.bak.tmp`,
    `settings.json.bak` and `settings.json`, and renaming over existing files.
 3. Security software with folder protection can block writes to profile folders; allow

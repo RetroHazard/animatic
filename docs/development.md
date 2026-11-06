@@ -164,12 +164,13 @@ private databank that lives **outside** the repository:
 cargo run -p animatic-core --example import-legacy -- /outside/repo/kowai /tmp/animatic-import.sqlite3
 ```
 
-It writes decrypted intermediate files to a sibling directory named after the output
-(`animatic-import.import-temp` here; `output.with_extension("import-temp")` in the example's
-code) and removes it after a successful run. After a failed or interrupted run, plaintext
-copies of private library data can remain there. The example does not require the directory
-to be new, so inspect it, delete only the `<collection>.sqlite` files the importer created, and
-remove the directory once it is empty; delete the output yourself. Only record the
+It writes decrypted intermediate files to a marked `animatic-legacy-import-*` folder in the
+system temporary directory (`legacy::workdir::default_temp_root()`) and removes it when the
+run ends, whether it succeeded or failed. After a crash or a kill, plaintext copies of private
+library data can remain there; the desktop application offers to remove such folders at its
+next start, or delete one yourself only if it has that name prefix **and** contains the
+`.animatic-legacy-import` marker file. The example writes into the output file you name and, unlike the desktop
+import, does not ask when that file already holds data; delete the output yourself. Only record the
 observation ("imported N records from M collections"), never the content, in notes or
 commits.
 
@@ -683,8 +684,9 @@ Runtime data and where it lands:
   [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the settings file holds the AniDB password, API key
   and AVDump key in plain text, and the database holds your viewing history and file paths.
   Statistics and hash exports are user-chosen files that reveal the same kind of information.
-- The legacy import writes decrypted intermediates to an `import-temp` directory beside the
-  database (or `<output>.import-temp` for the example).
+- The legacy import writes decrypted intermediates to a marked `animatic-legacy-import-*` folder
+  in the system temporary directory and removes it when it ends; the desktop application offers
+  to remove marked folders an interrupted import left behind at the next start.
 
 [`.gitignore`](../.gitignore) is a defense, not permission to create private artifacts inside
 the checkout. It excludes `/target/`, `settings.json`, `*.sqlite`, `*.sqlite3`,

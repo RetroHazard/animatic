@@ -464,6 +464,10 @@ pub struct AnimaticApp {
     import_source: String,
     imported_settings: Option<Box<Settings>>,
     import_pending: bool,
+    /// Databank waiting for the user to confirm an import into a database that holds data.
+    import_confirm: Option<PathBuf>,
+    /// Temporary root and the unused marked import folders found there at startup.
+    leftover_imports: Option<(PathBuf, Vec<PathBuf>)>,
     search_year: String,
     search_type: i64,
     search_mylist_only: bool,
@@ -538,6 +542,8 @@ impl AnimaticApp {
             import_source: String::new(),
             imported_settings: None,
             import_pending: false,
+            import_confirm: None,
+            leftover_imports: None,
             search_year: String::new(),
             search_type: 0,
             search_mylist_only: false,
@@ -558,6 +564,10 @@ impl AnimaticApp {
             restart,
         };
         app.request_library_refresh();
+        // Off the UI thread: look for decrypted copies an interrupted import left behind.
+        app.worker.submit(Job::FindLegacyLeftovers {
+            temp_root: animatic_core::legacy::workdir::default_temp_root(),
+        });
         if app.settings_notice.is_some() {
             app.error(
                 "Settings were recovered from a backup copy (offline mode); the original settings \
@@ -836,6 +846,8 @@ impl AnimaticApp {
             Some("Animatic cannot tell where it is installed.")
         } else if !self.worker.is_idle() || self.activity.busy {
             Some("Wait for the running task to finish, or cancel it, first.")
+        } else if self.import_confirm.is_some() {
+            Some("Confirm or cancel the import first.")
         } else if self.import_pending {
             Some("An import is in progress.")
         } else if self.imported_settings.is_some() {
@@ -978,6 +990,12 @@ impl AnimaticApp {
                 Event::Imported { summary } => {
                     self.log(summary);
                     self.request_library_refresh();
+                }
+                Event::LegacyImportNeedsConfirmation { source } => {
+                    self.import_confirm = Some(source);
+                }
+                Event::LegacyLeftovers { temp_root, folders } => {
+                    self.leftover_imports = Some((temp_root, folders));
                 }
                 Event::LegacySettingsImported(settings) => {
                     self.imported_settings = Some(settings);
@@ -1144,7 +1162,7 @@ impl AnimaticApp {
     }
 
     fn import_legacy(&mut self) {
-        if self.import_pending {
+        if self.import_pending || self.import_confirm.is_some() {
             return;
         }
         let picked = PathBuf::from(self.import_source.trim());
@@ -1155,12 +1173,107 @@ impl AnimaticApp {
             ));
             return;
         };
-        let temp = self
-            .db_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("import-temp");
-        self.worker.submit(Job::ImportLegacy { source, temp });
+        self.submit_legacy_import(source, false);
+    }
+
+    /// The worker decides whether the database needs confirmation (it looks at the database,
+    /// which the UI thread must not): an unconfirmed import into a database that holds data
+    /// answers with `Event::LegacyImportNeedsConfirmation` instead of writing.
+    fn submit_legacy_import(&mut self, source: PathBuf, confirmed: bool) {
+        self.worker.submit(Job::ImportLegacy {
+            source,
+            temp_root: animatic_core::legacy::workdir::default_temp_root(),
+            confirmed,
+        });
+    }
+
+    /// Asks before an AOM databank is imported into a database that already holds data.
+    fn legacy_import_confirm_window(&mut self, ctx: &egui::Context) {
+        let Some(source) = self.import_confirm.clone() else {
+            return;
+        };
+        let mut proceed = false;
+        let mut cancelled = false;
+        let mut open = true;
+        egui::Window::new("Import into a database that has data?")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "The database {} already holds library data.",
+                    self.db_path.display()
+                ));
+                ui.label(
+                    "Importing the AOM databank replaces every row that has the same id as a row \
+                     in the databank: anime, episodes, files, MyList entries and the hashed \
+                     local files. Rows with other ids are kept.",
+                );
+                ui.label(
+                    "To keep this database as it is, cancel and start Animatic with \
+                     --database FILE (a new file) to import into an empty database instead.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Continue").clicked() {
+                        proceed = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if proceed {
+            self.import_confirm = None;
+            self.submit_legacy_import(source, true);
+        } else if cancelled || !open {
+            self.import_confirm = None;
+            self.log("Import cancelled; the database was not changed");
+        }
+    }
+
+    /// Offers to remove decrypted temporary copies that an interrupted import left behind.
+    fn leftover_import_window(&mut self, ctx: &egui::Context) {
+        let Some((temp_root, folders)) = self.leftover_imports.as_ref() else {
+            return;
+        };
+        let mut remove = false;
+        let mut keep = false;
+        egui::Window::new("Leftover import files")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    "An earlier import of an AOM databank did not finish cleanly. It left \
+                     decrypted copies of the databank in these temporary folders:",
+                );
+                for folder in folders {
+                    ui.monospace(folder.display().to_string());
+                }
+                ui.label(
+                    "Removing them deletes only these Animatic import folders; nothing else in \
+                     the temporary folder and not your AOM databank. If you keep them, \
+                     Animatic asks again at the next start.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Remove").clicked() {
+                        remove = true;
+                    }
+                    if ui.button("Keep for now").clicked() {
+                        keep = true;
+                    }
+                });
+            });
+        if remove {
+            let (temp_root, folders) = (temp_root.clone(), folders.clone());
+            self.leftover_imports = None;
+            self.worker
+                .submit(Job::RemoveLegacyLeftovers { temp_root, folders });
+        } else if keep {
+            self.leftover_imports = None;
+        }
     }
 
     /// Plan the rename of local file `id` with `pattern` without touching the file system.
@@ -3084,6 +3197,8 @@ impl eframe::App for AnimaticApp {
         self.settings_window(&ctx);
         self.update_window(&ctx);
         self.settings_notice_window(&ctx);
+        self.legacy_import_confirm_window(&ctx);
+        self.leftover_import_window(&ctx);
         self.rename_window(&ctx);
         if self.about_open {
             let mut open = true;

@@ -11,7 +11,8 @@ and tables, and the menus. The individual pages are described in [Library pages]
   are drawn, so very large libraries stay responsive.
 - **Status bar** (bottom): current activity or last message, connection state and warnings.
 - **Floating windows**: [Anime detail](Library-Pages.md#anime-detail-window), [Options](Options-Window.md),
-  "Confirm rename", "Review imported AOM settings", "Settings recovered", the
+  "Confirm rename", "Review imported AOM settings", "Import into a database that has data?",
+  "Leftover import files", "Settings recovered", the
   [Software updates](Updating-Animatic.md) window and "About Animatic" (the build's version from
   `Cargo.toml`, an AniDB link and the license buttons).
 
@@ -103,7 +104,7 @@ Semantics (from `app.rs` and `library.rs`):
 | Menu | Item | Behavior |
 |---|---|---|
 | File | Add files… | Picker; hashes the chosen files. Disabled during a settings review. Remembers the last folder. When *Restrict file extensions* is on the picker filter is "Configured media files". |
-| File | Import AOM databank… | Folder picker → [databank import](Migrating-from-AOM.md#migrate-an-aom-databank). Disabled during a settings review. |
+| File | Import AOM databank… | Folder picker → [databank import](Migrating-from-AOM.md#migrate-an-aom-databank); a database that already holds data first shows **Import into a database that has data?** (Continue / Cancel). Disabled during a settings review. |
 | File | Import AOM settings… | File picker (`.xml`) → [settings import](Migrating-from-AOM.md#import-aom-settings). |
 | File | Export statistics… | Save dialog (default `animatic-stats.xml`/`.ini`) → [statistics export](Exports.md#statistics-export). |
 | File | Export hashes… | Save dialog (default `animatic-hashes.txt`) → [hash export](Exports.md#hash-export). |
