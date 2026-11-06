@@ -27,7 +27,7 @@ consumers named in each table.
 | **Active** | The value is read at runtime and changes behavior. |
 | **Active, JSON only** | Read at runtime, but Options has no control; edit the file (with Animatic closed) or import it. |
 | **Partly active** | Read, but only by some paths; the effect column says which. |
-| **Inert control** | Options shows a control, the value is saved, but nothing reads it. Changing it does nothing. |
+| **Inert control** | Options shows the control disabled with a "Not active yet" hover text; the value is kept and saved, but nothing reads it. |
 | **Stored only** | Saved and loaded, no Options control, no consumer. |
 | **Import only** | Stored only, and additionally filled in by the AOM settings importer. |
 | **Core only** | The core library supports it, but no desktop action calls that code. |
@@ -71,7 +71,7 @@ moment, so edits apply from the next run. (Update checks contact GitHub, not Ani
 | `udp_server` | string | `api.anidb.net:9000` | none | **Active, JSON only.** `host:port` of the UDP API. |
 | `local_port` | integer (u16) | `29456` | none | **Active, JSON only.** Local UDP port to bind (all interfaces); if binding fails the client falls back to an OS-chosen port. Also passed to AVDump as `{port}`. `0` means OS-chosen. |
 | `image_server` | string | `cdn.anidb.net` | none | **Import only.** The HTTP client has an image-download method, but nothing calls it; no image feature exists in the UI. |
-| `update_file_information` | boolean | `false` | "Update known file information" | **Inert control.** Saved, never read. (Import fills it from AOM.) |
+| `update_file_information` | boolean | `false` | "Update known file information" | **Inert control.** Shown disabled ("Not active yet": planned re-query of an already identified file when hashed again); the stored value is kept and never read. (Import fills it from AOM.) |
 | `offline` | boolean | `false` | "Work offline (keep commands queued)" | **Active.** When true, Run command queue / Synchronize now send nothing and report "Offline mode is enabled; commands remain queued". Commands are still queued locally. The status bar shows "Offline" or "Ready for AniDB". Forced to `true` by backup recovery and by applying imported AOM settings. It also suppresses the automatic startup [update check](#updates); an explicit **Help → Check for updates…** is still allowed. |
 | `idle_logout_minutes` | integer (u32) | `10` | none | **Stored only.** Not read. Each queue run ends with a logout regardless of this value. |
 
@@ -85,7 +85,7 @@ Object `hashing`.
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `autostart` | boolean | `true` | "Start hashing automatically" | **Inert control.** Saved, never read; hashing starts when you add files or run a scan. (AOM import sets it from `autostartHashing`, default `false` when absent.) |
+| `autostart` | boolean | `true` | "Start hashing automatically" | **Inert control.** Shown disabled ("Not active yet": planned resume of a persistent hash queue on start); the stored value is kept and never read; hashing starts when you add files or run a scan. (AOM import sets it from `autostartHashing`, default `false` when absent.) |
 | `priority` | integer 0-6 (u8) | `1` | none | **Import only.** Legacy thread-priority index (0 idle to 6 time critical). No code applies it to hashing threads; the importer clamps it to 6. |
 | `use_extensions` | boolean | `false` | "Restrict file extensions" | **Partly active.** Only applies a file-type filter to the **Add files…** picker. It does not filter files given on the command line, and it does not switch scanning on or off (scans always use `extensions`; see below). |
 | `extensions` | array of strings | the 52 legacy AOM extensions (`7z`, `aac`, `ac3` … `zip`) | multi-line box, comma separated | **Active.** Scan allow-list, see below. Add files picker filter when `use_extensions` is true. |
@@ -123,7 +123,7 @@ desktop application.
 | `theme` | `"Dark"`, `"Light"` or `"System"` | `"Dark"` | Theme combo | **Partly active.** `Dark`/`Light` set egui visuals; `System` changes nothing (it leaves whatever visuals are current). Applied only by **Save options** or **Apply imported settings**. At startup the window always starts with dark visuals (`main.rs`); the saved value is not applied until one of those actions runs in the session. Values are case-sensitive. |
 | `zoom` | number (f32) | `1.0` | "UI scale" slider 0.75-2.0 | **Partly active.** Applied (clamped to 0.75-2.0) at the same moments as `theme`, not at startup. Load-time fixup resets values `<= 0.3` to `1.0`; other out-of-range values are kept in the file and clamped when applied. |
 | `last_directory` | string | `""` | none | **Active.** Start folder for the Add files picker and the AOM settings XML picker; updated to the folder of the files you last added. |
-| `colored_rows` | boolean | `true` | "Use status colors" | **Inert control.** Saved, never read; no table is tinted from it. |
+| `colored_rows` | boolean | `true` | "Use status colors" | **Inert control.** Shown disabled ("Not active yet": planned status tinting of table rows); the stored value is kept and never read. |
 | `copy_length_as_minutes` | boolean | `false` | "Export %length% in minutes" | **Active but nearly empty.** Read by hash export, but `%length%` has no real data behind it; see [token table](#hash-export-template-tokens). |
 
 ### Window and layout state (all stored only)
@@ -194,7 +194,7 @@ Each element of `managers` may omit any key; an omitted key takes the value in t
 | `auto_hash` | boolean | `false` | "Auto hash" | **Active, manual scan only.** A scan hashes files that are not yet in the database. The scan itself writes no MyList data, but each hashed file raises the same post-hash event as Add files, so with `identify_after_hashing` and the matching rule's `mylist_auto_add` it queues an `Identify` that adds the file to MyList on AniDB when the queue next runs online. |
 | `auto_rehash` | boolean | `false` | "Rehash changed" | **Active, manual scan only.** A scan rehashes known files whose modification time (whole seconds) differs from the stored value. |
 | `auto_remove` | boolean | `false` | "Remove missing" | **Active, manual scan only.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path by an explicit path match (no fallback rule) and the rule's folder is a reachable directory. Never deletes media files. The removal itself writes only those local tables. |
-| `auto_rename` | boolean | `false` | "Auto rename" | **Inert control.** Nothing renames automatically; renaming is always a preview-and-confirm action. |
+| `auto_rename` | boolean | `false` | "Auto rename" | **Inert control.** Shown disabled ("Not active yet": planned opt-in automatic rename of identified files in the folder); the value is kept and never read. Renaming is always a preview-and-confirm action. |
 | `base_path` | string | `""` | "Rename destination" | **Active.** Folder used as the rename target base and exposed to rename patterns as `BASEPATH`; empty keeps the file's current folder. See [Rename language](Rename-Language.md). |
 | `exclude_hidden` | boolean | `true` | none | **Active.** Scans skip entries (files and folders) whose name starts with `.`. The OS "hidden" attribute is not consulted. |
 | `exclude_system` | boolean | `true` | none | **Stored only.** Not read. |
@@ -280,7 +280,7 @@ entries can only come from the JSON file or an AOM import. Each object accepts a
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `name` | string | `""` | Name | **Inert control.** Saved, never read: Play picks the player without looking at the name, and no other screen displays it. |
+| `name` | string | `""` | Name | **Inert control.** Shown disabled ("Not active yet": planned player chooser); the stored value is kept and never read: Play picks the player without looking at the name. |
 | `path` | string | `""` | Executable | **Active.** Program started by Hashed files → Play. Empty is rejected with "player executable is not configured". |
 | `play` | string | `""` | Play arguments | **Active.** Argument template for Play. |
 | `open` | string | `""` | none | **Core only.** Used by `launch_player` for the Open action, but the Open button uses the operating system's default handler (`open::that`), not this template. |

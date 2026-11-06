@@ -15,16 +15,16 @@ is always dark at normal scale (`Theme: System` never changes the look).
 |---|---|---|
 | AniDB account | Username, Password (masked), API key (shown in clear), Client name | Used by sync and AVDump |
 | | Work offline | Active |
-| | Update known file information | **Stored only** |
+| | Update known file information | Shown disabled ("Not active yet"); value kept |
 | Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Dark/Light and scale apply on Save; System does nothing |
-| | Use status colors | **Stored only** (no row coloring exists) |
-| Hashing | Start hashing automatically | **Stored only** |
+| | Use status colors | Shown disabled ("Not active yet"); value kept, no row coloring exists |
+| Hashing | Start hashing automatically | Shown disabled ("Not active yet"); value kept |
 | | Identify files with AniDB after hashing | Active |
 | | Restrict file extensions + list | The picker filter; the list also always drives [scans](Managed-Folders-and-Scans.md) |
 | | Hash export template, Export %length% in minutes | Active for [hash export](Exports.md#hash-export) |
-| Managed folders | Per-rule fields, Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Auto rename* **stored only** |
+| Managed folders | Per-rule fields, Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Auto rename* is shown disabled ("Not active yet") |
 | Statistics export | Enable, Format, Output file | Active |
-| External player | Executable, Play arguments, Default (*Name* is a label that is never read) | Active; open/enqueue have no UI |
+| External player | Executable, Play arguments, Default (*Name* is shown disabled, "Not active yet") | Active; open/enqueue have no UI |
 | AVDump | Enable, Executable, Arguments, API key | Active |
 | Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |

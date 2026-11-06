@@ -65,15 +65,15 @@ Available to code that links the crates, covered by tests where noted in the sou
 
 ## Settings persisted without runtime effect
 
-Nothing reads these fields; some have an Options checkbox that changes only the stored value.
+Nothing reads these fields. Five have an Options control, shown disabled with a "Not active yet" hover text; the stored value is kept.
 A saved setting is not proof of behavior. The [settings reference](Settings-Reference.md) has
 the complete per-field table.
 
-- AniDB: `image_server`, `update_file_information` (checkbox), `idle_logout_minutes`.
-- Hashing: `autostart` (checkbox), `priority`, `integrate_into_shell`, `ed2k_space_replacement`.
-- File managers: `action_delay_ms`, `sleep_time_ms`; per folder `auto_rename` (checkbox),
+- AniDB: `image_server`, `update_file_information` (disabled checkbox), `idle_logout_minutes`.
+- Hashing: `autostart` (disabled checkbox), `priority`, `integrate_into_shell`, `ed2k_space_replacement`.
+- File managers: `action_delay_ms`, `sleep_time_ms`; per folder `auto_rename` (disabled checkbox),
   `clear_empty_folders`, `exclude_system`.
-- UI: `colored_rows` ("Use status colors" checkbox) and `colors`, `columns`, `window`,
+- UI: `colored_rows` ("Use status colors", disabled checkbox) and `colors`, `columns`, `window`,
   `maximized`, tree expand/collapse, local folder size, root folder hiding, tray options.
   `Theme::System` applies no visuals of its own.
 
