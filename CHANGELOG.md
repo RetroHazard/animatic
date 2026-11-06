@@ -159,6 +159,13 @@ the generated line for that pull request's squash commit.
   overwritten. Switching to On first shows a read-only preview and needs confirmation. Blocked
   plans and collisions are skipped and logged once per file. An existing or AOM-imported
   `auto_rename: true` loads as Dry run, never On.
+- **Run the command queue automatically** (Options → AniDB account, off by default): the queue
+  runs 30 seconds after new commands and every 15 minutes for anything still waiting, never while
+  offline, cooling down, unconfigured, busy or during an import or restore review. MyList removals
+  are never sent automatically. While it is on, one AniDB login is kept between runs, logged out
+  after `idle_logout_minutes` (1 to 30), kept alive at most every 30 minutes while commands wait,
+  kept behind a router with `PING nat=1` only when AniDB reports a different port, and logged out
+  on exit, all within AniDB's request spacing.
 
 ### Changed
 

@@ -84,8 +84,8 @@ flowchart LR
 | M5.2 | Settle delay for files being written | Done |
 | M5.3 | `exclude_system` and `clear_empty_folders` | Done |
 | M5.4 | Persistent hash queue and autostart | Done |
-| M5.5 | Opt-in automatic queue run | Planned |
-| M5.6 | Long-lived session: keep-alive and idle logout | Planned |
+| M5.5 | Opt-in automatic queue run | Done |
+| M5.6 | Long-lived session: keep-alive and idle logout | Done |
 | M6.1 | Rename apply on the worker, cross-volume moves | Done |
 | M6.2 | Batch rename | Done |
 | M6.3 | Opt-in automatic rename per managed folder | Done |
