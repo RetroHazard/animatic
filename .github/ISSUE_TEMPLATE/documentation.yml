@@ -6,7 +6,7 @@ body:
     id: page
     attributes:
       label: Page and section
-      placeholder: docs/user-guide.md#mylist-editing
+      placeholder: https://github.com/RetroHazard/animatic/wiki/AniDB-Synchronization#mylist-editing
     validations:
       required: true
   - type: textarea

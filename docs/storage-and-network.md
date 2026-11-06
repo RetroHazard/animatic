@@ -18,7 +18,7 @@ AniDB with unregistered client credentials.
 
 ### Files, connections and pragmas
 
-- One SQLite file (default `animatic.sqlite3`, see [Getting started](https://github.com/RetroHazard/animatic/wiki/Installation)) plus
+- One SQLite file (default `animatic.sqlite3`, see [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)) plus
   the WAL side files `<name>-wal` and `<name>-shm` while it is open. Copy or back up the main
   file only with the application closed, or copy all three together; recent commits can still be
   in the WAL.
@@ -434,7 +434,7 @@ Implementation: [`update.rs`](../crates/animatic-core/src/update.rs) in `animati
 separate transport from AniDB: it has its own `UpdateClient`, its own `UpdateError`/`Result`, no
 AniDB flood spacing, no AniDB session and no cooldown. A failed update request never touches the
 command queue, `meta` cooldown keys or the AniDB clients, and an AniDB ban never blocks an update
-check. Product flow: [User guide](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic); settings:
+check. Product flow: [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic); settings:
 [`updates.auto_check`](https://github.com/RetroHazard/animatic/wiki/Settings-Reference#updates).
 
 **Endpoints and identity.** Only the repository `RetroHazard/animatic`, only HTTPS, only to

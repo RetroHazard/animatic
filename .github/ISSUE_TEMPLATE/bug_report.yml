@@ -7,9 +7,9 @@ body:
       value: |
         Issues are public. Settings files hold your AniDB password and API keys in plain text, and the
         database, exports and Log page contain file paths, hashes and AniDB identifiers. Follow
-        [Privacy-safe support and bug reports](https://github.com/RetroHazard/animatic/blob/main/docs/troubleshooting.md#privacy-safe-support-and-bug-reports)
-        before pasting anything, and check the [Troubleshooting](https://github.com/RetroHazard/animatic/blob/main/docs/troubleshooting.md)
-        guide and [feature-parity matrix](https://github.com/RetroHazard/animatic/blob/main/docs/feature-parity.md)
+        [Reporting problems](https://github.com/RetroHazard/animatic/wiki/Reporting-Problems)
+        before pasting anything, and check the [Troubleshooting](https://github.com/RetroHazard/animatic/wiki/Troubleshooting)
+        guide and [feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity)
         first: some AOM features are intentionally not implemented.
   - type: checkboxes
     id: privacy

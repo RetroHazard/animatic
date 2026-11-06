@@ -3,7 +3,7 @@
 Animatic is a native desktop application built from three Rust crates. This page explains the
 dependency graph, the threads, the data flows and the guarantees the code actually provides.
 Table-level and protocol-level detail lives in [Storage and network contracts](storage-and-network.md);
-user-visible behavior is in the [user guide](https://github.com/RetroHazard/animatic/wiki); desktop reachability of each
+user-visible behavior is in the [wiki](https://github.com/RetroHazard/animatic/wiki); desktop reachability of each
 capability is in [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
 
 ## Crate graph
@@ -390,10 +390,11 @@ then builds, lints and tests the workspace with `--locked` on
 `ubuntu-22.04` and `windows-latest`. `scripts/release.py` (Python 3.11+, standard library only)
 keeps the workspace version, the internal dependency pins, `Cargo.lock`'s local crate entries
 and `CHANGELOG.md` consistent, extracts release notes, builds the Windows ZIP and Linux tar.gz
-archives from an explicit binary plus the licence, a generated `THIRD-PARTY-NOTICES.html` (`cargo-about`), README, changelog and `docs/*.md`, and writes
+archives from an explicit binary plus the licence, a generated `THIRD-PARTY-NOTICES.html` (`cargo-about`), README, changelog and the `wiki/` user guide (as `docs/*.md`), and writes
 `SHA256SUMS`. `release-prepare.yml`, `auto-release.yml` and `release.yml` orchestrate it:
 preparation opens a reviewed, `release`-labelled pull request, and merging it makes Release tag
-the merge commit `vVERSION` and publish the GitHub Release.
+the merge commit `vVERSION` and publish the GitHub Release. `wiki.yml` mirrors `wiki/` to the
+GitHub wiki whenever a `main` push changes it, using `scripts/ci.py wiki`.
 Archives carry no database, settings, media or credentials. Contracts, permissions and
 procedure: [Releases](releases.md). The in-app updater consumes the published form of this output
 (archive names, folder layout and `SHA256SUMS` format are an API: change them together with
@@ -443,7 +444,8 @@ a real databank are private artifacts and must never be used as fixtures.
 
 ## Source anchors
 
-Line numbers are for this tree and may drift; search for the function name.
+Where each workflow described in the [wiki](https://github.com/RetroHazard/animatic/wiki) is
+implemented. Line numbers are for this tree and may drift; search for the function name.
 
 | Topic | Anchor |
 |---|---|

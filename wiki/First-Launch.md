@@ -10,7 +10,7 @@ check, see [status](Installation.md#status-and-limits)):
    a missing primary and missing backup mean defaults; a valid primary loads; an
    invalid or missing primary with a valid `.bak` loads the backup **offline** and shows a
    "Settings recovered" window; unreadable settings or two unusable files abort startup.
-   Details: [recovery](Troubleshooting.md).
+   Details: [Settings problems](Backups-and-Recovery.md#settings-problems).
 2. **Status bar** shows "Loading library…" and then "Ready". The left panel lists nine
    pages; **Overview** is shown.
 3. **Overview first-run card** ("Bring your AniDB O'Matic library forward") appears

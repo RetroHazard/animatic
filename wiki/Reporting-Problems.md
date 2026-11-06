@@ -50,6 +50,6 @@ Status bar: "3 blocked". Retry failed + Synchronize now repeats the same error.
 The repository's bug report form asks for these fields and requires you to confirm that the
 report is sanitized. Issues are public.
 
-This guide defines no security-reporting process, and the repository contains none. If you
+This page defines no security-reporting process, and the repository contains none. If you
 believe you found a vulnerability, share sanitized details through your normal channel with the
 maintainers, and do not publish credentials or private library data anywhere public.

@@ -1,0 +1,58 @@
+name: Publish wiki
+
+# The user guide lives in wiki/ and is reviewed in pull requests like code (CI's quality job
+# validates its links). A main push that changes the pages, the exporter or this workflow
+# mirrors wiki/ to the GitHub wiki, replacing edits made in the wiki editor. Nothing is built.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+      - 'scripts/ci.py'
+      - '.github/workflows/wiki.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write  # the wiki repository accepts pushes from the workflow token with this
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Mirror wiki/ to the GitHub wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          wiki="$RUNNER_TEMP/wiki"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" clone --quiet --depth 1 \
+            "https://github.com/$REPO.wiki.git" "$wiki"
+          find "$wiki" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          python scripts/ci.py wiki --out "$wiki"
+          git -C "$wiki" add -A
+          if git -C "$wiki" diff --cached --quiet; then
+            echo "The wiki already matches $SHA"
+            exit 0
+          fi
+          git -C "$wiki" diff --cached --stat
+          git -C "$wiki" -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit --quiet -m "Publish wiki from $REPO@$SHA"
+          git -C "$wiki" -c http.extraheader="AUTHORIZATION: basic $auth" push --quiet origin HEAD

@@ -35,15 +35,16 @@ Each GitHub Release lists three assets (if the project has published one):
 
 | Asset | Content | Platform |
 |---|---|---|
-| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the `docs/*.md` guides | Windows |
+| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and this user guide as `docs/*.md` | Windows |
 | `animatic-vVERSION-linux-x86_64.tar.gz` | `animatic` (executable) plus the same license and documentation files | Linux |
 | `SHA256SUMS` | SHA-256 of both archives | both |
 
 Download the archive for your platform and `SHA256SUMS`, verify the checksum, then unpack. The
 commands for PowerShell and for Linux `sha256sum` are in
 [Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md#install-a-release). Each archive has a single root folder named after
-the archive; the Linux binary keeps its executable bit. The archives are **unsigned** and the
-bundled documentation works offline, but the Rust API documentation is not included.
+the archive; the Linux binary keeps its executable bit. The archives are **unsigned**. Links
+between the bundled guide pages work offline; links to developer documentation and source files
+point to GitHub, and the Rust API documentation is not included.
 
 Once running, an installed release can replace its own executable with a newer published
 release through **Help → Check for updates…** (Windows and Linux x86_64, writable folder

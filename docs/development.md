@@ -77,11 +77,12 @@ Cargo.toml                    workspace, shared package metadata, build profiles
 crates/animatic-anidb/        AniDB UDP and HTTP transports, typed commands and errors
 crates/animatic-core/         storage, schema, queue, hashing, import, rename, settings, ...
 crates/animatic/              native egui/eframe app, worker thread, CLI entry point
-docs/                         this documentation set
-.github/workflows/            CI, release preparation and release workflows
+docs/                         developer documentation (this set)
+wiki/                         user guide, published to the GitHub wiki and shipped in release archives
+.github/workflows/            CI, release preparation, release and wiki publishing workflows
 .github/ISSUE_TEMPLATE/       issue forms (bug, feature, accessibility, documentation)
 .github/pull_request_template.md  pull request summary, verification and checklist
-scripts/                      release tooling (release.py) and its tests
+scripts/                      release tooling (release.py), CI tooling (ci.py) and their tests
 ```
 
 Dependency direction: `animatic` depends on both libraries; `animatic-core` depends on
@@ -148,7 +149,8 @@ command-line option for the settings file. Portable overrides do not need the de
 directory to exist, and `--help` prints one line and creates no files. Every launch in the
 same environment uses the same overrides, so unset the variables when you want the default
 locations again. The full option list and default per-user paths are in
-[Getting started](https://github.com/RetroHazard/animatic/wiki/Installation).
+[Running Animatic](https://github.com/RetroHazard/animatic/wiki/Running-Animatic) and
+[Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations).
 
 Delete the temporary files (including the `-wal` and `-shm` companions of the database)
 when you are finished.
@@ -182,7 +184,7 @@ Which checks a change needs (from [`AGENTS.md`](../AGENTS.md)):
 | Migration | Synthetic unit fixtures; when a private databank is available, an out-of-tree smoke import and a SQLite integrity check |
 | Cross-platform code | Keep the `Required checks` result green for both `windows-latest` and `ubuntu-22.04`; isolate platform behavior behind an abstraction |
 | Rename language | Behavior tests in `rename/tests.rs` and a note in [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language) for any deliberate difference |
-| Documentation only | Re-read the cited source; run `python scripts/ci.py docs` (Markdown links, anchors, fences, tables) and the format and link review below |
+| Documentation only | Re-read the cited source; run `python scripts/ci.py docs` (Markdown links, anchors, fences, tables, repository and wiki URLs, wiki page names) and the format and link review below |
 
 Before handing work off, run the Rust checks below in this order (the full CI set, including
 the Python and documentation checks, is under [Reproducing CI locally](#reproducing-ci-locally))
@@ -455,6 +457,22 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   restore an older partial cache or none and compile more. The workflow only reads repository
   contents.
 
+### Wiki publishing
+
+[`.github/workflows/wiki.yml`](../.github/workflows/wiki.yml) mirrors `wiki/` to the
+[GitHub wiki](https://github.com/RetroHazard/animatic/wiki). It runs on a `main` push that
+changes `wiki/**`, `scripts/ci.py` or the workflow itself, and on a manual run; it builds
+nothing. It clones the wiki repository with the workflow token (`contents: write`), replaces
+every page with the output of `python scripts/ci.py wiki --out DIR` (relative `Page.md` links
+become the wiki's `Page` links, everything else is copied byte for byte), and pushes one commit
+only when a page changed. The pull request that changed the pages was already validated by
+`ci.py docs` in the `quality` job.
+
+Pages edited in the wiki's web editor are overwritten by the next publish. Restrict wiki
+editing to collaborators in the repository settings and make every change through a pull
+request. The wiki repository itself must exist before the first publish: GitHub creates it only
+when the first page is saved in the web interface.
+
 ### Third-party license gate
 
 The `notices` job installs `cargo-about` with the `cli` feature and generates
@@ -609,7 +627,7 @@ instructions are in [Releases](releases.md). In short:
   workflows do not claim any GitHub environment or branch-protection setting is configured; see
   [the required settings](releases.md#repository-settings-the-maintainer-must-provide).
 
-Change release tooling together with [Releases](releases.md), [Getting started](https://github.com/RetroHazard/animatic/wiki/Installation),
+Change release tooling together with [Releases](releases.md), [Installation](https://github.com/RetroHazard/animatic/wiki/Installation),
 the README and [`AGENTS.md`](../AGENTS.md). Keep commit subjects free of private text: they become
 changelog entries.
 
@@ -623,13 +641,13 @@ This table maps a change to the places you will touch and the documentation to u
 |---|---|---|
 | New or changed setting | `Settings` types in [`settings.rs`](../crates/animatic-core/src/settings.rs) (keep `#[serde(default)]` so old files load), `Default`, the Options window in `app.rs`, and the consumer. Add the legacy-import mapping only if AOM had the setting | [Settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) must say whether the field is consumed or stored only |
 | New table, column or index | [`db/schema.sql`](../crates/animatic-core/src/db/schema.sql) (idempotent) or a migration in [`db/mod.rs`](../crates/animatic-core/src/db/mod.rs); store writes and library read models | [Storage and network contracts](storage-and-network.md), [Architecture](architecture.md) |
-| New AniDB command | Request/reply in `animatic-anidb` `commands.rs`; a serializable `Command` with a priority and `describe()` in [`sync.rs`](../crates/animatic-core/src/sync.rs); execution and reply application in `core::sync::execute`; error classification in `error.rs` and `CommandError`. The retry, block and cooldown **policy** lives in the desktop worker (`fail_command` and `process_queue` in `worker.rs`), while core supplies the durable primitives (`queue_block`, `queue_deferred`, `set_sync_cooldown` and so on) | [Storage and network contracts](storage-and-network.md); [User guide](https://github.com/RetroHazard/animatic/wiki) if reachable from the UI |
+| New AniDB command | Request/reply in `animatic-anidb` `commands.rs`; a serializable `Command` with a priority and `describe()` in [`sync.rs`](../crates/animatic-core/src/sync.rs); execution and reply application in `core::sync::execute`; error classification in `error.rs` and `CommandError`. The retry, block and cooldown **policy** lives in the desktop worker (`fail_command` and `process_queue` in `worker.rs`), while core supplies the durable primitives (`queue_block`, `queue_deferred`, `set_sync_cooldown` and so on) | [Storage and network contracts](storage-and-network.md); [AniDB synchronization](https://github.com/RetroHazard/animatic/wiki/AniDB-Synchronization) if reachable from the UI |
 | New background job | `Job` and `Event` in [`worker.rs`](../crates/animatic/src/worker.rs); define progress, cancellation and failure; keep blocking work off the UI thread. An operation that must not share the normal worker's `cancel` flag or queue (the updater) gets its own thread, cancel flag and typed events | [Architecture](architecture.md) |
-| New page, menu item or dialog | `app.rs`; consume only projections and events | [User guide](https://github.com/RetroHazard/animatic/wiki) |
-| Updater, archive layout or release asset names | [`update.rs`](../crates/animatic-core/src/update.rs), `scripts/release.py` and `release.yml` together | [Releases](releases.md#in-app-updates), [Storage and network](storage-and-network.md#github-update-transport), [User guide](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic) |
+| New page, menu item or dialog | `app.rs`; consume only projections and events | The matching [wiki page](https://github.com/RetroHazard/animatic/wiki) ([Main window](https://github.com/RetroHazard/animatic/wiki/Main-Window), [Library pages](https://github.com/RetroHazard/animatic/wiki/Library-Pages) or the task page) |
+| Updater, archive layout or release asset names | [`update.rs`](../crates/animatic-core/src/update.rs), `scripts/release.py` and `release.yml` together | [Releases](releases.md#in-app-updates), [Storage and network](storage-and-network.md#github-update-transport), [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic) |
 | Rename function, object or property | `rename/` (`parser`, `eval`, `objects`, `plan`); tests in `rename/tests.rs` | [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language); record deliberate differences from AOM |
 | Public API of a library crate | Rust doc comments on the item | The generated `cargo doc` output is the API reference |
-| Version, changelog, packaging, CI or workflow | [`scripts/release.py`](../scripts/release.py), [`scripts/ci.py`](../scripts/ci.py), their tests and `.github/workflows/` | [Releases](releases.md) and the README, Getting started and `AGENTS.md` claims about distribution or CI |
+| Version, changelog, packaging, CI or workflow | [`scripts/release.py`](../scripts/release.py), [`scripts/ci.py`](../scripts/ci.py), their tests and `.github/workflows/` | [Releases](releases.md) and the README, wiki ([Installation](https://github.com/RetroHazard/animatic/wiki/Installation), [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic)) and `AGENTS.md` claims about distribution or CI |
 
 Before changing an exported symbol, find its references (for example with rust-analyzer's
 "find all references") and migrate every caller; this project does not keep compatibility
@@ -662,7 +680,7 @@ replace those constants with material copied from an installation.
 Runtime data and where it lands:
 
 - The default settings and database live in per-user directories outside the checkout (see
-  [Getting started](https://github.com/RetroHazard/animatic/wiki/Installation)); the settings file holds the AniDB password, API key
+  [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the settings file holds the AniDB password, API key
   and AVDump key in plain text, and the database holds your viewing history and file paths.
   Statistics and hash exports are user-chosen files that reveal the same kind of information.
 - The legacy import writes decrypted intermediates to an `import-temp` directory beside the
@@ -694,23 +712,35 @@ credential in it as exposed.
 
 - Update [`README.md`](../README.md), [`AGENTS.md`](../AGENTS.md) and
   [Architecture](architecture.md) whenever commands, boundaries, modules or user-visible
-  workflows change. Update the matching page of this set (the table above) for settings,
-  storage, rename, troubleshooting and parity changes.
+  workflows change. Update the matching wiki page for user-visible behavior, settings, rename,
+  troubleshooting and parity changes, and the matching page of this set for storage, network,
+  CI and release changes.
+- User documentation lives in `wiki/`, developer documentation in `docs/`. Wiki pages are
+  published to the GitHub wiki and shipped in release archives without the rest of the
+  repository, so a wiki page links other wiki pages by relative file name
+  (`[Hash export](Exports.md#hash-export)`) and everything else in the repository by an
+  absolute `https://github.com/RetroHazard/animatic/blob/main/PATH` (or `tree/main/`) URL.
+  Pages outside `wiki/` link wiki pages as `https://github.com/RetroHazard/animatic/wiki/Page#anchor`.
+  `python scripts/ci.py docs` checks all of these against the checkout.
+- A wiki page's file name is its title (hyphens show as spaces): letters, digits, `.`, `-` and
+  `_`, starting with a letter or digit, no subfolders. Pages start without a top-level `#`
+  heading. A new page also needs entries in [`wiki/_Sidebar.md`](../wiki/_Sidebar.md) and
+  [`wiki/Home.md`](../wiki/Home.md).
 - Document the implemented desktop behavior first, label core-only capabilities and stored
   but unused settings explicitly, and never turn a research note into a feature claim.
 - Ground every claim in the source or in an observation you made, and say which. Mark an
   inference as an inference. Do not document behavior you have not read in the code.
-- Keep one home for each topic: user tasks in the [User guide](https://github.com/RetroHazard/animatic/wiki),
-  configuration in the [Settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference), invariants in
+- Keep one home for each topic: user tasks in the task pages of the
+  [wiki](https://github.com/RetroHazard/animatic/wiki), configuration in the
+  [Settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference), invariants in
   [Architecture](architecture.md) and [Storage and network contracts](storage-and-network.md),
   recovery and support in [Troubleshooting](https://github.com/RetroHazard/animatic/wiki/Troubleshooting). Link instead of copying
   procedures.
-- Use relative links with exact file names, synthetic examples only, and no real credentials,
-  paths or library data.
+- Use exact file names, synthetic examples only, and no real credentials, paths or library
+  data.
 - Do not state new verification results unless you ran them. Historical counts stay
   historical.
-- Review changed pages by re-reading the cited source and checking that every relative link
-  resolves.
+- Review changed pages by re-reading the cited source and checking that every link resolves.
 
 ## Contribution checklist
 

@@ -126,5 +126,3 @@ Verified absent from the application (some exist in `animatic-core` or are store
 - Encrypted storage of credentials; Linux runtime and production AniDB verification.
 - Unattended or scheduled updates, update channels (prereleases), release signatures, rollback,
   package or installer integration; an update replaces only the executable and versioned license files.
-
-Equivalents of the original AOM workflows are tracked in [feature parity](Feature-Parity.md).

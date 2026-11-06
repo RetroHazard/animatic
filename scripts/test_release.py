@@ -144,8 +144,10 @@ Synthetic fixture changelog.
 """
 
 DOCS = {
-    "docs/README.md": "# Docs index\n",
-    "docs/guide.md": "# Guide\n\nSee [the index](README.md).\n",
+    "wiki/Home.md": "Guide index\n",
+    "wiki/Guide.md": "See [the index](Home.md).\n",
+    "wiki/_Sidebar.md": "- [Guide](Guide.md)\n",  # wiki chrome: never shipped
+    "docs/architecture.md": "# Developer notes\n",  # developer docs: never shipped
 }
 
 
@@ -678,7 +680,7 @@ class PackageTests(GitCase):
             "--notices", str(kw.get("notices", self.notices)), "--output", str(kw.get("output", self.out)),
         )
 
-    EXPECTED_DOCS = {"docs/README.md", "docs/guide.md"}
+    EXPECTED_DOCS = {"docs/Home.md", "docs/Guide.md"}
 
     def test_windows_zip_layout(self) -> None:
         code, _, err = self.package("windows")
@@ -695,7 +697,7 @@ class PackageTests(GitCase):
             self.assertEqual(len(names), len(set(names)))
             self.assertEqual(zf.read(f"{stem}/animatic.exe"), self.binary.read_bytes())
             self.assertEqual(zf.read(f"{stem}/THIRD-PARTY-NOTICES.html"), self.notices.read_bytes())
-            self.assertEqual(zf.read(f"{stem}/docs/guide.md"), (self.root / "docs/guide.md").read_bytes())
+            self.assertEqual(zf.read(f"{stem}/docs/Guide.md"), (self.root / "wiki/Guide.md").read_bytes())
             self.assertEqual(zf.read(f"{stem}/CHANGELOG.md"), (self.root / "CHANGELOG.md").read_bytes())
         self.assertEqual([p.name for p in self.out.iterdir()], [archive.name])  # no temp leftovers
 
@@ -724,7 +726,7 @@ class PackageTests(GitCase):
         self.package("windows")
         self.package("linux")
         first = {p.name: p.read_bytes() for p in self.out.iterdir()}
-        for path in [self.binary, self.notices, *(self.root / "docs").glob("*.md")]:
+        for path in [self.binary, self.notices, *(self.root / "wiki").glob("*.md")]:
             os.utime(path, (1_900_000_000, 1_900_000_000))
         second_out = self.tmp / "dist2"
         self.package("windows", output=second_out)
@@ -732,10 +734,10 @@ class PackageTests(GitCase):
         self.assertEqual({p.name: p.read_bytes() for p in second_out.iterdir()}, first)
 
     def test_untracked_ignored_and_private_docs_are_never_shipped(self) -> None:
-        write(self.root, ".gitignore", "docs/ignored.md\n")
-        write(self.root, "docs/private.md", "private notes\n")  # untracked, not ignored
-        write(self.root, "docs/ignored.md", "ignored notes\n")
-        write(self.root, "docs/staged-later.md", "not added\n")
+        write(self.root, ".gitignore", "wiki/Ignored.md\n")
+        write(self.root, "wiki/Private.md", "private notes\n")  # untracked, not ignored
+        write(self.root, "wiki/Ignored.md", "ignored notes\n")
+        write(self.root, "wiki/Staged-later.md", "not added\n")
         for platform in ("windows", "linux"):
             self.assertEqual(self.package(platform)[0], 0)
         with zipfile.ZipFile(self.out / f"animatic-v{V0}-windows-x86_64.zip") as zf:
@@ -760,10 +762,10 @@ class PackageTests(GitCase):
     def test_docs_directory_escaping_the_repository_is_refused(self) -> None:
         outside = self.tmp / "outside"
         outside.mkdir()
-        for name in ("README.md", "guide.md"):
+        for name in ("Home.md", "Guide.md"):
             (outside / name).write_text("OUTSIDE SECRET\n", encoding="utf-8")
-        shutil.rmtree(self.root / "docs")
-        link = self.root / "docs"
+        shutil.rmtree(self.root / "wiki")
+        link = self.root / "wiki"
         try:
             link.symlink_to(outside, target_is_directory=True)
         except (OSError, NotImplementedError):
@@ -781,21 +783,30 @@ class PackageTests(GitCase):
     def test_symlinked_doc_pointing_outside_is_refused(self) -> None:
         secret = self.tmp / "secret.md"
         secret.write_text("OUTSIDE SECRET\n", encoding="utf-8")
-        (self.root / "docs/guide.md").unlink()
+        (self.root / "wiki/Guide.md").unlink()
         try:
-            (self.root / "docs/guide.md").symlink_to(secret)
+            (self.root / "wiki/Guide.md").symlink_to(secret)
         except (OSError, NotImplementedError):
             self.skipTest("symlinks unavailable")
         code, _, err = self.package("linux")
         self.assertNotEqual(code, 0)
-        self.assertIn("docs/guide.md", err)
+        self.assertIn("wiki/Guide.md", err)
         self.assertFalse(self.out.exists() and any(self.out.iterdir()))
 
     def test_tracked_doc_missing_from_working_tree_fails(self) -> None:
-        (self.root / "docs/guide.md").unlink()
+        (self.root / "wiki/Guide.md").unlink()
         code, _, err = self.package("linux")
         self.assertNotEqual(code, 0)
-        self.assertIn("docs/guide.md", err)
+        self.assertIn("wiki/Guide.md", err)
+        self.assertFalse(self.out.exists() and any(self.out.iterdir()))
+
+    def test_page_names_the_updater_refuses_are_not_packaged(self) -> None:
+        write(self.root, "wiki/Bad name.md", "x\n")
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "docs: add a badly named page")
+        code, _, err = self.package("linux")
+        self.assertNotEqual(code, 0)
+        self.assertIn("wiki/Bad name.md", err)
         self.assertFalse(self.out.exists() and any(self.out.iterdir()))
 
     def test_unusable_inputs_are_refused_without_creating_archives(self) -> None:

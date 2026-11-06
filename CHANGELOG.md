@@ -23,7 +23,7 @@ the generated line for that pull request's squash commit.
   baseline, `.tar.gz`), unsigned and without an installer, published with a `SHA256SUMS`
   file. Each archive contains the `animatic` executable, the MIT `LICENSE`, `README.md`,
   `CHANGELOG.md`, generated third-party dependency license notices
-  (`THIRD-PARTY-NOTICES.html`) and the tracked `docs/` guides.
+  (`THIRD-PARTY-NOTICES.html`) and the user guide as `docs/*.md`.
 - Explicit in-app updates from published GitHub releases (Windows and Linux x86_64): **Help →
   Check for updates…** and an optional startup check (**Check for updates at startup**,
   `updates.auto_check`, on by default, skipped while *Work offline* is on or after settings
@@ -41,6 +41,12 @@ the generated line for that pull request's squash commit.
   publicly readable, a manual check reports the release feed as unavailable (never "up to date"). On Windows a failed executable swap restores the previous executable
   best-effort from a kept recovery copy; no rollback or power-loss guarantee is made. Bundled
   guides and notices keep the old version until the archive is replaced manually.
+- The user guide is now the [GitHub wiki](https://github.com/RetroHazard/animatic/wiki),
+  restructured from five long guides into short topic pages (installation, command line, data
+  locations, first launch, each page and task, settings, the rename language, troubleshooting,
+  feature parity) with a sidebar. Its source is `wiki/` in the repository, reviewed in pull
+  requests and published by a workflow on `main`; release archives ship the same pages in
+  `docs/` and no longer include the developer documentation. (#14)
 
 ### Changed
 
