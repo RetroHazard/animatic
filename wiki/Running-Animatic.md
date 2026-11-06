@@ -33,12 +33,14 @@ Facts about the window, taken from `crates/animatic/src/main.rs`:
   [window and layout state](Settings-Reference.md#window-and-layout-state)).
 - The saved theme (Dark, Light or System, which follows the operating system) and UI scale are
   applied at launch (see [Options window](Options-Window.md)).
-- The source sets no Windows GUI-subsystem attribute, so a console window is expected
-  next to the GUI when the executable is started from Explorer [not observed]. No logger is
-  installed; the in-app **Log** page is the activity record and is not written to disk.
-- If startup fails (for example unreadable settings) the process prints
-  `Animatic could not start (database: …, settings: …)` with the cause to standard error and
-  exits with failure; no window appears. See
+- On Windows the executable is a GUI program, so no console window opens with it. Started from a
+  terminal, it attaches to that terminal, so `--help` and startup errors are printed there
+  (the prompt may return before the text appears). No logger is installed; the in-app **Log**
+  page is the activity record and is not written to disk.
+- If startup fails (for example unreadable settings or an unknown option) the process reports
+  the cause, for example `Animatic could not start (database: …, settings: …)`, on standard
+  error and exits with failure; no main window appears. Started without a terminal (Explorer, a
+  shortcut), the same message is shown in a dialog instead. See
   [troubleshooting](Troubleshooting.md).
 
 ## Command-line reference

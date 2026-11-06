@@ -1,5 +1,10 @@
+// A desktop program: on Windows no console window opens with it. `--help` and startup errors
+// still reach a terminal that started it (see `console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod app;
 mod auto_queue;
+mod console;
 mod hash_jobs;
 mod media;
 mod scheduler;
@@ -14,7 +19,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    console::attach_parent();
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            console::report_error(&format!("{e:#}"));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     // Captured first, before anything can replace the file: the updater installs over exactly
     // this file (checked by identity, not just by path) and the restart starts exactly this path.
     let installation = match animatic_core::update::InstallationTarget::capture() {
