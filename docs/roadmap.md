@@ -90,14 +90,14 @@ flowchart LR
 | M6.2 | Batch rename | Done |
 | M6.3 | Opt-in automatic rename per managed folder | Planned |
 | M7.1 | Anime covers | Planned |
-| M7.2 | Saved window, columns and sorting | Planned |
-| M7.3 | Status row colours and system theme | Planned |
+| M7.2 | Saved window, columns and sorting | Done |
+| M7.3 | Status row colours and system theme | Done |
 | M7.4 | Player open and enqueue actions | Planned |
 | M7.5 | Opt-in media properties through `ffprobe` | Research |
 | M8.1 | Credentials in the operating-system keystore | Done |
 | M8.2 | Shell integration (user toggle) and single-instance handoff | Done |
 | M8.3 | System tray, best effort | Planned |
-| M8.4 | Client version field | Planned |
+| M8.4 | Client version field | Done |
 
 ## M1 Trust and correctness
 

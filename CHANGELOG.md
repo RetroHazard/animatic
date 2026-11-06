@@ -108,6 +108,13 @@ the generated line for that pull request's squash commit.
   after confirmation, the same as `--full-update`; nothing is sent until the queue runs. **Update
   known file information** works: with it on, hashing an already identified file again queues a
   refresh of its AniDB record, at most once per file per 7 days (off by default).
+- Animatic reopens with the window size, position and maximized state you left it with, and every
+  table remembers its column widths, hidden columns and sort order (click a header to sort,
+  right-click it to choose columns). **Use status colors** tints rows in Hashed files, Anime,
+  Advanced search and My list by status, always with the status also written in the row.
+  **Theme: System** follows the operating system, and the saved theme and UI scale apply at
+  launch. Options has a **Client version** field next to **Client name**; a release update never
+  changes it.
 
 ### Changed
 
