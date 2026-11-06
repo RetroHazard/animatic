@@ -70,6 +70,12 @@ the generated line for that pull request's squash commit.
   **Refresh**. **Fetch mylist statistics** stores its result and shows it on the Overview as AniDB
   account figures next to the local ones. Every change is queued first and survives restarts, and
   a removal deletes the local row only after AniDB acknowledges it.
+- Credentials live in the operating-system keystore (Windows Credential Manager, Linux Secret
+  Service): the AniDB password, UDP API key and AVDump key are no longer written to
+  `settings.json` or its backup, which hold empty values plus `secrets_in_keystore: true`. Older
+  plain-text settings move to the keystore on the first save. Entries are keyed by the settings
+  file path, so portable profiles do not share credentials. Without a usable keystore the values
+  stay in the settings file as before and Options shows why; no credential is ever lost.
 
 ### Changed
 
