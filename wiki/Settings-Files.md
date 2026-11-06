@@ -25,8 +25,9 @@ After a successful parse (also after an AOM import) these corrections apply in m
 | Condition | Correction |
 |---|---|
 | No manager has `default: true` | Built-in "Default" rule inserted at position 0 |
-| `file_managers.action_delay_ms` < 1 | set to 1 |
-| `file_managers.sleep_time_ms` < 60000 | set to 60000 |
+| `file_managers.action_delay_ms` > 600000 | set to 600000 (0 is valid) |
+| `file_managers.sleep_time_ms` > 10000 (a value stored when the key meant a pause between scans) | set to 0 |
+| `file_managers.scan_interval_minutes` < 5 or > 10080 | set to 5 or 10080 |
 | `ui.zoom` <= 0.3 | set to 1.0 |
 
 No other value is validated. In particular Animatic adds no new validation of paths, ports,
@@ -235,7 +236,8 @@ The previous settings otherwise survive only in the backup file. Migration workf
 | `ui/lastDirectory`, `mainMaximized`, `mainLeft/Top/Width/Height` | `ui.last_directory`, `ui.maximized`, `ui.window` |
 | `color` elements (tag, value) | `ui.colors` |
 | `player` records (`name` required) | `players[]` (`name`, `path`, `open`, `play`, `enqueue`, `default`) |
-| `filemanager/actionDelay`, `sleepTime` | `file_managers.action_delay_ms`, `.sleep_time_ms` (with the fixups) |
+| `filemanager/actionDelay` | `file_managers.action_delay_ms` (with the fixup) |
+| `filemanager/sleepTime` (AOM's pause between scans) | `file_managers.scan_interval_minutes` in whole minutes (with the fixup); `scheduled_scan` stays off |
 | `manager` records (`name` required) | `file_managers.managers[]` (all rule keys; absent booleans become false except `includesubdirs` and `caneditpath`, which become true; absent `myliststate` becomes 0) |
 
 Not touched by the import (they keep fresh-file defaults): `anidb.client_name`, `client_version`,

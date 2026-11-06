@@ -24,6 +24,7 @@ is always dark at normal scale (`Theme: System` never changes the look).
 | | Restrict file extensions + list | The picker filter; the list also always drives [scans](Managed-Folders-and-Scans.md) |
 | | Hash export template, Export %length% in minutes | Active for [hash export](Exports.md#hash-export) |
 | Managed folders | Per-rule fields, Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Auto rename* is shown disabled ("Not active yet") |
+| | Folder scanning: scan at start, scan on a schedule every N minutes (5–10080), hash a file once unchanged for N ms, pause between hashed files | Active; see [scheduled scans](Managed-Folders-and-Scans.md#scheduled-scans) and [settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing). Scan settings reach the background timer when Options is closed, not while you edit |
 | Statistics export | Enable, Format, Output file | Active |
 | External player | Executable, Play arguments, Default (*Name* is shown disabled, "Not active yet") | Active; open/enqueue have no UI |
 | AVDump | Enable, Executable, Arguments, API key | Active |
@@ -31,7 +32,7 @@ is always dark at normal scale (`Theme: System` never changes the look).
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
 Not in Options (JSON only): client version, UDP server, local port, image server, idle logout,
-tray, window and column state, row colors, `ed2k_space_replacement`, folder-scan delays.
+tray, window and column state, row colors, `ed2k_space_replacement`.
 The full list with active/stored-only status is the [settings reference](Settings-Reference.md).
 The password, API key and AVDump key are saved to the system keystore (Windows Credential Manager,
 Linux Secret Service) when one is available, and then are not in `settings.json` or its backup. When

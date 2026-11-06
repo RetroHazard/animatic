@@ -121,7 +121,9 @@ import keeps your current value.
 What is read: username and password, image server, file-information flag, hashing flags and extension
 list, hash export template, rename pattern, statistics export settings, AVDump enable and key, last
 folder, folder rules (with their MyList policy), players, window/tray/tree preferences and row
-colors, folder-scan delays. Several of those have no effect in Animatic (see the
+colors, the folder-scan settle delay and AOM's pause between scans (which becomes the scan interval
+of the [scheduled scan](Managed-Folders-and-Scans.md#scheduled-scans), left switched off). Several
+of those have no effect in Animatic (see the
 [settings reference](Settings-Files.md#aom-settings-import)). Applying saves the credentials like any
 save: into the system keystore when one is available, otherwise in plain text in the settings file
 ([details](Settings-Files.md#credentials-and-the-system-keystore)). After

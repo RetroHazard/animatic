@@ -25,7 +25,7 @@ Coming from AOM? Read [Migrating from AOM](Migrating-from-AOM.md) before the fir
 | [Main window](Main-Window.md) | Layout, status bar and progress, searching and tables, menus |
 | [Library pages](Library-Pages.md) | Overview, My list, Anime, Advanced search, Hashed files, Groups, Genres, Queue, Log and the anime detail window |
 | [Hashing and identification](Hashing-and-Identification.md) | Adding files, the single-pass hashes and identifying files on AniDB |
-| [Managed folders and scans](Managed-Folders-and-Scans.md) | Folder rules, manual scans and safe removal of missing files |
+| [Managed folders and scans](Managed-Folders-and-Scans.md) | Folder rules, manual and scheduled scans, settle delay and safe removal of missing files |
 | [AniDB synchronization](AniDB-Synchronization.md) | The command queue, MyList edits and failure handling |
 | [Renaming files](Renaming-Files.md) | Previewing and applying a rename to one file |
 | [Exports](Exports.md) | Statistics and hash exports |

@@ -75,7 +75,7 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `worker.rs` (jobs, events, queue runs, projection thread, updater thread).
+projection bookkeeping, the Software updates window), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `scheduler.rs` (scheduled folder scans).
 The Options row for the file-menu entry is `app/shell_menu.rs`.
 
 ## Runtime model
@@ -85,6 +85,7 @@ The Options row for the file-menu entry is `app/shell_menu.rs`.
 | UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump or an anime refresh; the one-file rename preview (point reads of the local database); settings save |
 | `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
+| `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; see [Scheduled folder scans](#scheduled-folder-scans) |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | `animatic-instance` and per-connection threads | none | Accept forwarded media paths from other launches and queue them for the UI (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)); only exists while this process owns the lock |
@@ -111,6 +112,30 @@ database, a queued command is held in memory and shown as "NOT saved yet" (up to
 every 500 ms, one final 5 s attempt at exit); commands still unsaved after that are lost and logged. A
 failed mylist edit is not deferred: it reports the error and nothing changes.
 
+### Scheduled folder scans
+
+`scheduler.rs` holds the timing and the thread of the optional scan at start and the interval scan
+(`file_managers.scan_at_start`, `scheduled_scan`, `scan_interval_minutes`). `Schedule` is pure
+state driven by explicit `Instant`s (tests control the clock): it is due on a requested start
+scan or when the interval elapsed, stays due while the scan cannot start (reported once as
+`Event::Info`), and counts the next interval from the actual submission. The thread owns a
+`Schedule`, reads the settings and the UI's blocking state from a shared `ScanControl`, and starts
+a scan only through `worker::submit_if_idle`: one atomic `pending 0 -> 1` claim, so it never
+queues behind or between other jobs and a manual scan cannot slip in between check and submit.
+`AnimaticApp::sync_scan_schedule` (every frame, `scan_blocker`) publishes the settings and holds
+the scan back while a restore, an import or its confirmation, a settings review, the recovery
+notice or unsaved deferred commands are open or pending; while Options is open the published
+settings stay as they were. A scan is local (it never contacts AniDB), so Work offline does not
+gate it; identify-after-hashing still only queues commands. `Worker::close` drops the thread's
+stop channel and joins it, so stopping the application ends the scheduler within one poll and
+cancels a running scan at the next file.
+
+Inside a scan, `file_manager::settle_scan` applies `action_delay_ms` after planning: a file whose
+modification time is younger than the delay is deferred, the other candidates are re-stat'ed after
+one wait of the delay (once for the whole scan, cancellable) and deferred when size or
+modification time changed. Deferred files are not recorded, so the next scan plans them again.
+`sleep_time_ms` is a cancellable pause between two hashed files of one scan.
+
 ## Principal data flows
 
 ### Local file ingestion
@@ -132,7 +157,7 @@ sequenceDiagram
     UI->>Worker: refresh projection
 ```
 
-A scan is started by the user; there is no scheduler. Each newly hashed file can then queue an `Identify`, carrying a MyList add when the matching folder has auto-add (sent only when the queue is run). `plan_scan` is read-only and returns
+A scan is started by the user, at application start or by the interval timer (see [Scheduled folder scans](#scheduled-folder-scans)). Each newly hashed file can then queue an `Identify`, carrying a MyList add when the matching folder has auto-add (sent only when the queue is run). `plan_scan` is read-only and returns
 `ScanAction`s (`Hash`, `Rehash`, `RemoveMissing`); the worker executes them. The modification
 time recorded in `local_file.mtime` is read *after* hashing, so a file changed during hashing
 can be stored with a newer mtime than the content that was hashed. A path is unique in
@@ -534,7 +559,7 @@ Language reference: [Rename language](https://github.com/RetroHazard/animatic/wi
 | Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary; a secret is never blanked in the file unless the keystore accepted it | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. In the plain-text fallback `.bak` may retain old or removed credentials. Directory-entry durability. Encryption of the file itself; the keystore's own protection (it guards against copied files, not code running as the user). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
 | Statistics and hash export | Both run on the projection thread (the UI only opens the file dialog) and replace the target through `atomic::write_atomic`: a uniquely named temporary file in the target folder, flushed with `sync_all`, then renamed over the target; on any failure the temporary file is removed and the previous target stays. `Db::library_stats` reads every figure in one read transaction and returns an error, never zeros, when a query fails. `Db::export_local_hashes` reads the hashed files from the database, not the UI projection | Directory-entry durability (the parent folder is not synced), so a power loss right after the rename can still lose the new file; a crash between create and rename can leave a hidden `.<name>.<pid>.<n>.tmp` file. `Settings::save` keeps its own tmp+rename sequence (it must rotate the backup between writing and renaming) and does not use the helper |
-| Hashing | One read pass; cancel/pause per 4 MiB block | Detecting a file that changes while it is read |
+| Hashing | One read pass; cancel/pause per 4 MiB block; scans hold back files still being written (`settle_scan`) | Detecting a file that changes while it is read (Add files and command-line paths hash at once) |
 | Local-record removal | Only after affirmative absence under a reachable manager root | Atomic against a disconnect between planning and execution |
 
 `file_manager::move_file(db, local_id, old, new, control)` (`move_file_with` injects the rename step

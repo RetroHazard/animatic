@@ -172,14 +172,20 @@ Importing converts AOM's color integers (Windows BGR order) to RGB; an AOM text 
 
 ## Managed folders (`file_managers`)
 
-Object `file_managers`: global timing values plus a list of per-folder rules ("file managers", the
-AOM term). Folder rules drive Tools → Scan managed folders, the MyList parameters sent with
-identified files, and the rename destination. Scanning is manual; nothing runs in the background.
+Object `file_managers`: global scan timing values plus a list of per-folder rules ("file managers",
+the AOM term). Folder rules drive Tools → Scan managed folders, the optional scan at start and
+scheduled scan, the MyList parameters sent with identified files, and the rename destination. A
+scan runs only when you start it or when one of the scan automation settings below is on; see
+[Scheduled scans](Managed-Folders-and-Scans.md#scheduled-scans) and
+[Settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing).
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `action_delay_ms` | integer (u64) | `500` | none | **Stored only.** Not read. Load-time fixup raises values below 1 to 1. |
-| `sleep_time_ms` | integer (u64) | `900000` | none | **Stored only.** Not read (no periodic scanning exists). Load-time fixup raises values below 60000 to 60000. |
+| `action_delay_ms` | integer (u64) | `500` | "Hash a file once unchanged for" | **Active.** Settle delay of a scan: a file is hashed only once its modification time is at least this old and its size and modification time stay unchanged for this long; otherwise it is deferred to the next scan. `0` hashes at once. Load-time fixup limits values to 0-600000 (values above are lowered to 600000). |
+| `sleep_time_ms` | integer (u64) | `0` | "Pause between hashed files" | **Active.** Pause between two hashed files of one scan (not before the first or after the last). Valid 0-10000. **Changed meaning:** earlier versions stored AOM's pause between scans here (default `900000`); load-time fixup resets any value above 10000 to `0`, and an AOM settings import turns `filemanager/sleepTime` into `scan_interval_minutes` instead. |
+| `scan_at_start` | boolean | `false` | "Scan managed folders when Animatic starts" | **Active.** Runs one scan after the application starts, as soon as nothing blocks it. |
+| `scheduled_scan` | boolean | `false` | "Scan managed folders on a schedule" | **Active.** Runs a scan every `scan_interval_minutes` minutes on the background worker. Never overlaps another task, import, settings review or restore. |
+| `scan_interval_minutes` | integer (u32) | `60` | "Scan every N minutes" | **Active** while `scheduled_scan` is on. Load-time fixup limits values to 5-10080 (5 minutes to one week). |
 | `managers` | array of objects | built-in "Default" and "\\\\ (Default network path)" entries | "Managed folders" list | See below. If present in the file, the array replaces the default list entirely. |
 
 ### Per-folder keys
@@ -192,9 +198,9 @@ Each element of `managers` may omit any key; an omitted key takes the value in t
 | `name` | string | `""` | Name | Display label in Options only. |
 | `path` | string | `""` | Path | **Active.** Folder the rule applies to. Empty paths never match a file and are skipped by scans. |
 | `include_subdirs` | boolean | `true` | "Subfolders" | **Active.** Scan depth (all levels or direct children only) and whether files below the folder match this rule. |
-| `auto_hash` | boolean | `false` | "Auto hash" | **Active, manual scan only.** A scan hashes files that are not yet in the database. The scan itself writes no MyList data, but each hashed file raises the same post-hash event as Add files, so with `identify_after_hashing` and the matching rule's `mylist_auto_add` it queues an `Identify` that adds the file to MyList on AniDB when the queue next runs online. |
-| `auto_rehash` | boolean | `false` | "Rehash changed" | **Active, manual scan only.** A scan rehashes known files whose modification time (whole seconds) differs from the stored value. |
-| `auto_remove` | boolean | `false` | "Remove missing" | **Active, manual scan only.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path by an explicit path match (no fallback rule) and the rule's folder is a reachable directory. Never deletes media files. The removal itself writes only those local tables. |
+| `auto_hash` | boolean | `false` | "Auto hash" | **Active in scans.** A scan hashes files that are not yet in the database. The scan itself writes no MyList data, but each hashed file raises the same post-hash event as Add files, so with `identify_after_hashing` and the matching rule's `mylist_auto_add` it queues an `Identify` that adds the file to MyList on AniDB when the queue next runs online. |
+| `auto_rehash` | boolean | `false` | "Rehash changed" | **Active in scans.** A scan rehashes known files whose modification time (whole seconds) differs from the stored value. |
+| `auto_remove` | boolean | `false` | "Remove missing" | **Active in scans.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path by an explicit path match (no fallback rule) and the rule's folder is a reachable directory. Never deletes media files. The removal itself writes only those local tables. |
 | `auto_rename` | boolean | `false` | "Auto rename" | **Inert control.** Shown disabled ("Not active yet": planned opt-in automatic rename of identified files in the folder); the value is kept and never read. Renaming is always a preview-and-confirm action. |
 | `base_path` | string | `""` | "Rename destination" | **Active.** Folder used as the rename target base and exposed to rename patterns as `BASEPATH`; empty keeps the file's current folder. See [Rename language](Rename-Language.md). |
 | `exclude_hidden` | boolean | `true` | none | **Active.** Scans skip entries (files and folders) whose name starts with `.`. The OS "hidden" attribute is not consulted. |

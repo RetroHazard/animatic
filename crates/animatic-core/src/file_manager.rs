@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use walkdir::{DirEntry, WalkDir};
 
@@ -151,6 +151,114 @@ pub fn plan_scan(
         });
     }
     Ok(actions)
+}
+
+/// Size and modification time of a file, the two things that change while it is being written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn stamp(path: &Path) -> std::io::Result<Stamp> {
+    let metadata = fs::metadata(path)?;
+    Ok(Stamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+/// The outcome of [`settle_scan`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// Actions to run, in their planned order.
+    pub ready: Vec<ScanAction>,
+    /// Files that are still being written (or were modified too recently); a later scan
+    /// reconsiders them.
+    pub deferred: Vec<PathBuf>,
+}
+
+enum Verdict {
+    Ready(ScanAction),
+    Deferred(PathBuf),
+    Watching(ScanAction, PathBuf, Stamp),
+}
+
+/// Hold back files that may still be being written. A file is hashed only when its modification
+/// time is at least `delay` in the past at `now` and its size and modification time did not change
+/// during one further `delay` observed by this call: the first rule needs no earlier scan, the
+/// second catches a copy that keeps the source's old modification time while it grows. With a
+/// zero `delay` nothing is held back. `wait` sleeps for the given time and returns `false` when
+/// the scan was cancelled, which defers every file still under observation.
+///
+/// Removals and files whose metadata cannot be read are passed on untouched: the first needs no
+/// settling and the second reports its own error when hashed.
+pub fn settle_scan(
+    actions: Vec<ScanAction>,
+    delay: Duration,
+    now: SystemTime,
+    wait: &mut dyn FnMut(Duration) -> bool,
+) -> Settled {
+    if delay.is_zero() {
+        return Settled {
+            ready: actions,
+            deferred: Vec::new(),
+        };
+    }
+    let mut verdicts = Vec::with_capacity(actions.len());
+    let mut watching = false;
+    for action in actions {
+        let path = match &action {
+            ScanAction::Hash { path, .. } | ScanAction::Rehash { path, .. } => path.clone(),
+            ScanAction::RemoveMissing { .. } => {
+                verdicts.push(Verdict::Ready(action));
+                continue;
+            }
+        };
+        match stamp(&path) {
+            Err(_) => verdicts.push(Verdict::Ready(action)),
+            // A modification time in the future (clock skew) has no age; observation decides.
+            Ok(first) => match first.modified.and_then(|m| now.duration_since(m).ok()) {
+                Some(age) if age < delay => verdicts.push(Verdict::Deferred(path)),
+                _ => {
+                    watching = true;
+                    verdicts.push(Verdict::Watching(action, path, first));
+                }
+            },
+        }
+    }
+    let observed = !watching || wait(delay);
+    let mut settled = Settled::default();
+    for verdict in verdicts {
+        match verdict {
+            Verdict::Ready(action) => settled.ready.push(action),
+            Verdict::Deferred(path) => settled.deferred.push(path),
+            Verdict::Watching(action, path, first) => {
+                if observed && stamp(&path).is_ok_and(|second| second == first) {
+                    settled.ready.push(action);
+                } else {
+                    settled.deferred.push(path);
+                }
+            }
+        }
+    }
+    settled
+}
+
+/// Sleep for `total`, waking early when `cancel` is set. Returns `false` when cancelled.
+pub fn interruptible_sleep(total: Duration, cancel: &AtomicBool) -> bool {
+    const SLICE: Duration = Duration::from_millis(50);
+    let end = Instant::now() + total;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return false;
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        std::thread::sleep(left.min(SLICE));
+    }
 }
 
 /// Hash and persist one file, reporting bytes processed. The caller owns cancellation/pause flags.
@@ -934,5 +1042,164 @@ mod tests {
         );
 
         assert!(old.exists() && other.exists() && !new.exists());
+    }
+
+    const DELAY: Duration = Duration::from_secs(5);
+
+    fn hash_action(path: &Path) -> ScanAction {
+        ScanAction::Hash {
+            path: path.to_path_buf(),
+            manager: 0,
+        }
+    }
+
+    /// A file written `age` before `now` (its modification time is set explicitly).
+    fn aged_file(root: &Path, name: &str, now: SystemTime, age: Duration) -> PathBuf {
+        let path = root.join(name);
+        fs::write(&path, b"synthetic media").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(now - age)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn settle_defers_files_modified_within_the_delay_and_hashes_settled_ones() {
+        let root = test_root("settle-age");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let now = SystemTime::now();
+        let young = aged_file(&root, "young.mkv", now, Duration::from_secs(1));
+        let old = aged_file(&root, "old.mkv", now, Duration::from_secs(3600));
+        let mut waited = Vec::new();
+
+        let settled = settle_scan(
+            vec![hash_action(&young), hash_action(&old)],
+            DELAY,
+            now,
+            &mut |d| {
+                waited.push(d);
+                true
+            },
+        );
+
+        assert_eq!(settled.ready, vec![hash_action(&old)]);
+        assert_eq!(settled.deferred, vec![young]);
+        assert_eq!(
+            waited,
+            vec![DELAY],
+            "one observation window for the whole scan"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settle_defers_a_file_that_grows_while_observed_even_with_an_old_modification_time() {
+        let root = test_root("settle-growing");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let now = SystemTime::now();
+        let growing = aged_file(&root, "growing.mkv", now, Duration::from_secs(3600));
+        let still = aged_file(&root, "still.mkv", now, Duration::from_secs(3600));
+        let target = growing.clone();
+
+        let settled = settle_scan(
+            vec![hash_action(&growing), hash_action(&still)],
+            DELAY,
+            now,
+            &mut |_| {
+                // A copy that keeps the source's old modification time but adds data.
+                let mtime = fs::metadata(&target).unwrap().modified().unwrap();
+                let mut file = fs::OpenOptions::new().append(true).open(&target).unwrap();
+                std::io::Write::write_all(&mut file, b" more data").unwrap();
+                file.set_modified(mtime).unwrap();
+                true
+            },
+        );
+
+        assert_eq!(settled.ready, vec![hash_action(&still)]);
+        assert_eq!(settled.deferred, vec![growing]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settle_defers_a_file_whose_modification_time_changes_while_observed() {
+        let root = test_root("settle-touched");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let now = SystemTime::now();
+        let touched = aged_file(&root, "touched.mkv", now, Duration::from_secs(3600));
+        let target = touched.clone();
+
+        let settled = settle_scan(vec![hash_action(&touched)], DELAY, now, &mut |_| {
+            fs::File::options()
+                .write(true)
+                .open(&target)
+                .unwrap()
+                .set_modified(now - Duration::from_secs(60))
+                .unwrap();
+            true
+        });
+
+        assert!(settled.ready.is_empty());
+        assert_eq!(settled.deferred, vec![touched]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settle_with_zero_delay_hashes_everything_without_waiting() {
+        let root = test_root("settle-zero");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let now = SystemTime::now();
+        let fresh = aged_file(&root, "fresh.mkv", now, Duration::ZERO);
+
+        let settled = settle_scan(vec![hash_action(&fresh)], Duration::ZERO, now, &mut |_| {
+            panic!("no waiting without a delay")
+        });
+
+        assert_eq!(settled.ready, vec![hash_action(&fresh)]);
+        assert!(settled.deferred.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settle_defers_observed_files_when_the_scan_is_cancelled_but_keeps_removals() {
+        let root = test_root("settle-cancel");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let now = SystemTime::now();
+        let old = aged_file(&root, "old.mkv", now, Duration::from_secs(3600));
+        let removal = ScanAction::RemoveMissing {
+            local_id: 7,
+            path: root.join("gone.mkv"),
+        };
+
+        let settled = settle_scan(
+            vec![hash_action(&old), removal.clone()],
+            DELAY,
+            now,
+            &mut |_| false,
+        );
+
+        assert_eq!(settled.ready, vec![removal]);
+        assert_eq!(settled.deferred, vec![old]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interruptible_sleep_waits_the_time_and_stops_when_cancelled() {
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        assert!(interruptible_sleep(Duration::from_millis(120), &cancel));
+        assert!(started.elapsed() >= Duration::from_millis(120));
+
+        cancel.store(true, Ordering::Relaxed);
+        let started = Instant::now();
+        assert!(!interruptible_sleep(Duration::from_secs(30), &cancel));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

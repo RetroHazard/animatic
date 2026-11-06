@@ -22,6 +22,8 @@ use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
 use animatic_core::update::{
     InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
 };
+
+use crate::scheduler::{self, ScanControl};
 use crossbeam_channel::{Receiver, Sender};
 
 /// One file of a rename job: the library entry and where it moves.
@@ -164,6 +166,8 @@ pub enum Event {
         until: i64,
         reason: String,
     },
+    /// A notice for the activity log (not an error and not tied to a job).
+    Info(String),
     LibraryLoaded {
         generation: u64,
         projection: Box<LibraryProjection>,
@@ -213,6 +217,10 @@ pub struct Worker {
     loads: Sender<Background>,
     projection: Option<std::thread::JoinHandle<()>>,
     main: Option<std::thread::JoinHandle<()>>,
+    /// Settings and blocking state for the scheduled scan; see [`crate::scheduler`].
+    scan: Arc<ScanControl>,
+    scheduler_stop: Option<Sender<()>>,
+    scheduler: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Worker {
@@ -232,6 +240,7 @@ impl Worker {
         };
         let projection_db = db_path.clone();
         let projection_events = event_tx.clone();
+        let scheduler_events = event_tx.clone();
         let projection_shutdown = shutdown.clone();
         let main_loads = load_tx.clone();
         let projection = std::thread::Builder::new()
@@ -245,6 +254,16 @@ impl Worker {
                 )
             })
             .expect("start projection worker");
+        let scan = Arc::new(ScanControl::new());
+        let (scheduler_stop, scheduler_stop_rx) = crossbeam_channel::bounded(1);
+        let scheduler = scheduler::spawn(
+            scan.clone(),
+            job_tx.clone(),
+            pending.clone(),
+            scheduler_events,
+            scheduler_stop_rx,
+            scheduler::POLL,
+        );
         let main = std::thread::Builder::new()
             .name("animatic-worker".into())
             .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags))
@@ -259,7 +278,15 @@ impl Worker {
             loads: load_tx,
             projection: Some(projection),
             main: Some(main),
+            scan,
+            scheduler_stop: Some(scheduler_stop),
+            scheduler: Some(scheduler),
         }
+    }
+
+    /// The channel to the scan scheduler thread.
+    pub fn scan_control(&self) -> &ScanControl {
+        &self.scan
     }
 
     /// Queue a job. Projection loads are served immediately by their own thread and neither
@@ -329,6 +356,11 @@ impl Worker {
     fn close(&mut self, join_main: bool) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.cancel.store(true, Ordering::Relaxed);
+        // Dropping the sender wakes the scheduler thread, which then ends without submitting.
+        drop(self.scheduler_stop.take());
+        if let Some(scheduler) = self.scheduler.take() {
+            let _ = scheduler.join();
+        }
         let _ = self.jobs.send(Job::Stop);
         let _ = self.loads.send(Background::Stop);
         if let Some(projection) = self.projection.take() {
@@ -338,6 +370,44 @@ impl Worker {
             let _ = main.join();
         }
     }
+}
+
+/// Submit `job` only if no job of the main worker thread is queued or running; the claim is a
+/// single atomic step, so a manual submission cannot slip in between check and submit. Used by
+/// the scan scheduler, which must never queue behind other work.
+pub(crate) fn submit_if_idle(jobs: &Sender<Job>, pending: &AtomicUsize, job: Job) -> bool {
+    if pending
+        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    if jobs.send(job).is_err() {
+        pending.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Log text for files a scan held back because they may still be written.
+fn deferred_note(deferred: &[PathBuf]) -> String {
+    const SHOWN: usize = 5;
+    let names: Vec<String> = deferred
+        .iter()
+        .take(SHOWN)
+        .map(|p| p.display().to_string())
+        .collect();
+    let more = deferred.len().saturating_sub(SHOWN);
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    format!(
+        "Scan deferred {} file(s) that may still be written, the next scan retries them: {}{more}",
+        deferred.len(),
+        names.join(", ")
+    )
 }
 
 /// One counted job of the main worker thread; the count drops when the job is finished.
@@ -549,11 +619,24 @@ fn run(
                             continue;
                         }
                     };
+                // Files that may still be written wait for a later scan (roadmap M5.2).
+                let settled = animatic_core::file_manager::settle_scan(
+                    actions,
+                    settings.settle_delay(),
+                    std::time::SystemTime::now(),
+                    &mut |wait| animatic_core::file_manager::interruptible_sleep(wait, &cancel),
+                );
+                if !settled.deferred.is_empty() {
+                    let _ = events.send(Event::Info(deferred_note(&settled.deferred)));
+                }
+                let actions = settled.ready;
                 let total = actions.len();
                 let _ = events.send(Event::Started {
                     label: "Scanning managed folders".into(),
                     total,
                 });
+                let pause_between_files = settings.file_pause();
+                let mut hashed_before = false;
                 for (index, action) in actions.into_iter().enumerate() {
                     if cancel.load(Ordering::Relaxed) {
                         break;
@@ -561,6 +644,15 @@ fn run(
                     match action {
                         animatic_core::file_manager::ScanAction::Hash { path, .. }
                         | animatic_core::file_manager::ScanAction::Rehash { path, .. } => {
+                            if hashed_before
+                                && !animatic_core::file_manager::interruptible_sleep(
+                                    pause_between_files,
+                                    &cancel,
+                                )
+                            {
+                                break;
+                            }
+                            hashed_before = true;
                             let label = path
                                 .file_name()
                                 .unwrap_or_default()
@@ -2127,6 +2219,128 @@ mod tests {
             worker.is_idle(),
             "a job nobody can run must not stay counted"
         );
+    }
+
+    /// A managed folder with `names` as small synthetic media files, and settings that hash it.
+    fn media_folder(db: &TempDb, names: &[&str]) -> (PathBuf, FileManagerSettings) {
+        let root = db.dir.join("media");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in names {
+            std::fs::write(root.join(name), name.as_bytes()).unwrap();
+        }
+        let settings = FileManagerSettings {
+            action_delay_ms: 0,
+            managers: vec![animatic_core::settings::FileManager {
+                name: "Synthetic media".into(),
+                path: root.to_string_lossy().into_owned(),
+                auto_hash: true,
+                include_subdirs: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        (root, settings)
+    }
+
+    #[test]
+    fn scan_pauses_between_hashed_files_but_not_after_the_last() {
+        let db = TempDb::new();
+        drop(db.open());
+        let (_, mut settings) = media_folder(&db, &["a.mkv", "b.mkv", "c.mkv"]);
+        settings.sleep_time_ms = 400;
+        let worker = Worker::spawn(db.path.clone());
+        let started = Instant::now();
+
+        worker.submit(Job::Scan {
+            settings,
+            extensions: "mkv".into(),
+        });
+        let mut hashed = Vec::new();
+        wait_for(&worker, |e| {
+            if matches!(e, Event::Hashed { .. }) {
+                hashed.push(Instant::now());
+            }
+            matches!(e, Event::Finished)
+        });
+
+        assert_eq!(hashed.len(), 3);
+        for pair in hashed.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= Duration::from_millis(300),
+                "files are paced: {:?}",
+                pair[1] - pair[0]
+            );
+        }
+        let total = started.elapsed();
+        assert!(
+            total < Duration::from_millis(400 * 2 + 1500),
+            "no pause after the last file: {total:?}"
+        );
+    }
+
+    #[test]
+    fn scan_defers_a_file_modified_within_the_settle_delay_until_a_later_scan() {
+        let db = TempDb::new();
+        drop(db.open());
+        let (_, mut settings) = media_folder(&db, &["still-copying.mkv"]);
+        settings.action_delay_ms = 600_000;
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::Scan {
+            settings: settings.clone(),
+            extensions: "mkv".into(),
+        });
+        let mut hashed = false;
+        let mut notice = None;
+        wait_for(&worker, |e| {
+            match e {
+                Event::Hashed { .. } => hashed = true,
+                Event::Info(text) => notice = Some(text.clone()),
+                _ => {}
+            }
+            matches!(e, Event::Finished)
+        });
+        assert!(!hashed, "a file written moments ago must not be hashed yet");
+        assert!(notice.is_some_and(|n| n.contains("deferred 1 file")));
+        assert_eq!(db.open().local_files().unwrap().len(), 0);
+
+        // Once it counts as settled (no settle delay), the next scan hashes it.
+        settings.action_delay_ms = 0;
+        worker.submit(Job::Scan {
+            settings,
+            extensions: "mkv".into(),
+        });
+        wait_for(&worker, |e| matches!(e, Event::Hashed { .. }));
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        assert_eq!(db.open().local_files().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn requested_scan_runs_on_the_worker_once_nothing_blocks_it() {
+        let db = TempDb::new();
+        drop(db.open());
+        let (_, settings) = media_folder(&db, &["scheduled.mkv"]);
+        let mut worker = Worker::spawn(db.path.clone());
+        let extensions = vec!["mkv".to_string()];
+        worker
+            .scan_control()
+            .sync(&settings, &extensions, Some("an import is waiting"));
+        worker.scan_control().request_scan();
+
+        wait_for(
+            &worker,
+            |e| matches!(e, Event::Info(text) if text.contains("postponed")),
+        );
+        assert!(db.open().local_files().unwrap().is_empty());
+
+        worker.scan_control().sync(&settings, &extensions, None);
+        wait_for(&worker, |e| matches!(e, Event::Hashed { .. }));
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        assert_eq!(db.open().local_files().unwrap().len(), 1);
+
+        let stopping = Instant::now();
+        worker.stop_and_join();
+        assert!(stopping.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

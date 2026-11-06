@@ -174,13 +174,28 @@ impl FileManager {
     }
 }
 
+/// Longest settle delay (`action_delay_ms`) and file pacing pause (`sleep_time_ms`): 10 minutes
+/// and 10 seconds. Larger stored values are not meaningful for either.
+pub const MAX_ACTION_DELAY_MS: u64 = 600_000;
+pub const MAX_SLEEP_TIME_MS: u64 = 10_000;
+/// Shortest and longest interval of the scheduled folder scan, in minutes (5 minutes, 1 week).
+pub const MIN_SCAN_INTERVAL_MINUTES: u32 = 5;
+pub const MAX_SCAN_INTERVAL_MINUTES: u32 = 10_080;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileManagerSettings {
-    /// Delay between two file manager actions in milliseconds.
+    /// Settle delay in milliseconds: a discovered file is hashed only once its size and
+    /// modification time have been unchanged for this long (0 hashes at once).
     pub action_delay_ms: u64,
-    /// Pause between two scans in milliseconds.
+    /// Pause between two hashed files of one scan, in milliseconds (0 = none).
     pub sleep_time_ms: u64,
+    /// Scan the managed folders on a schedule (see `scan_interval_minutes`).
+    pub scheduled_scan: bool,
+    /// Minutes between scheduled scans, from `MIN_SCAN_INTERVAL_MINUTES`.
+    pub scan_interval_minutes: u32,
+    /// Scan the managed folders once when the application starts.
+    pub scan_at_start: bool,
     pub managers: Vec<FileManager>,
 }
 
@@ -188,7 +203,10 @@ impl Default for FileManagerSettings {
     fn default() -> Self {
         FileManagerSettings {
             action_delay_ms: 500,
-            sleep_time_ms: 900_000,
+            sleep_time_ms: 0,
+            scheduled_scan: false,
+            scan_interval_minutes: 60,
+            scan_at_start: false,
             managers: vec![
                 FileManager::builtin_default(),
                 FileManager::network_default(),
@@ -198,6 +216,34 @@ impl Default for FileManagerSettings {
 }
 
 impl FileManagerSettings {
+    /// Bring the timing fields into their valid ranges. A `sleep_time_ms` above the maximum can
+    /// only be a value stored when the field meant a pause between scans (its default was
+    /// 900000); it is reset to the default rather than pausing between every file.
+    pub fn clamp_timing(&mut self) {
+        self.action_delay_ms = self.action_delay_ms.min(MAX_ACTION_DELAY_MS);
+        if self.sleep_time_ms > MAX_SLEEP_TIME_MS {
+            self.sleep_time_ms = FileManagerSettings::default().sleep_time_ms;
+        }
+        self.scan_interval_minutes = self
+            .scan_interval_minutes
+            .clamp(MIN_SCAN_INTERVAL_MINUTES, MAX_SCAN_INTERVAL_MINUTES);
+    }
+
+    pub fn settle_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.action_delay_ms.min(MAX_ACTION_DELAY_MS))
+    }
+
+    pub fn file_pause(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.sleep_time_ms.min(MAX_SLEEP_TIME_MS))
+    }
+
+    pub fn scan_interval(&self) -> std::time::Duration {
+        let minutes = self
+            .scan_interval_minutes
+            .clamp(MIN_SCAN_INTERVAL_MINUTES, MAX_SCAN_INTERVAL_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
+    }
+
     pub fn default_manager(&self) -> &FileManager {
         self.managers
             .iter()
@@ -806,8 +852,7 @@ impl Settings {
                 .managers
                 .insert(0, FileManager::builtin_default());
         }
-        self.file_managers.action_delay_ms = self.file_managers.action_delay_ms.max(1);
-        self.file_managers.sleep_time_ms = self.file_managers.sleep_time_ms.max(60_000);
+        self.file_managers.clamp_timing();
         if self.ui.zoom <= 0.3 {
             self.ui.zoom = 1.0;
         }
@@ -1071,10 +1116,13 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
     }
 
     if let Some(v) = num("filemanager/actionDelay") {
-        s.file_managers.action_delay_ms = v.max(1) as u64;
+        s.file_managers.action_delay_ms = v.max(0) as u64;
     }
+    // AOM's sleepTime is the pause between two scans: it becomes the scan interval, which stays
+    // switched off. `sleep_time_ms` now paces files and keeps its default.
     if let Some(v) = num("filemanager/sleepTime") {
-        s.file_managers.sleep_time_ms = v.max(60_000) as u64;
+        s.file_managers.scan_interval_minutes =
+            (v.max(0) / 60_000).min(i64::from(MAX_SCAN_INTERVAL_MINUTES)) as u32;
     }
     let managers: Vec<FileManager> = x
         .managers
@@ -1181,9 +1229,51 @@ x</renamingPattern>
         assert_eq!(s.ui.last_directory, "Z:\\AnimaticTestMedia\\");
         assert_eq!(s.players[0].open, "\"%L\"");
         assert!(s.players[0].default);
-        assert_eq!(s.file_managers.sleep_time_ms, 450_000);
+        assert_eq!(
+            s.file_managers.scan_interval_minutes, 7,
+            "AOM's pause between scans becomes the scan interval"
+        );
+        assert!(!s.file_managers.scheduled_scan);
+        assert_eq!(s.file_managers.sleep_time_ms, 0);
         assert_eq!(s.file_managers.managers.len(), 2);
         assert!(s.file_managers.default_manager().auto_rename);
+    }
+
+    #[test]
+    fn scan_timing_defaults_and_ranges_apply_when_loading() {
+        let old =
+            parse_settings(br#"{"file_managers":{"action_delay_ms":500,"sleep_time_ms":900000}}"#)
+                .unwrap();
+        let fm = &old.file_managers;
+        assert!(
+            !fm.scheduled_scan && !fm.scan_at_start,
+            "automation is off by default"
+        );
+        assert_eq!(fm.scan_interval_minutes, 60);
+        assert_eq!(
+            fm.sleep_time_ms, 0,
+            "a legacy between-scans value must not pace files"
+        );
+        assert_eq!(fm.settle_delay(), std::time::Duration::from_millis(500));
+
+        let wild = parse_settings(
+            br#"{"file_managers":{"action_delay_ms":0,"sleep_time_ms":4000,"scan_interval_minutes":1}}"#,
+        )
+        .unwrap();
+        let fm = &wild.file_managers;
+        assert_eq!(fm.action_delay_ms, 0, "0 is a valid settle delay");
+        assert_eq!(fm.sleep_time_ms, 4000);
+        assert_eq!(fm.scan_interval(), std::time::Duration::from_secs(5 * 60));
+
+        let huge = parse_settings(
+            br#"{"file_managers":{"action_delay_ms":99999999,"scan_interval_minutes":4000000000}}"#,
+        )
+        .unwrap();
+        assert_eq!(huge.file_managers.action_delay_ms, MAX_ACTION_DELAY_MS);
+        assert_eq!(
+            huge.file_managers.scan_interval_minutes,
+            MAX_SCAN_INTERVAL_MINUTES
+        );
     }
 
     #[test]

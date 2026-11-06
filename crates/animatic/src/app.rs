@@ -662,6 +662,12 @@ impl AnimaticApp {
         if !initial_files.is_empty() {
             app.worker.submit(Job::Hash(initial_files));
         }
+        // Local only (scans never contact AniDB): the scheduler thread starts it as soon as
+        // nothing blocks a scan.
+        if app.settings.file_managers.scan_at_start {
+            app.sync_scan_schedule();
+            app.worker.scan_control().request_scan();
+        }
         // The check is the only thing that runs unasked. It never runs against the user's
         // offline choice, nor after a settings recovery (which forces offline mode).
         if startup_check_allowed(&app.settings, app.settings_guard.recovered) {
@@ -1210,6 +1216,7 @@ impl AnimaticApp {
                         batch.rows = Some(rows);
                     }
                 }
+                Event::Info(text) => self.log(text),
                 Event::Blocked { description } => {
                     self.error(format!("Command blocked: {description}"));
                     self.blocked_floor = self.loader.next_generation;
@@ -3363,6 +3370,58 @@ impl AnimaticApp {
                             },
                         );
                     }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Folder scanning").strong());
+                    {
+                        use animatic_core::settings::{
+                            MAX_ACTION_DELAY_MS, MAX_SCAN_INTERVAL_MINUTES, MAX_SLEEP_TIME_MS,
+                            MIN_SCAN_INTERVAL_MINUTES,
+                        };
+                        let scanning = &mut self.settings.file_managers;
+                        ui.checkbox(
+                            &mut scanning.scan_at_start,
+                            "Scan managed folders when Animatic starts",
+                        );
+                        ui.checkbox(
+                            &mut scanning.scheduled_scan,
+                            "Scan managed folders on a schedule",
+                        );
+                        ui.add_enabled_ui(scanning.scheduled_scan, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Scan every");
+                                ui.add(
+                                    egui::DragValue::new(&mut scanning.scan_interval_minutes)
+                                        .range(MIN_SCAN_INTERVAL_MINUTES..=MAX_SCAN_INTERVAL_MINUTES)
+                                        .suffix(" minutes"),
+                                );
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Hash a file once unchanged for");
+                            ui.add(
+                                egui::DragValue::new(&mut scanning.action_delay_ms)
+                                    .range(0..=MAX_ACTION_DELAY_MS)
+                                    .suffix(" ms"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Pause between hashed files");
+                            ui.add(
+                                egui::DragValue::new(&mut scanning.sleep_time_ms)
+                                    .range(0..=MAX_SLEEP_TIME_MS)
+                                    .suffix(" ms"),
+                            );
+                        });
+                    }
+                    ui.label(
+                        RichText::new(
+                            "Scans read local folders only and never contact AniDB. A scheduled \
+                             scan waits while another task, an import, a settings review or a \
+                             restore is running. A file still being written is left for the \
+                             next scan. Schedule changes apply when Options is closed.",
+                        )
+                        .weak(),
+                    );
                     ui.separator();
                     ui.heading("Statistics export");
                     ui.checkbox(
@@ -4056,6 +4115,41 @@ impl AnimaticApp {
     }
 }
 
+impl AnimaticApp {
+    /// Why a scheduled scan must not start now (the worker's own busy state is checked by the
+    /// scheduler thread, atomically with the submission).
+    fn scan_blocker(&self) -> Option<&'static str> {
+        if self.restore.is_some() {
+            Some("a library restore is in progress")
+        } else if self.import_confirm.is_some() || self.import_pending {
+            Some("an import is in progress")
+        } else if self.imported_settings.is_some() {
+            Some("imported settings are waiting for review")
+        } else if self.settings_notice.is_some() {
+            Some("the settings recovery notice is open")
+        } else if !self.deferred.is_empty() {
+            Some("some changes are not saved to the database yet")
+        } else {
+            None
+        }
+    }
+
+    /// Give the scheduler thread the current settings and blocker. While Options is open the
+    /// settings it holds stay as they were, so half-edited values never start a scan.
+    fn sync_scan_schedule(&self) {
+        let control = self.worker.scan_control();
+        if self.settings_open {
+            control.set_blocker(self.scan_blocker());
+        } else {
+            control.sync(
+                &self.settings.file_managers,
+                &self.settings.hashing.extensions,
+                self.scan_blocker(),
+            );
+        }
+    }
+}
+
 impl eframe::App for AnimaticApp {
     /// Also runs while the window is minimized (the UI does not), so files forwarded by another
     /// launch are hashed, and the window restored, without waiting for the user.
@@ -4069,6 +4163,7 @@ impl eframe::App for AnimaticApp {
         self.process_update_events(&ctx);
         self.poll_shell(&ctx);
         self.retry_deferred();
+        self.sync_scan_schedule();
         self.pump_library(&ctx);
         self.top_bar(root);
         self.navigation(root);

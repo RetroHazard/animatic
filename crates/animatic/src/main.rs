@@ -1,4 +1,5 @@
 mod app;
+mod scheduler;
 mod worker;
 
 use std::path::{Path, PathBuf};

@@ -7,7 +7,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 ## What works
 
 - Read-only AOM databank import and reviewable, offline-first settings migration.
-- Single-pass ED2K-red, CRC32, MD5 and SHA-1 hashing; manual managed-folder scans.
+- Single-pass ED2K-red, CRC32, MD5 and SHA-1 hashing; managed-folder scans (manual, at start or
+  on an interval).
 - Searchable library views, anime details, local-file identification and MyList
   watched/state editing.
 - Durable synchronization queue with latest-intent edits, retained failures and
@@ -23,7 +24,7 @@ and imports user-supplied AOM databanks without modifying the originals.
   verify, install, restart); nothing is downloaded or installed unattended.
 
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
-There is **no full-account MyList bootstrap, scheduled folder scanning, automatic
+There is **no full-account MyList bootstrap, automatic
 renaming, cover-art UI, or media-deletion UI**. See the
 [feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity) and
 [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) before relying on an imported option.
