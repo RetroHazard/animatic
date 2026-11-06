@@ -124,7 +124,9 @@ were separately identified in code and reproduced with synthetic inputs.
 - An accepted explicit statistics export completed with the expected full content when
   the worker was immediately dropped for graceful shutdown.
 - Windows: 114 workspace tests, formatting check, Clippy with warnings denied, and release
-  build passed. Linux runtime and production AniDB synchronization were not exercised.
+  build passed. Linux runtime and production AniDB synchronization were not exercised in this
+  audit; both were later verified for roadmap item M1.7 (see the Feature Parity page's
+  verification status).
 
 All runtime inputs and probes were synthetic and outside the repository. No private
 databank, personal library, credentials, raw forum export, or workstation path was added.

@@ -108,9 +108,11 @@ was on Windows with synthetic data. On 2026-11-06 the workspace tests and Clippy
 natively on Debian 13 (WSL), and the application ran under WSLg with synthetic data: it started,
 hashed a file given on the command line, showed the Hashed files page, opened Options (keystore
 fallback and the "no tray host" notice shown, because WSLg has neither a Secret Service nor a
-StatusNotifierItem host) and quit cleanly. A real KDE or GNOME desktop, the Linux tray icon and
-keystore, and **production AniDB synchronization have not been exercised**. Test counts in older
-documents are historical.
+StatusNotifierItem host) and quit cleanly. On 2026-11-06 a maintainer also ran a Windows beta
+build against production AniDB with the registered clients (`animatic` UDP, `animatichttp` HTTP):
+login, file identification, MyList statistics, an anime record refresh over HTTP, a MyList export
+request and the import of the exported file, the automatic features, the ffprobe install, database
+restore and the tray, and confirmed the Linux checks. Test counts in older documents are historical.
 
 ## Not implemented
 
@@ -125,8 +127,7 @@ Verified absent from the application (some exist in `animatic-core` or are store
 - Adding a MyList entry by AniDB id or editing several entries at once; editing anime metadata
   (the Edit AniDB data menu opens web pages).
 - Resumable downloads; hashing a folder from the shell file menu.
-- Linux runtime and production AniDB verification (the Linux Secret Service keystore path is
-  compiled but has not been run); encryption of the database and of backups.
+- Encryption of the database and of backups.
 - Unattended or scheduled updates, update channels (prereleases), release signatures, rollback,
   package or installer integration; an update replaces only the executable and versioned license files.
 - Reading media properties without an external tool: Animatic has no media parser of its own and
