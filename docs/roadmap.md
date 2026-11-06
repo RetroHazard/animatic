@@ -89,7 +89,7 @@ flowchart LR
 | M6.1 | Rename apply on the worker, cross-volume moves | Done |
 | M6.2 | Batch rename | Done |
 | M6.3 | Opt-in automatic rename per managed folder | Planned |
-| M7.1 | Anime covers | Planned |
+| M7.1 | Anime covers | Done |
 | M7.2 | Saved window, columns and sorting | Done |
 | M7.3 | Status row colours and system theme | Done |
 | M7.4 | Player open and enqueue actions | Planned |

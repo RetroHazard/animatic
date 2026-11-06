@@ -119,6 +119,12 @@ the generated line for that pull request's squash commit.
   files and folders with the Windows system attribute (no effect on Linux), and **Remove emptied
   folders** removes the folders a rename left completely empty beneath the managed folder, never
   the managed folder itself and never anything non-empty (hidden files keep a folder).
+- The anime detail window shows the anime's cover. A cover is downloaded once, only when that
+  window opens, from the image host AniDB announces at login (falling back to
+  `anidb.image_server`), through the same request limiter as every other AniDB request, and never
+  offline or during a ban or cooldown. It is kept in a `covers` folder next to the database for
+  your own display only and never downloaded again. `anidb.download_covers` (default on, also in
+  Options) turns downloads off; covers already on disk are still shown.
 
 ### Changed
 
