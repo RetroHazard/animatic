@@ -49,9 +49,9 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `library` | Read queries, display types and `LibraryProjection` snapshots with search keys |
 | `sync` | `Command`, queue operations (`impl Db`), edit coalescing, overlays, `CommandError`, `execute` |
 | `hash` | One-pass ED2K (red/blue), CRC32, MD5, SHA-1; hash-export template expansion |
-| `file_manager` | Side-effect-free scan planning, hash-and-register, `move_file`, missing-record removal |
+| `file_manager` | Side-effect-free scan planning, hash-and-register, `move_file` (same-volume rename or verified cross-volume copy), missing-record removal |
 | `legacy` | Databank discovery, page decryption, record decoding, per-collection import |
-| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning |
+| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`) |
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
 | `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
 | `stats` | Library aggregation (one read transaction) and XML/INI rendering |
@@ -79,9 +79,9 @@ projection bookkeeping, the Software updates window), `worker.rs` (jobs, events,
 
 | Thread | Database connection | Work |
 |---|---|---|
-| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump or an anime refresh; rename apply; settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
-| `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics` and `Job::ExportHashes` |
+| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump or an anime refresh; the one-file rename preview (point reads of the local database); settings save |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
+| `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
@@ -137,8 +137,10 @@ Missing-file removal needs an explicit matching manager with `auto_remove`, an a
 `NotFound` for the file, and a successful directory-metadata check of the manager root made
 afterwards. Unreachable roots and other filesystem errors keep records. The check and the later
 deletion are separate steps, so this is a conservative plan, not an atomic guarantee against a
-volume disconnecting in between. Removal deletes only `local_file`/`local_hash` rows; Animatic
-never deletes media files and does not use a recycle bin.
+volume disconnecting in between. Removal deletes only `local_file`/`local_hash` rows; scans,
+hashing and removal never delete media files and nothing uses a recycle bin. The one media
+file deletion is the source of a verified cross-volume rename (see
+[Rename](#rename)).
 
 ### AniDB synchronization
 
@@ -466,9 +468,25 @@ Rules the code relies on:
 
 `rename::plan::plan` compiles and evaluates the pattern against database-backed objects and
 returns a `Plan`; `Plan::can_apply` is false for errors, warnings, or no target. Nothing in
-planning touches the filesystem. Applying is one file at a time on the **UI thread**:
-`file_manager::move_file` and then the path update. Language reference:
-[Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language).
+planning changes the filesystem. `plan_local_file` plans one identified file from the database;
+`plan_batch` plans a list of `Candidate`s in order and additionally blocks a row whose target
+path already exists on disk or is already claimed by an earlier row of the batch (it only reads
+metadata).
+
+- **Single file.** **Hashed files → Rename…** previews one file (the point reads of the local
+  database run on the UI thread) and, on confirmation, submits `Job::RenameFiles` with one item.
+- **Batch.** Selecting files on **Hashed files** (the selection **Add to MyList…** shares) and **Rename N selected…** sends
+  `Job::PlanRenames { request, pattern, files }` to the **projection thread** (it never waits
+  behind a long hashing or queue job). `Event::RenamesPlanned` opens the **Batch rename** window
+  with one line per file. One confirmation submits only the rows with `can_apply()` as
+  `Job::RenameFiles`; blocked rows are listed and skipped. There is no automatic rename (rule
+  19).
+- **Apply** runs on the worker. For every item `file_manager::move_file` moves the file and
+  records the path; the worker reports `Event::Renamed` or `Event::RenameFailed` per file, then
+  `Event::RenameSummary`. The activity bar's **Cancel** stops before the next file and during a
+  copy. Cross-volume behaviour is in [the guarantees](#what-the-code-guarantees-and-what-it-does-not).
+
+Language reference: [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language).
 
 ## What the code guarantees, and what it does not
 
@@ -479,28 +497,41 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 | Title dump | Invalid, truncated or over-limit dumps leave titles and timestamp unchanged | Resume, external checksum, protection against a *valid* but wrong dump |
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
 | Library backup and restore | A backup is a consistent snapshot, written to a temporary file and renamed into place; a restore validates the file twice, keeps a byte-for-byte copy of the replaced library and swaps the database file with one rename, after removing the old `-wal`/`-shm`, so the database path is the old or the new library; a refused file changes nothing | That the restored queue matches what AniDB already received; settings (not part of the database); a crash between removing the old `-wal` and the rename (the kept copy is then the way back); automatic or rolling backups; repair |
-| `move_file` | The database path changes only after `fs::rename` succeeded; an existing destination is refused first | See below |
+| `move_file` | The library never points at a missing file and the only copy is never deleted. Same volume: one `rename`, then the path update (undone if the update fails). A rename that fails because the volumes differ (`ErrorKind::CrossesDevices`: `EXDEV` / `ERROR_NOT_SAME_DEVICE`) falls back to copy → verify → swap → record → remove the source; any failure or cancel before the swap deletes the temporary copy and changes nothing. An existing destination is never replaced | See below |
 | Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary; a secret is never blanked in the file unless the keystore accepted it | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. In the plain-text fallback `.bak` may retain old or removed credentials. Directory-entry durability. Encryption of the file itself; the keystore's own protection (it guards against copied files, not code running as the user). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
 | Statistics and hash export | Both run on the projection thread (the UI only opens the file dialog) and replace the target through `atomic::write_atomic`: a uniquely named temporary file in the target folder, flushed with `sync_all`, then renamed over the target; on any failure the temporary file is removed and the previous target stays. `Db::library_stats` reads every figure in one read transaction and returns an error, never zeros, when a query fails. `Db::export_local_hashes` reads the hashed files from the database, not the UI projection | Directory-entry durability (the parent folder is not synced), so a power loss right after the rename can still lose the new file; a crash between create and rename can leave a hidden `.<name>.<pid>.<n>.tmp` file. `Settings::save` keeps its own tmp+rename sequence (it must rotate the backup between writing and renaming) and does not use the helper |
 | Hashing | One read pass; cancel/pause per 4 MiB block | Detecting a file that changes while it is read |
 | Local-record removal | Only after affirmative absence under a reachable manager root | Atomic against a disconnect between planning and execution |
 
-`file_manager::move_file(db, local_id, old, new)`:
+`file_manager::move_file(db, local_id, old, new, control)` (`move_file_with` injects the rename step
+so tests force the cross-volume path on one volume):
 
-- Returns early when `old == new`; refuses when `new` exists; creates missing parent
-  directories (and does not remove them if the rename then fails); calls `std::fs::rename`;
-  updates `local_file.path` last.
-- The existence check and the rename are separate calls, so a file created at the destination
-  in between **can be silently overwritten** by the rename (on Windows and on Linux alike), not
-  merely cause a collision error. There is no copy-and-delete fallback: a move across volumes
-  fails with an I/O error, leaving file and record unchanged. No checksum is computed before or
-  after.
-- If the rename succeeds and the database update then fails, the file is at the new path while
-  the record still names the old one; the next scan sees the old path as missing and the new one
-  as unknown. There is no rollback.
+- Returns early when `old == new`. It refuses when the library no longer records `old` for
+  `local_id`, when `new` exists (including a dangling link), and creates missing parent
+  directories (kept if the move then fails).
+- **Same volume:** `std::fs::rename`, then `local_file.path` is updated; if that update fails the
+  rename is reverted (best effort) so the record does not name a missing file.
+- **Cross volume:** the stored hash must exist and the source size must equal the stored size
+  (otherwise "hash it again"). The file is copied in 4 MiB blocks (cancel and pause honoured,
+  progress reported over copy plus verification) to a hidden `.animatic-move-*.tmp` file in the
+  target folder, with the source's modification time (a different one would make the next scan
+  rehash the file) and permissions, flushed with `sync_all`. The copy's size is compared, then
+  it is **re-hashed in one pass with the library's ED2K variant and compared with the stored
+  ED2K and size**. This extra read of the whole file is deliberate: it is the only proof that
+  the copy is the file the library knows. Only then is the temporary file renamed into place
+  with `persist_noclobber` (no replacement of a file that appeared in the meantime), the
+  database updated, and the source removed. If the database update fails the new copy is
+  removed again; if the source cannot be removed the move still succeeds, the library points at
+  the verified copy and `MoveOutcome::source_left` says so (the old file is an extra copy).
+- Cancellation is checked while copying and verifying, not during the final swap. A crash
+  during the copy can leave a hidden `.animatic-move-*.tmp` file; the source and the record are
+  untouched, and a scan ignores it (hidden, not a media extension).
+- The check for an existing target and the same-volume `rename` are separate calls, so a file
+  created at the destination in between can still be replaced by a same-volume rename (on
+  Windows and on Linux alike); only the cross-volume swap is no-clobber.
 - [INFERENCE: untested] On case-insensitive filesystems a case-only rename is refused because
-  `new.exists()` is true for the same file.
+  the target "exists" (it is the same file).
 - Only the local file and its `local_file` row change; AniDB MyList `storage` text is not touched.
 
 ## Build and release automation
@@ -579,7 +610,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
 | Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |
 | Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `move_file`; `settings.rs`: `FileManagerSettings::matching_manager_for` |
-| Rename | `crates/animatic-core/src/rename/plan.rs`, `rename/mod.rs` (`target_path`), `app.rs`: `preview_rename`, `rename_window`, `pattern_editor_ui` |
+| Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames}`, `run_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs` |
 | Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |

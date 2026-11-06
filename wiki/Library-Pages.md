@@ -98,15 +98,19 @@ the queue, or `—`), **CRC** (local CRC32
 in upper-case hex, or `Mismatch`), **Path** (double-click opens the file with the operating
 system's default program). The row count reads `N files` or `M of N files` under a filter.
 If a search hides the selected row the selection is cleared so no action can hit an
-invisible file; **Add to MyList…** likewise only acts on files that are listed.
+invisible file; **Add to MyList…** and **Rename N selected…** likewise only act on files that
+are listed. There is one selection on this page: the files you select this way are the ones
+both of those buttons use.
 
-Buttons (Rename, Open, Play and AVDump need a selected file; **Add to MyList…** takes one or
-several):
+Buttons (Rename…, Open, Play and AVDump need a selected file; **Add to MyList…** and **Rename N
+selected…** take one or several):
 
 | Button | Does |
 |---|---|
 | Add files… | File picker (multiple); starts [hashing](Hashing-and-Identification.md) |
-| Rename… | Previews a [manual rename](Renaming-Files.md) |
+| Rename… | Previews a [manual rename](Renaming-Files.md) of the selected file |
+| Rename N selected… | Plans the selected files in the background and opens the [Batch rename](Renaming-Files.md#several-files-batch-rename) preview |
+| Select all shown / Clear selection | Selects every listed file / clears the selection |
 | Open | Opens the file with the OS default program (not your configured player) |
 | Play | Starts the default [external player](External-Tools.md) with its *Play* arguments |
 | AVDump | Enabled only when AVDump integration is on; starts [AVDump](External-Tools.md) |

@@ -273,6 +273,7 @@ name, so the first thing to do is open **Tools → Options…**, tick **Work off
 | Restore library | The database folder | A staging copy of the backup plus the `.before-restore-*` copy of the current library: about twice the library's size on top of the library |
 | Compact library | The system temporary directory and the database folder | `VACUUM` writes a rewritten copy to a temporary file of about the size of the library's used data, then folds it back; keep that much free |
 | Update download | The system temporary directory (a private staging folder) and the executable's folder | Up to the archive (limit 256 MiB) plus the extracted executable (limit 512 MiB) are staged in the temporary directory; the install then needs room for a copy of the new executable beside the current one |
+| Rename to another drive | The destination folder | A hidden `.animatic-move-*.tmp` copy of the file, verified and then renamed into place; the original is removed only afterwards, so the destination volume needs room for the whole file |
 | AOM databank import | The system temporary directory (a marked `animatic-legacy-import-*` folder) | One decrypted collection at a time, roughly the size of the largest source `.data` file in addition to the database growth |
 
 ### Leftover files and what is safe to delete
@@ -303,6 +304,10 @@ until you have a verified backup.
 - `.animatic-copy-*.tmp` in the folder you backed up into, or beside the database: a backup or
   restore that was interrupted. Safe to delete when Animatic is closed. A finished backup is
   never a `.tmp` file.
+- `.animatic-move-*.tmp` beside a renamed file's destination: a copy to another drive that was
+  interrupted by a crash or power loss (a cancel or failure removes it itself). The original file
+  and its library entry were never touched, so it is safe to delete with Animatic closed. See
+  [Renaming files](Renaming-Files.md#what-applying-does).
 - `animatic.sqlite3.restore-staging` beside the database: the half-made copy of a restore that
   was interrupted. Safe to delete when Animatic is closed; the next restore replaces it anyway.
 - `animatic.sqlite3.before-restore-YYYYMMDD-HHMMSS` (and, rarely, a matching `-wal`): the library

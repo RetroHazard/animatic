@@ -154,10 +154,43 @@ and the edited text is written to `settings.json` at the next explicit save or o
 exit (the exit save is skipped only while the settings-recovery guard is active). See the
 [Settings reference](Settings-Reference.md) for the exact persistence rules.
 
-On confirmation the application calls `move_file(old, target)` with the planned path (see
-[The three stages](Rename-Language.md#the-three-stages)). On success it logs `Renamed <old> to <new>` and
-refreshes the library list; on failure it logs `Rename failed: <error>` and the library path
-is unchanged.
+On confirmation the application submits a **rename job** to the background worker with the
+planned path (see [The three stages](Rename-Language.md#the-three-stages)); nothing is moved on
+the interface thread. For each file the job calls `move_file(old, target)`: on success it logs
+`Renamed <old> to <new>` and refreshes the library list; on failure it logs `Rename failed: <old>:
+<reason> (target <new>)` and the file and its library path are unchanged.
+
+### How a file is moved
+
+`move_file` first checks that the library still records `<old>` for that file and that
+`<target>` does not exist (a dangling link counts as existing), and creates missing parent
+folders. Then:
+
+| Case | Behavior |
+|---|---|
+| Same volume | One operating-system rename, then the stored path is updated. If the update fails the rename is reverted, so the library never names a missing file. |
+| The rename fails because the volumes differ (`EXDEV` on Linux, `ERROR_NOT_SAME_DEVICE` on Windows) | The file is copied to `.animatic-move-*.tmp` in the target folder (keeping its modification time and permissions); the copy's size is compared; the copy is **re-hashed in one pass with the same ED2K variant the library uses and compared with the stored ED2K and size**; the temporary file is renamed into place without replacing anything; the library path is updated; only then is the source deleted. |
+
+The verification read is deliberate: it doubles the I/O of a cross-volume move but is the only
+proof that the copy is the file the library knows. A file without a stored hash, or whose size
+differs from the stored size, is refused before anything is copied. Cancel acts while copying and
+verifying. Every failure before the swap removes the temporary file and leaves source and library
+untouched; a failed library update removes the new copy again. If the source cannot be deleted
+after a successful swap, the move still counts, the library points at the copy, and the Log says
+the old file remains.
+
+### Batch rename
+
+The batch preview calls `plan_local_file` for every selected file on the background (projection)
+thread, in table order, and adds two checks that need the whole list: a target that already
+exists on disk is an error (`A file or folder already exists at the target path`), and a target
+an earlier row already claims is an error (`<path> would get the same name; only the first of
+the two can be renamed`; compared case-insensitively on Windows). A file that AniDB has not
+identified is blocked with `The file is not identified by AniDB`. One confirmation submits only the rows for which
+`can_apply()` is true; blocked and already-named rows are listed but never sent. A row's outcome
+is `Renamed`, `Renamed (copied and verified)` or `Not renamed: <reason>`; a collision with a
+file created after the preview is reported as `destination already exists`. Chains inside one
+batch (file A to the current name of file B) are blocked, not ordered.
 
 ## The stable default pattern
 

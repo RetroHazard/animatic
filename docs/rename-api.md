@@ -14,8 +14,8 @@ the source-level entry points are:
 | `Evaluator`, `Object`, `DataSource` and the built-in functions | [eval.rs](../crates/animatic-core/src/rename/eval.rs) |
 | `Value` and the arithmetic/comparison helpers | [value.rs](../crates/animatic-core/src/rename/value.rs) |
 | `bindings_for_file`, `DbSource`, `anime_object`, `episode_object`, `file_object`, `group_object`, `hash_object`, `mylist_object`, `TITLE_PENDING` | [objects.rs](../crates/animatic-core/src/rename/objects.rs) |
-| `PatternKind`, `classify`, `check_pattern`, `Plan`, `plan` | [plan.rs](../crates/animatic-core/src/rename/plan.rs) |
-| `file_manager::move_file` | [file_manager.rs](../crates/animatic-core/src/file_manager.rs) |
+| `PatternKind`, `classify`, `check_pattern`, `Plan`, `plan`, `plan_local_file`, `Candidate`, `BatchRow`, `plan_batch` | [plan.rs](../crates/animatic-core/src/rename/plan.rs) |
+| `file_manager::{move_file, move_file_with, MoveControl, MoveOutcome, MoveMethod}` | [file_manager.rs](../crates/animatic-core/src/file_manager.rs) |
 | `DEFAULT_RENAME_PATTERN` | [settings.rs](../crates/animatic-core/src/settings.rs) and [default_pattern.txt](../crates/animatic-core/src/rename/default_pattern.txt) |
 
 ## Example: plan a rename against fixed objects
@@ -125,9 +125,19 @@ fn preview(
 }
 ```
 
+`plan_local_file(db, pattern, fid, path, base_path)` does the same two steps in one call, and
+`plan_batch(db, pattern, &candidates)` plans a list of `Candidate`s and also blocks rows whose
+target already exists or is claimed by an earlier row (it reads file metadata).
+
 To apply a plan that `can_apply()`, call
-`animatic_core::file_manager::move_file(&db, local_id, old_path, &target)`; the `local_id` is
-the local file row id, which is not the AniDB file id.
+`animatic_core::file_manager::move_file(&db, local_id, old_path, &target, MoveControl { cancel, pause, progress })`;
+the `local_id` is the local file row id, which is not the AniDB file id. The call renames on the
+same volume and, when the rename fails with `ErrorKind::CrossesDevices`, copies, verifies the copy
+against the stored ED2K, swaps it into place, records it and only then removes the source (see
+[the guarantees](architecture.md#what-the-code-guarantees-and-what-it-does-not)). It never
+replaces an existing target and returns `MoveOutcome` (`source_left` is set when only the
+removal of the old file failed). Call it off the UI thread: a cross-volume move reads the whole
+file twice.
 
 ## Custom data sources
 

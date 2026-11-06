@@ -24,8 +24,10 @@ Know the limits before you rely on a recovery path:
   backup hold them in plain text instead. The database and backups are not encrypted.
 - **Personal data in the database.** The SQLite library holds your viewing history, file
   paths, hashes and queued edits.
-- **No media deletion, no trash.** Animatic never deletes media files, and the interface has
-  no recycle-bin or trash workflow. A rename moves a file inside the filesystem (see
+- **No media deletion, no trash.** Animatic never deletes a media file on its own account, and
+  the interface has no recycle-bin or trash workflow. A rename moves a file inside the
+  filesystem; when the destination is on another drive it copies the file, verifies the copy
+  and only then removes the original, which is the one case where a file is deleted (see
   [Rename problems](File-and-Import-Problems.md#rename-problems)); there is no undo.
 - **No full-account import.** Animatic does not download your complete AniDB MyList (see
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).

@@ -51,8 +51,11 @@
 //!   that something is absent.
 //! * Rows this version cannot read stay in the queue as blocked entries instead of being
 //!   deleted.
-//! * [`file_manager::move_file`] updates the stored path only after `std::fs::rename`
-//!   succeeded; it does not copy across volumes and is not an atomic no-overwrite operation.
+//! * [`file_manager::move_file`] never leaves the library pointing at a missing file and never
+//!   deletes the only copy: a rename across volumes is copied, verified against the stored ED2K,
+//!   swapped into place and recorded before the source is removed. It never replaces an
+//!   existing target on the cross-volume path; a same-volume rename is not an atomic
+//!   no-overwrite operation.
 //! * Exports ([`stats::LibraryStats::write`], [`db::Db::export_local_hashes`]) replace their
 //!   target through [`atomic::write_atomic`]: a failed write leaves the previous file intact.
 //!   [`db::Db::library_stats`] reads every figure in one read transaction and returns an error

@@ -10,17 +10,27 @@ use animatic_anidb::limits::Limits;
 use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
 use animatic_core::db::Db;
 use animatic_core::file_manager::hash_and_register;
+use animatic_core::file_manager::{MoveControl, MoveMethod, move_file};
 use animatic_core::format;
 use animatic_core::hash::Ed2kVariant;
 use animatic_core::library::LibraryProjection;
 use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
 use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityReport};
+use animatic_core::rename::plan::{BatchRow, Candidate, Plan};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
 use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
 use animatic_core::update::{
     InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
 };
 use crossbeam_channel::{Receiver, Sender};
+
+/// One file of a rename job: the library entry and where it moves.
+#[derive(Debug, Clone)]
+pub struct RenameItem {
+    pub local_id: i64,
+    pub old: PathBuf,
+    pub new: PathBuf,
+}
 
 #[derive(Debug)]
 pub enum Job {
@@ -83,6 +93,17 @@ pub enum Job {
         path: PathBuf,
         template: String,
         copy_length_as_minutes: bool,
+    },
+    /// Rename apply: move each file to its planned path, in order, and record the new paths.
+    /// Moves across volumes copy, verify and swap (see `file_manager::move_file`). Cancel stops
+    /// before the next file and during a copy; every file gets a `Renamed` or `RenameFailed`.
+    RenameFiles(Vec<RenameItem>),
+    /// Plan a batch rename on the projection thread (answered by `Event::RenamesPlanned`; no
+    /// started/finished events, never queued behind a long main-worker job).
+    PlanRenames {
+        request: u64,
+        pattern: String,
+        files: Vec<Candidate>,
     },
     Stop,
 }
@@ -150,6 +171,33 @@ pub enum Event {
     LibraryLoadFailed {
         generation: u64,
         message: String,
+    },
+    /// One file was moved; the library already records `new`.
+    Renamed {
+        local_id: i64,
+        old: PathBuf,
+        new: PathBuf,
+        /// Copied to another volume (and verified) instead of renamed in place.
+        copied: bool,
+        /// The old file could not be removed after a verified copy.
+        note: Option<String>,
+    },
+    /// One file was not moved; the file and its library entry are unchanged.
+    RenameFailed {
+        local_id: i64,
+        old: PathBuf,
+        new: PathBuf,
+        message: String,
+    },
+    /// End of a rename job (before `Finished`).
+    RenameSummary {
+        renamed: usize,
+        not_renamed: usize,
+    },
+    /// Answer to `Job::PlanRenames`, one row per requested file in request order.
+    RenamesPlanned {
+        request: u64,
+        rows: Vec<BatchRow>,
     },
     Finished,
 }
@@ -245,6 +293,17 @@ impl Worker {
                     copy_length_as_minutes,
                 });
             }
+            Job::PlanRenames {
+                request,
+                pattern,
+                files,
+            } => {
+                let _ = self.loads.send(Background::PlanRenames {
+                    request,
+                    pattern,
+                    files,
+                });
+            }
             job => {
                 self.pending.fetch_add(1, Ordering::SeqCst);
                 if self.jobs.send(job).is_err() {
@@ -292,7 +351,8 @@ impl PendingJob {
             Job::Stop
             | Job::LoadLibrary { .. }
             | Job::ExportStatistics { .. }
-            | Job::ExportHashes { .. } => PendingJob(None),
+            | Job::ExportHashes { .. }
+            | Job::PlanRenames { .. } => PendingJob(None),
             _ => PendingJob(Some(pending.clone())),
         }
     }
@@ -375,6 +435,18 @@ fn run(
                 });
                 continue;
             }
+            Job::PlanRenames {
+                request,
+                pattern,
+                files,
+            } => {
+                let _ = loads.send(Background::PlanRenames {
+                    request,
+                    pattern,
+                    files,
+                });
+                continue;
+            }
             other => other,
         };
         // A cancel request applies to the job that is running when it is made. It is only
@@ -384,9 +456,11 @@ fn run(
             Job::Stop
             | Job::LoadLibrary { .. }
             | Job::ExportStatistics { .. }
-            | Job::ExportHashes { .. } => {
+            | Job::ExportHashes { .. }
+            | Job::PlanRenames { .. } => {
                 unreachable!("handled before dispatch")
             }
+            Job::RenameFiles(items) => run_renames(&db_path, items, &events, &cancel, &pause),
             Job::Hash(paths) => {
                 let total = paths.len();
                 let _ = events.send(Event::Started {
@@ -1008,6 +1082,11 @@ enum Background {
         template: String,
         copy_length_as_minutes: bool,
     },
+    PlanRenames {
+        request: u64,
+        pattern: String,
+        files: Vec<Candidate>,
+    },
 }
 
 /// Serve library projections and the statistics and hash exports on a thread of their own so that an
@@ -1052,6 +1131,11 @@ fn run_projections(
                     &template,
                     copy_length_as_minutes,
                 ),
+                Background::PlanRenames {
+                    request,
+                    pattern,
+                    files,
+                } => plan_renames(&db_path, &mut slot, request, &pattern, &files),
             };
             let _ = events.send(event);
         }
@@ -1059,6 +1143,116 @@ fn run_projections(
             return;
         }
     }
+}
+
+/// Plan a batch rename on the projection thread. A library that cannot be opened blocks every
+/// row with that reason instead of leaving the UI waiting for an answer.
+fn plan_renames(
+    db_path: &Path,
+    slot: &mut Option<Db>,
+    request: u64,
+    pattern: &str,
+    files: &[Candidate],
+) -> Event {
+    let rows = match with_projection_db(db_path, slot, |db| {
+        Ok(animatic_core::rename::plan::plan_batch(db, pattern, files))
+    }) {
+        Ok(rows) => rows,
+        Err(e) => files
+            .iter()
+            .map(|file| BatchRow {
+                local_id: file.local_id,
+                old: file.path.clone(),
+                plan: Plan {
+                    errors: vec![format!("Unable to open the library: {e}")],
+                    ..Plan::default()
+                },
+            })
+            .collect(),
+    };
+    Event::RenamesPlanned { request, rows }
+}
+
+/// Rename apply (`Job::RenameFiles`): one `file_manager::move_file` per item, each reported.
+fn run_renames(
+    db_path: &Path,
+    items: Vec<RenameItem>,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+) {
+    let total = items.len();
+    let _ = events.send(Event::Started {
+        label: "Renaming files".into(),
+        total,
+    });
+    let db = Db::open(db_path);
+    let (mut renamed, mut not_renamed) = (0, 0);
+    for (index, item) in items.into_iter().enumerate() {
+        let RenameItem { local_id, old, new } = item;
+        let fail = |message: String| Event::RenameFailed {
+            local_id,
+            old: old.clone(),
+            new: new.clone(),
+            message,
+        };
+        let result = match &db {
+            _ if cancel.load(Ordering::Relaxed) => Err("Skipped: cancelled".to_string()),
+            Err(e) => Err(format!("Unable to open the library: {e}")),
+            Ok(db) => {
+                let label = old
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                move_file(
+                    db,
+                    local_id,
+                    &old,
+                    &new,
+                    MoveControl {
+                        cancel,
+                        pause,
+                        progress: &mut |done, bytes| {
+                            let _ = events.send(Event::Progress {
+                                label: label.clone(),
+                                current: index + 1,
+                                total,
+                                fraction: done as f32 / bytes.max(1) as f32,
+                            });
+                        },
+                    },
+                )
+                .map_err(|e| match e {
+                    animatic_core::error::Error::Cancelled => {
+                        "Cancelled; the file and its library entry are unchanged".to_string()
+                    }
+                    e => e.to_string(),
+                })
+            }
+        };
+        match result {
+            Ok(outcome) => {
+                renamed += 1;
+                let _ = events.send(Event::Renamed {
+                    local_id,
+                    old: old.clone(),
+                    new: new.clone(),
+                    copied: outcome.method == MoveMethod::Copied,
+                    note: outcome.source_left,
+                });
+            }
+            Err(message) => {
+                not_renamed += 1;
+                let _ = events.send(fail(message));
+            }
+        }
+    }
+    let _ = events.send(Event::RenameSummary {
+        renamed,
+        not_renamed,
+    });
+    let _ = events.send(Event::Finished);
 }
 
 /// Run `export` on the projection thread's connection and keep that connection afterwards.
@@ -1693,6 +1887,183 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    fn register_media(db: &Db, path: &Path, data: &[u8]) -> i64 {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, data).unwrap();
+        let hashes = animatic_core::hash::hash_bytes(data, Ed2kVariant::Red);
+        db.add_local_file(&path.to_string_lossy(), &hashes, 0)
+            .unwrap()
+    }
+
+    fn recorded(db: &Db, id: i64) -> String {
+        db.local_file_record(id).unwrap().unwrap().0
+    }
+
+    #[test]
+    fn a_rename_job_moves_each_file_and_reports_every_outcome() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let (a, b, c) = (
+            register_media(&library, &media.join("a.mkv"), b"synthetic a"),
+            register_media(&library, &media.join("b.mkv"), b"synthetic b"),
+            register_media(&library, &media.join("c.mkv"), b"synthetic c"),
+        );
+        std::fs::write(media.join("taken.mkv"), b"someone else's file").unwrap();
+        let item = |id, from: &str, to: &str| RenameItem {
+            local_id: id,
+            old: media.join(from),
+            new: media.join(to),
+        };
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::RenameFiles(vec![
+            item(a, "a.mkv", "Show 01.mkv"),
+            item(c, "c.mkv", "taken.mkv"),
+            item(b, "b.mkv", "sub/Show 02.mkv"),
+        ]));
+        let mut renamed = Vec::new();
+        let mut failed = Vec::new();
+        let mut summary = None;
+        wait_for(&worker, |e| {
+            match e {
+                Event::Renamed { local_id, .. } => renamed.push(*local_id),
+                Event::RenameFailed {
+                    local_id, message, ..
+                } => failed.push((*local_id, message.clone())),
+                Event::RenameSummary {
+                    renamed,
+                    not_renamed,
+                } => summary = Some((*renamed, *not_renamed)),
+                _ => {}
+            }
+            matches!(e, Event::Finished)
+        });
+
+        assert_eq!(renamed, [a, b]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, c);
+        assert!(failed[0].1.contains("already exists"), "{failed:?}");
+        assert_eq!(summary, Some((2, 1)));
+        let library = db.open();
+        assert_eq!(
+            recorded(&library, a),
+            media.join("Show 01.mkv").to_string_lossy()
+        );
+        assert_eq!(
+            recorded(&library, b),
+            media.join("sub/Show 02.mkv").to_string_lossy()
+        );
+        assert_eq!(recorded(&library, c), media.join("c.mkv").to_string_lossy());
+        assert!(media.join("c.mkv").exists());
+        assert_eq!(
+            std::fs::read(media.join("taken.mkv")).unwrap(),
+            b"someone else's file"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_rename_job_changes_nothing_and_accounts_for_every_file() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let a = register_media(&library, &media.join("a.mkv"), b"synthetic a");
+        let b = register_media(&library, &media.join("b.mkv"), b"synthetic b");
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let items = vec![
+            RenameItem {
+                local_id: a,
+                old: media.join("a.mkv"),
+                new: media.join("Show A.mkv"),
+            },
+            RenameItem {
+                local_id: b,
+                old: media.join("b.mkv"),
+                new: media.join("Show B.mkv"),
+            },
+        ];
+
+        run_renames(
+            &db.path,
+            items,
+            &tx,
+            &AtomicBool::new(true),
+            &AtomicBool::new(false),
+        );
+
+        let events: Vec<Event> = rx.try_iter().collect();
+        let skipped = events
+            .iter()
+            .filter(|e| matches!(e, Event::RenameFailed { message, .. } if message.contains("cancelled")))
+            .count();
+        assert_eq!(skipped, 2);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::RenameSummary {
+                renamed: 0,
+                not_renamed: 2
+            }
+        )));
+        assert!(matches!(events.last(), Some(Event::Finished)));
+        assert!(media.join("a.mkv").exists() && media.join("b.mkv").exists());
+        assert!(!media.join("Show A.mkv").exists() && !media.join("Show B.mkv").exists());
+        assert_eq!(
+            recorded(&db.open(), a),
+            media.join("a.mkv").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn batch_planning_answers_from_the_projection_thread_without_job_events() {
+        use animatic_anidb::commands::{EpNo, FileInfo};
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        library
+            .store_file_info(&FileInfo {
+                fid: 1,
+                aid: 2,
+                eid: 21,
+                size: 1000,
+                ed2k: Some("ab".repeat(16)),
+                anime_romaji: Some("Synthetic Show".into()),
+                epno: EpNo { kind: 1, number: 1 },
+                ..FileInfo::default()
+            })
+            .unwrap();
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::PlanRenames {
+            request: 5,
+            pattern: "A.Name + ' ' + E.EpisodeNo + '.mkv'".into(),
+            files: vec![
+                Candidate {
+                    local_id: 1,
+                    path: media.join("one.mkv"),
+                    fid: Some(1),
+                    base_path: String::new(),
+                },
+                Candidate {
+                    local_id: 2,
+                    path: media.join("two.mkv"),
+                    fid: None,
+                    base_path: String::new(),
+                },
+            ],
+        });
+
+        match wait_for(&worker, |e| matches!(e, Event::RenamesPlanned { .. })) {
+            Event::RenamesPlanned { request, rows } => {
+                assert_eq!(request, 5);
+                assert_eq!(rows.len(), 2);
+                assert!(rows[0].plan.can_apply(), "{:?}", rows[0]);
+                assert!(!rows[1].plan.can_apply() && !rows[1].plan.errors.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(worker.is_idle(), "planning never occupies the main worker");
     }
 
     #[test]

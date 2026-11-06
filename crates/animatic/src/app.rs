@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use animatic_core::db::Db;
 use animatic_core::format;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
-use animatic_core::rename::plan::{self, PatternKind, Plan};
+use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
 use animatic_core::secrets::{CredentialStorage, Credentials};
 use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
 use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedUpdate};
@@ -15,7 +15,7 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 
 use crate::worker::{
-    Event, Job, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
+    Event, Job, RenameItem, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
 };
 use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
@@ -441,6 +441,22 @@ struct RenamePreview {
     plan: Plan,
 }
 
+/// Batch rename window state: the plan of every ticked file, then the outcome of applying it.
+struct BatchRename {
+    /// Answers to older plan requests are ignored.
+    request: u64,
+    /// Number of files being planned.
+    files: usize,
+    /// `None` while the projection thread is planning.
+    rows: Option<Vec<BatchRow>>,
+    /// The confirmation was given and the rows that can be applied are with the worker.
+    applied: bool,
+    /// Outcome per local file id once it is known: how it was moved, or why it was not.
+    results: HashMap<i64, Result<String, String>>,
+    /// Files renamed and not renamed, once the worker finished the job.
+    summary: Option<(usize, usize)>,
+}
+
 /// Diagnostics state of the renaming pattern editor in Options.
 #[derive(Default)]
 struct PatternEditor {
@@ -485,6 +501,8 @@ pub struct AnimaticApp {
     about_open: bool,
     selected_local: Option<i64>,
     rename_preview: Option<RenamePreview>,
+    batch_rename: Option<BatchRename>,
+    rename_requests: u64,
     pattern_editor: PatternEditor,
     settings_guard: SettingsGuard,
     /// Startup warning about recovered settings, shown until dismissed.
@@ -575,6 +593,8 @@ impl AnimaticApp {
             selected_aid: None,
             selected_local: None,
             rename_preview: None,
+            batch_rename: None,
+            rename_requests: 0,
             pattern_editor: PatternEditor::default(),
             settings_guard,
             settings_notice,
@@ -1110,6 +1130,70 @@ impl AnimaticApp {
                         self.request_library_refresh();
                     }
                 }
+                Event::Renamed {
+                    local_id,
+                    old,
+                    new,
+                    copied,
+                    note,
+                } => {
+                    self.log(format!(
+                        "Renamed {} to {}{}",
+                        old.display(),
+                        new.display(),
+                        if copied {
+                            " (copied to the other volume and verified)"
+                        } else {
+                            ""
+                        }
+                    ));
+                    if let Some(note) = &note {
+                        self.error(note.clone());
+                    }
+                    self.mylist_ui.marked_locals.remove(&local_id);
+                    if let Some(batch) = &mut self.batch_rename {
+                        let how = match (copied, note) {
+                            (_, Some(note)) => note,
+                            (true, None) => "Renamed (copied and verified)".to_string(),
+                            (false, None) => "Renamed".to_string(),
+                        };
+                        batch.results.insert(local_id, Ok(how));
+                    }
+                    self.request_library_refresh();
+                }
+                Event::RenameFailed {
+                    local_id,
+                    old,
+                    new,
+                    message,
+                } => {
+                    self.error(format!(
+                        "Rename failed: {}: {message} (target {})",
+                        old.display(),
+                        new.display()
+                    ));
+                    if let Some(batch) = &mut self.batch_rename {
+                        batch.results.insert(local_id, Err(message));
+                    }
+                }
+                Event::RenameSummary {
+                    renamed,
+                    not_renamed,
+                } => {
+                    if let Some(batch) = &mut self.batch_rename {
+                        batch.summary = Some((renamed, not_renamed));
+                    }
+                    self.log(format!(
+                        "Rename finished: {renamed} renamed, {not_renamed} not renamed"
+                    ));
+                }
+                Event::RenamesPlanned { request, rows } => {
+                    if let Some(batch) = &mut self.batch_rename
+                        && batch.request == request
+                    {
+                        batch.rows = Some(rows);
+                    }
+                }
                 Event::Blocked { description } => {
                     self.error(format!("Command blocked: {description}"));
                     self.blocked_floor = self.loader.next_generation;
@@ -1387,23 +1471,7 @@ impl AnimaticApp {
             .ok_or("The selected file is not identified by AniDB")?;
         let old = PathBuf::from(&local.path);
         let manager = self.settings.file_managers.manager_for(&old);
-        let plan = match animatic_core::rename::objects::bindings_for_file(
-            &self.db,
-            fid,
-            &local.path,
-            &manager.base_path,
-        ) {
-            Ok(bindings) => plan::plan(
-                pattern,
-                &bindings,
-                &animatic_core::rename::objects::DbSource { db: &self.db },
-                &old,
-            ),
-            Err(e) => Plan {
-                errors: vec![e],
-                ..Plan::default()
-            },
-        };
+        let plan = plan::plan_local_file(&self.db, pattern, fid, &old, &manager.base_path);
         Ok(RenamePreview { id, old, plan })
     }
 
@@ -1472,14 +1540,12 @@ impl AnimaticApp {
                 });
             });
         if apply {
-            if let Some(new) = plan.target.as_ref().filter(|_| plan.can_apply()) {
-                match animatic_core::file_manager::move_file(&self.db, id, &old, new) {
-                    Ok(()) => {
-                        self.log(format!("Renamed {} to {}", old.display(), new.display()));
-                        self.request_library_refresh();
-                    }
-                    Err(e) => self.error(format!("Rename failed: {e}")),
-                }
+            if let Some(new) = plan.target.clone().filter(|_| plan.can_apply()) {
+                self.worker.submit(Job::RenameFiles(vec![RenameItem {
+                    local_id: id,
+                    old,
+                    new,
+                }]));
             }
             self.rename_preview = None;
         } else if edit_pattern {
@@ -1487,6 +1553,175 @@ impl AnimaticApp {
             self.rename_preview = None;
         } else if !open {
             self.rename_preview = None;
+        }
+    }
+
+    /// Every hashed file selected on **Hashed files** (Ctrl/Shift selection plus the primary
+    /// one): the one selection that Add to MyList… and Rename N selected… act on.
+    fn selected_locals(&self) -> BTreeSet<i64> {
+        let mut selected = self.mylist_ui.marked_locals.clone();
+        selected.extend(self.selected_local);
+        selected
+    }
+
+    /// Plan the rename of every selected file on the projection thread; its answer opens the
+    /// preview. Nothing is read or planned on the UI thread.
+    fn prepare_batch_rename(&mut self) {
+        if self.batch_rename.is_some() {
+            return;
+        }
+        let wanted = self.selected_locals();
+        let files: Vec<Candidate> = self
+            .views
+            .local
+            .rows
+            .iter()
+            .map(|&i| &self.projection.local[i])
+            .filter(|f| wanted.contains(&f.id))
+            .map(|f| {
+                let path = PathBuf::from(&f.path);
+                let base_path = self
+                    .settings
+                    .file_managers
+                    .manager_for(&path)
+                    .base_path
+                    .clone();
+                Candidate {
+                    local_id: f.id,
+                    path,
+                    fid: f.fid,
+                    base_path,
+                }
+            })
+            .collect();
+        if files.is_empty() {
+            self.error("Select hashed files for the batch rename first");
+            return;
+        }
+        self.rename_requests += 1;
+        let request = self.rename_requests;
+        self.batch_rename = Some(BatchRename {
+            request,
+            files: files.len(),
+            rows: None,
+            applied: false,
+            results: HashMap::new(),
+            summary: None,
+        });
+        self.worker.submit(Job::PlanRenames {
+            request,
+            pattern: self.settings.renaming_pattern.clone(),
+            files,
+        });
+    }
+
+    /// Preview of a batch rename: one line per file with its planned target or its problem.
+    /// "Rename N files" is the one explicit confirmation; it applies only the valid rows.
+    fn batch_rename_window(&mut self, ctx: &egui::Context) {
+        let Some(batch) = self.batch_rename.as_ref() else {
+            return;
+        };
+        let mut open = true;
+        let mut close = false;
+        let mut apply = false;
+        let mut edit_pattern = false;
+        egui::Window::new("Batch rename")
+            .open(&mut open)
+            .default_width(760.0)
+            .show(ctx, |ui| {
+                let Some(rows) = &batch.rows else {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Planning the renames of {} files…", batch.files));
+                    });
+                    return;
+                };
+                let valid = rows.iter().filter(|r| r.plan.can_apply()).count();
+                let named = rows.iter().filter(|r| r.plan.already_named()).count();
+                let blocked = rows.len() - valid - named;
+                ui.label(format!(
+                    "{valid} of {} files can be renamed, {blocked} blocked, {named} already \
+                     named as the pattern says.",
+                    rows.len()
+                ));
+                if blocked > 0 && !batch.applied {
+                    ui.label(
+                        "Blocked files are skipped; hover a line for every problem. Only the \
+                         ready files are renamed.",
+                    );
+                }
+                ui.add_space(6.0);
+                let line = ui.text_style_height(&egui::TextStyle::Body);
+                egui::ScrollArea::vertical()
+                    .max_height(340.0)
+                    .auto_shrink([false, true])
+                    .show_rows(ui, line, rows.len(), |ui, range| {
+                        for row in &rows[range] {
+                            batch_rename_line(
+                                ui,
+                                row,
+                                batch.applied,
+                                batch.results.get(&row.local_id),
+                            );
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if batch.applied {
+                        match batch.summary {
+                            Some((renamed, not_renamed)) => {
+                                ui.label(format!(
+                                    "Renamed {renamed} files, {not_renamed} not renamed."
+                                ));
+                            }
+                            None => {
+                                ui.spinner();
+                                ui.label("Renaming…");
+                            }
+                        }
+                    } else {
+                        let label = if valid == 1 {
+                            "Rename 1 file".to_string()
+                        } else {
+                            format!("Rename {valid} files")
+                        };
+                        if ui
+                            .add_enabled(valid > 0, egui::Button::new(label))
+                            .clicked()
+                        {
+                            apply = true;
+                        }
+                        if blocked > 0 && ui.button("Edit pattern in Options").clicked() {
+                            edit_pattern = true;
+                        }
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if apply
+            && let Some(batch) = self.batch_rename.as_mut()
+            && let Some(rows) = &batch.rows
+        {
+            let items: Vec<RenameItem> = rows
+                .iter()
+                .filter(|r| r.plan.can_apply())
+                .filter_map(|r| {
+                    r.plan.target.clone().map(|new| RenameItem {
+                        local_id: r.local_id,
+                        old: r.old.clone(),
+                        new,
+                    })
+                })
+                .collect();
+            batch.applied = true;
+            self.worker.submit(Job::RenameFiles(items));
+        } else if edit_pattern {
+            self.settings_open = true;
+            self.batch_rename = None;
+        } else if close || !open {
+            self.batch_rename = None;
         }
     }
 
@@ -2354,20 +2589,31 @@ impl AnimaticApp {
                 projection,
                 views,
                 selected_local,
+                mylist_ui,
                 ..
             } = self;
             if views
                 .local
                 .refresh(&key, || filter_local(projection, &key.1))
-                && let Some(id) = *selected_local
-                && !views
+            {
+                if let Some(id) = *selected_local
+                    && !views
+                        .local
+                        .rows
+                        .iter()
+                        .any(|&i| projection.local[i].id == id)
+                {
+                    // Never leave an invisible selection that Rename/Open/Play would act on.
+                    *selected_local = None;
+                }
+                // Nor an invisible tick that a batch rename would act on.
+                let listed: BTreeSet<i64> = views
                     .local
                     .rows
                     .iter()
-                    .any(|&i| projection.local[i].id == id)
-            {
-                // Never leave an invisible selection that Rename/Open/Play would act on.
-                *selected_local = None;
+                    .map(|&i| projection.local[i].id)
+                    .collect();
+                mylist_ui.marked_locals.retain(|id| listed.contains(id));
             }
         }
         ui.horizontal(|ui| {
@@ -2379,6 +2625,38 @@ impl AnimaticApp {
                 .clicked()
             {
                 self.prepare_rename();
+            }
+            let marked = self.selected_locals().len();
+            if ui
+                .add_enabled(
+                    marked > 0,
+                    egui::Button::new(if marked > 0 {
+                        format!("Rename {marked} selected…")
+                    } else {
+                        "Rename selected…".to_string()
+                    }),
+                )
+                .on_hover_text("Preview and rename the selected files together")
+                .clicked()
+            {
+                self.prepare_batch_rename();
+            }
+            if ui
+                .button("Select all shown")
+                .on_hover_text("Select every listed file (Rename and Add to MyList act on all)")
+                .clicked()
+            {
+                self.mylist_ui.marked_locals.extend(
+                    self.views
+                        .local
+                        .rows
+                        .iter()
+                        .map(|&i| self.projection.local[i].id),
+                );
+            }
+            if marked > 0 && ui.button("Clear selection").clicked() {
+                self.mylist_ui.marked_locals.clear();
+                self.selected_local = None;
             }
             if ui
                 .add_enabled(self.selected_local.is_some(), egui::Button::new("Open"))
@@ -3558,6 +3836,8 @@ impl AnimaticApp {
         self.selected_aid = None;
         self.selected_local = None;
         self.rename_preview = None;
+        self.mylist_ui.marked_locals.clear();
+        self.batch_rename = None;
         self.activity = Activity::default();
         self.loader.outstanding = None;
         self.loader.last_request = None;
@@ -3730,6 +4010,7 @@ impl eframe::App for AnimaticApp {
         self.library_safety_windows(&ctx);
         self.rename_window(&ctx);
         self.mylist_windows(&ctx);
+        self.batch_rename_window(&ctx);
         if self.about_open {
             let mut open = true;
             egui::Window::new("About Animatic")
@@ -3987,6 +4268,70 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.horizontal(|ui| {
         ui.label(label);
         ui.text_edit_singleline(value);
+    });
+}
+
+/// One line of the batch rename preview: status, the file and its planned target or problem.
+/// The tooltip carries the full paths and every diagnostic.
+fn batch_rename_line(
+    ui: &mut egui::Ui,
+    row: &BatchRow,
+    applied: bool,
+    result: Option<&Result<String, String>>,
+) {
+    let name = row
+        .old
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let (color, status, text) = match result {
+        Some(Ok(how)) => (
+            Color32::LIGHT_GREEN,
+            how.clone(),
+            row.plan.target.as_ref().map(|t| t.display().to_string()),
+        ),
+        Some(Err(why)) => (
+            Color32::LIGHT_RED,
+            format!("Not renamed: {why}"),
+            row.plan.target.as_ref().map(|t| t.display().to_string()),
+        ),
+        None if row.plan.can_apply() => (
+            Color32::LIGHT_GREEN,
+            if applied { "Waiting" } else { "Ready" }.to_string(),
+            row.plan.target.as_ref().map(|t| t.display().to_string()),
+        ),
+        None if row.plan.already_named() => (Color32::GRAY, "Already named".to_string(), None),
+        None => (
+            Color32::LIGHT_RED,
+            "Blocked".to_string(),
+            Some(
+                row.plan
+                    .errors
+                    .first()
+                    .or(row.plan.warnings.first())
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        ),
+    };
+    let response = ui
+        .horizontal(|ui| {
+            ui.colored_label(color, status);
+            let line = match text {
+                Some(text) if row.plan.can_apply() => format!("{name} → {text}"),
+                Some(text) => format!("{name}: {text}"),
+                None => name.clone(),
+            };
+            ui.add(egui::Label::new(line).truncate());
+        })
+        .response;
+    response.on_hover_ui(|ui| {
+        ui.label(format!("Current path: {}", row.old.display()));
+        if let Some(target) = &row.plan.target {
+            ui.label(format!("Planned path: {}", target.display()));
+        }
+        show_plan(ui, &row.plan);
     });
 }
 

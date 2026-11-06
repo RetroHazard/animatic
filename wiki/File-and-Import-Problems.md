@@ -87,8 +87,9 @@ Speed is limited by the disk, network share, USB bridge or security scanner read
 ## Rename problems
 
 Renaming is manual and previewed: choose a file on **Hashed files**, **Rename…**, review the
-**Confirm rename** window, then **Rename file**. Nothing renames automatically, and there is
-no undo.
+**Confirm rename** window, then **Rename file**; or select several files and use **Rename N
+selected…** and **Batch rename** (see [Renaming files](Renaming-Files.md)). Nothing renames
+automatically, and there is no undo.
 
 | Message | Meaning and action |
 |---|---|
@@ -103,31 +104,43 @@ no undo.
 | `The pattern produced an empty file name; nothing would be renamed. …` | Same cause; an empty target is an error, never a silent no-op |
 | `Renaming "<old>" to "<new>" would result in an invalid file name (<why>); rename skipped!` | A path component contains one of `<>:"\|?*` or a control character, is empty, is longer than 255 (UTF-16 units on Windows, UTF-8 bytes elsewhere), or is a reserved device name such as `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Trailing dots and spaces are trimmed first. The rules apply on every platform |
 | `The file already has the name the pattern produces` | Nothing to do |
-| `Rename failed: destination already exists: <path>` | A collision. The preview does **not** check for an existing target; the check happens when you apply it. Change the pattern or move the other file |
-| `Rename failed: I/O error: <os error>` | The filesystem operation failed (see below) |
-| `Rename failed: database error: …` | See the warning below |
+| `Rename failed: <file>: destination already exists: <path> (target …)` | A collision. A single-file preview does **not** check for an existing target; the check happens when you apply it (the batch preview does check, and marks such a line blocked). Change the pattern or move the other file |
+| `Rename failed: <file>: I/O error: <os error> (target …)` | The filesystem operation failed (see below) |
+| `Rename failed: <file>: database error: … (target …)` | The library could not be updated; see below |
+| `Rename failed: <file>: the file changed since it was hashed; hash it again before moving it …` | A move to another drive copies and verifies against the stored hash, so the file must still be the one that was hashed. Hash it again, then retry |
+| `Rename failed: <file>: the library has no stored hash for this file, so a copy to another volume cannot be verified …` | Hash the file (Add files…), then retry |
+| `Rename failed: <file>: the copy does not match the hash stored for this file; nothing was moved …` | The copy was damaged or the file changed while it was copied. Original and library are untouched and the temporary copy is removed; check the disks and retry |
+| `Rename failed: <file>: the library now records this file at …` / `… the file is no longer in the library` | The library entry changed after the preview (a rescan, another rename). Reopen the preview |
+| `Rename failed: <file>: Cancelled; the file and its library entry are unchanged` / `Skipped: cancelled` | You pressed Cancel; nothing was moved for that file |
 
 Details:
 
-- **Collisions** are detected only at apply time. Two files that map to the same name will
-  succeed once and fail the second time.
-- **Cross-volume moves fail.** A rename is a filesystem rename, not copy and delete. If the
-  pattern or the rule's base path puts the target on a different volume or drive, the
-  operating system refuses and nothing is moved. There is no partial copy.
+- **Collisions** are detected when you apply (and, in the batch preview, also when planning).
+  Two files that map to the same name succeed once and fail the second time; the batch preview
+  blocks the second line up front.
+- **Moves to another drive or filesystem** are copied, verified and swapped (see [Renaming
+  files](Renaming-Files.md#what-applying-does)): the copy is made beside the destination as a
+  hidden `.animatic-move-*.tmp` file, which is removed on any failure. It needs free space for a
+  whole extra copy of the file on the destination volume and reads the file twice (copy, then
+  verify). A crash during a copy can leave that hidden file behind; delete it with Animatic
+  closed (the original is untouched).
+- **The old file could not be removed** after a verified copy: the library already points at the
+  new copy, the Log says so, and the old file remains as a duplicate you can delete.
 - **Missing folders are created before the rename.** If the rename then fails, the new empty
   folders remain; Animatic does not remove them.
 - **Open files and permissions:** a file held open by a player or scanner, a read-only
   destination, or an operating-system limit on total path length (the planner limits each
   name component but not the whole path) causes an I/O error.
-- The library path is updated only **after** a successful rename. If the file moved but the
-  database update then failed (`Rename failed: database error: …`, for example from a busy
-  database), the library still shows the old path. Add the file again at its new location with
-  **File → Add files…**, or let a scan hash it, and remove the stale record with a scan that
-  has **auto remove** or accept it as stale.
-- The existence check and the rename are two separate steps, so a file created at the target in
-  between is not detected by Animatic. On Linux the rename can then **replace** that newly
+- The library path is updated only **after** the file reached its new place, and a failed update
+  is undone (the rename is reverted, or the new copy removed), so the library keeps naming a
+  file that exists. If the undo itself is impossible (for example the file is locked) the library
+  can still show the old path; add the file again at its new location with **File → Add files…**,
+  or let a scan hash it, and remove the stale record with a scan that has **auto remove** or
+  accept it as stale.
+- On the same drive the existence check and the rename are two separate steps, so a file created
+  at the target in between is not detected by Animatic. The rename can then **replace** that newly
   created file instead of failing with a collision, so do not let other programs write to
-  the destination folder while you rename.
+  the destination folder while you rename. A move to another drive never replaces such a file.
 
 For syntax and functions see [Rename language](Rename-Language.md).
 

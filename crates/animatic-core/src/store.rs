@@ -705,6 +705,32 @@ impl Db {
         Ok(())
     }
 
+    /// Stored path and hashes of local file `id`, or `None` when the row is gone. Used to check
+    /// that a move still concerns the file the user saw and to verify a copy against the hash
+    /// recorded when the file was hashed.
+    pub fn local_file_record(&self, id: i64) -> Result<Option<(String, Hashes)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT l.path, h.size, h.ed2k, h.crc32, h.md5, h.sha1
+                 FROM local_file l JOIN local_hash h ON h.id = l.hash_id WHERE l.id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        Hashes {
+                            size: r.get::<_, i64>(1)? as u64,
+                            ed2k: r.get(2)?,
+                            crc32: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                            md5: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                            sha1: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                        },
+                    ))
+                },
+            )
+            .optional()?)
+    }
+
     pub fn local_file_id_by_path(&self, path: &str) -> Result<Option<(i64, i64)>> {
         Ok(self
             .conn()
