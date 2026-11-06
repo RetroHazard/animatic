@@ -76,6 +76,13 @@ the generated line for that pull request's squash commit.
   plain-text settings move to the keystore on the first save. Entries are keyed by the settings
   file path, so portable profiles do not share credentials. Without a usable keystore the values
   stay in the settings file as before and Options shows why; no credential is ever lost.
+- AniDB's request limits hold across queue runs and restarts: UDP and HTTP spacing is shared by
+  the whole program and saved before each request. The title list, each anime and each known file
+  are not requested again within 24 hours (7 days for files) of the last attempt, even after a
+  failed or interrupted request; **Download anime titles**, the detail window's Refresh and the
+  full update say when the next request is allowed. A busy `anidb.local_port` is an error instead
+  of a silent switch to another port, a banned client version (reply 504) blocks the queue until
+  corrected, and a login without a reply backs off from 30 s up to 2 hours across restarts.
 
 ### Changed
 
