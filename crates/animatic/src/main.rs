@@ -1,7 +1,9 @@
 mod app;
+mod auto_queue;
 mod hash_jobs;
 mod media;
 mod scheduler;
+mod session;
 mod table;
 mod tray;
 mod worker;

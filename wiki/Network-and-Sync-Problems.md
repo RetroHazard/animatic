@@ -17,7 +17,11 @@ Animatic enforces AniDB's request spacing for the whole program, not per run: UD
 2 s apart for the first five, then 4 s apart (10 idle minutes restart the burst), and HTTP
 requests 2 s apart. The time of each request is saved in the database before it is sent, so
 restarting Animatic does not shorten the gaps (after a restart the first packet waits 4 s from
-the last one). The client also re-authenticates when a session expires. A long queue therefore
+the last one). The client also re-authenticates when a session expires. With **Run the command
+queue automatically** on, one login is kept between runs and looked after in between (an idle
+logout, a keep-alive command, a `PING` behind a router; see
+[Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)); those packets
+keep the same spacing. A long queue therefore
 takes a long time; that is not a hang. AniDB also asks clients not to repeat requests: the
 title list is requested at most once per 24 hours, an anime at most once per 24 hours and a file
 at most once per 7 days (see [Request limits](AniDB-Synchronization.md#request-limits)). The
@@ -34,6 +38,9 @@ UDP API cannot use an HTTP proxy.
 | `AniDB unavailable, retry in N min` | The server asked you to wait (or the HTTP API returned status 429, treated as a 30-minute wait) |
 | `no reply to the AniDB login (AUTH); the next try is allowed in …` | The login got no answer. Animatic waits longer after every further unanswered login: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 hours, and starts over after a successful login. The step survives restarts. Check the server name, the local port and your firewall |
 | `cannot save the AniDB request state, nothing was sent: …` | The database could not record the time of the request, so Animatic did not send it (disk full or database locked). Retried after 60 s |
+| `Automatic command queue run postponed (…); it starts when that is over` | Only with the automatic option on. The reason is Work offline, an AniDB cooldown, an unset user name, password or client name, another task, an open import, settings review or restore, or unsaved changes. Nothing is wrong: the run starts by itself when the reason is gone, and nothing was sent meanwhile |
+| `AniDB session upkeep failed: …` | The keep-alive command or the `PING` that looks after a kept login got no answer or an error (shown after the usual cause text). The login is forgotten, the usual cooldown starts for network errors and bans, and the next run logs in again |
+| `Logged out of AniDB: the session was idle` / `… automatic queue runs are off` | Routine: the kept login ended after `idle_logout_minutes` without commands, or because you switched the automatic option off |
 
 Transient network failures never lose queued work: the command stays in the queue and syncing
 pauses for 60 seconds (see [Cooldowns and bans](#cooldowns-and-bans)).
@@ -47,10 +54,13 @@ name (a whole number of 1 or more, default `1`); Animatic updates never change i
 settings import does not set it (see the [Settings reference](Settings-Reference.md)). For
 registration rules see [AniDB client registration](First-Launch.md#anidb-client-registration).
 
-The queue never runs on its own. **Tools → Run command queue** and **Queue → Synchronize now**
+The queue runs on its own only if you switch on **Run the command queue automatically**
+(off by default; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)).
+It never sends MyList removals: the Queue page shows how many wait for you to click
+**Synchronize now**. **Tools → Run command queue** and **Queue → Synchronize now**
 take a snapshot of the **current in-memory options** (saved or not) at the moment you click.
 With **Work offline** ticked they send nothing, log `Offline mode is enabled; commands remain
-queued`, and leave the queue alone.
+queued`, and leave the queue alone; an automatic run is postponed instead.
 
 | Message (in the **Last error** column, the **Log** or the status bar) | Meaning | Effect | Action |
 |---|---|---|---|

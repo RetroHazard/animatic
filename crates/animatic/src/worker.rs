@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::HttpClient;
 use animatic_anidb::limits::Limits;
-use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
+use animatic_anidb::udp::Config as UdpConfig;
 use animatic_core::auto_rename::{self, AutoRenameMemory};
 use animatic_core::db::Db;
 use animatic_core::file_manager::{MoveControl, MoveMethod, clear_emptied_folders, move_file};
@@ -19,13 +19,15 @@ use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityRepor
 use animatic_core::mylist_export::ExportLimits;
 use animatic_core::rename::plan::{BatchRow, Candidate, Plan};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
-use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
+use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES, QueueScope};
 use animatic_core::update::{
     InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
 };
 
+use crate::auto_queue::{self, QueueControl};
 use crate::hash_jobs;
 use crate::scheduler::{self, ScanControl};
+use crate::session::{EXIT_LOGOUT_WAIT, SessionSlot};
 use crossbeam_channel::{Receiver, Sender};
 
 mod covers;
@@ -92,6 +94,9 @@ pub enum Job {
     /// `VACUUM` the library.
     CompactLibrary,
     ProcessQueue(AnidbSettings),
+    /// An automatic queue run (roadmap M5.5), submitted by the queue scheduler: like
+    /// `ProcessQueue`, but it never sends `MylistDelete` (those wait for the user's run).
+    AutoProcessQueue(AnidbSettings),
     /// Look for leftover marked import folders below `temp_root` (see `legacy::workdir`).
     FindLegacyLeftovers {
         temp_root: PathBuf,
@@ -283,6 +288,15 @@ pub struct Worker {
     scan: Arc<ScanControl>,
     scheduler_stop: Option<Sender<()>>,
     scheduler: Option<std::thread::JoinHandle<()>>,
+    /// Settings and blocking state for automatic queue runs and the kept AniDB session; see
+    /// [`crate::auto_queue`] and [`crate::session`].
+    queue: Arc<QueueControl>,
+    queue_scheduler: Option<std::thread::JoinHandle<()>>,
+    /// True while a queue run is in progress or an AniDB session is kept: a logout is worth
+    /// waiting for at exit.
+    session_open: Arc<AtomicBool>,
+    /// Disconnects when the main worker thread has ended.
+    exited: Receiver<()>,
 }
 
 impl Worker {
@@ -294,15 +308,22 @@ impl Worker {
         let pause = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let pending = Arc::new(AtomicUsize::new(0));
+        let session_open = Arc::new(AtomicBool::new(false));
+        let queue = Arc::new(QueueControl::new());
+        let (exit_tx, exited) = crossbeam_channel::bounded(1);
         let flags = RunFlags {
             cancel: cancel.clone(),
             pause: pause.clone(),
             shutdown: shutdown.clone(),
             pending: pending.clone(),
+            session_open: session_open.clone(),
+            queue: queue.clone(),
+            exit: exit_tx,
         };
         let projection_db = db_path.clone();
         let projection_events = event_tx.clone();
         let scheduler_events = event_tx.clone();
+        let queue_events = event_tx.clone();
         let projection_shutdown = shutdown.clone();
         let main_loads = load_tx.clone();
         // The one AniDB request limiter of the process, shared by the queue runs and covers.
@@ -329,10 +350,19 @@ impl Worker {
             job_tx.clone(),
             pending.clone(),
             scheduler_events,
-            scheduler_stop_rx,
+            scheduler_stop_rx.clone(),
             scheduler::POLL,
         );
         let main_limits = limits.clone();
+        let queue_scheduler = auto_queue::spawn(
+            queue.clone(),
+            db_path.clone(),
+            job_tx.clone(),
+            pending.clone(),
+            queue_events,
+            scheduler_stop_rx,
+            auto_queue::Timing::DEFAULT,
+        );
         let main = std::thread::Builder::new()
             .name("animatic-worker".into())
             .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags, main_limits))
@@ -355,6 +385,10 @@ impl Worker {
             main: Some(main),
             scan,
             scheduler_stop: Some(scheduler_stop),
+            queue,
+            queue_scheduler: Some(queue_scheduler),
+            session_open,
+            exited,
             scheduler: Some(scheduler),
         }
     }
@@ -369,6 +403,11 @@ impl Worker {
     /// long queue run never delays it, but it shares the process-wide request limiter.
     pub fn load_cover(&self, job: CoverJob) {
         let _ = self.covers.send(CoverMsg::Load(job));
+    }
+
+    /// The channel to the automatic queue scheduler and the kept AniDB session.
+    pub fn queue_control(&self) -> &QueueControl {
+        &self.queue
     }
 
     /// Queue a job. Projection loads are served immediately by their own thread and neither
@@ -444,9 +483,12 @@ impl Worker {
     fn close(&mut self, join_main: bool) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.cancel.store(true, Ordering::Relaxed);
-        // Dropping the sender wakes the scheduler thread, which then ends without submitting.
+        // Dropping the sender wakes the scheduler threads, which then end without submitting.
         drop(self.scheduler_stop.take());
         if let Some(scheduler) = self.scheduler.take() {
+            let _ = scheduler.join();
+        }
+        if let Some(scheduler) = self.queue_scheduler.take() {
             let _ = scheduler.join();
         }
         let _ = self.jobs.send(Job::Stop);
@@ -463,6 +505,10 @@ impl Worker {
             if let Some(main) = self.main.take() {
                 let _ = main.join();
             }
+        } else if self.session_open.load(Ordering::SeqCst) {
+            // The worker thread logs out of AniDB on its way out. Wait for that, a bounded time
+            // (best effort: AniDB drops an unused session by itself), before the process ends.
+            let _ = self.exited.recv_timeout(EXIT_LOGOUT_WAIT);
         }
     }
 }
@@ -532,9 +578,11 @@ impl Drop for PendingJob {
 }
 
 impl Drop for Worker {
-    /// Cancels the running job and waits only for the projection thread: it finishes accepted
+    /// Cancels the running job and waits for the projection thread: it finishes accepted
     /// statistics exports and a load in progress (local database reads/writes, no network). The
-    /// main worker thread is not joined: it may be inside a network exchange of up to 20 s.
+    /// main worker thread is not joined: it may be inside a network exchange of up to 20 s. Only
+    /// when an AniDB session is open (or a queue run may open one) does it wait, for at most
+    /// [`EXIT_LOGOUT_WAIT`], for the worker's logout.
     fn drop(&mut self) {
         self.close(false);
     }
@@ -546,6 +594,12 @@ struct RunFlags {
     pause: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
+    /// Set by the worker while a queue run is in progress or an AniDB session is kept.
+    session_open: Arc<AtomicBool>,
+    /// Settings for looking after a kept session; see [`crate::session`].
+    queue: Arc<QueueControl>,
+    /// Dropped when the worker thread ends, which wakes `Worker::close`.
+    exit: Sender<()>,
 }
 
 fn run(
@@ -561,15 +615,37 @@ fn run(
         pause,
         shutdown,
         pending,
+        session_open,
+        queue,
+        exit: _exit,
     } = flags;
     // One limiter for the whole process: every queue run builds new clients, but they all take
     // their send slots from here (and so does the cover thread), and the send times are saved
     // so a restart keeps the spacing.
-    let network = Network::new(limits);
+    let network = Network::new(limits, session_open);
     // What automatic rename last did per file, so a scan or a queue run never repeats a note or
     // retries a failed move unchanged (see `animatic_core::auto_rename`).
     let mut auto_rename_memory = AutoRenameMemory::default();
-    while let Ok(job) = jobs.recv() {
+    loop {
+        // Before waiting: do what a kept AniDB session needs now, and learn when it next needs
+        // something (a ping, a keep-alive command, the idle logout).
+        let wake = network.session.maintain(&db_path, &queue.anidb(), &events);
+        let received = match wake {
+            Some(wait) => jobs.recv_timeout(wait),
+            None => jobs
+                .recv()
+                .map_err(|_| crossbeam_channel::RecvTimeoutError::Disconnected),
+        };
+        let job = match received {
+            Ok(job) => job,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        };
         let _counted = PendingJob::of(&job, &pending);
         if shutdown.load(Ordering::Relaxed) {
             break;
@@ -672,6 +748,9 @@ fn run(
             }
             Job::ProcessQueue(settings) => {
                 process_queue(&db_path, settings, &events, &cancel, &network)
+            }
+            Job::AutoProcessQueue(settings) => {
+                process_auto_queue(&db_path, settings, &events, &cancel, &network)
             }
             Job::QueueFullUpdate => {
                 let _ = events.send(Event::Started {
@@ -954,6 +1033,9 @@ fn run(
             }
         }
     }
+    // The worker ends (the application closes, or the library is about to be replaced): leave
+    // AniDB politely, with a bounded wait.
+    network.session.logout_on_exit(&db_path, &queue.anidb());
 }
 
 /// Import the MyList export `source` into the library at `db_path`. The text of the error says
@@ -1676,7 +1758,7 @@ fn describe_wait(seconds: i64) -> String {
 }
 
 /// Persist a cooldown so it also holds after a restart, and tell the UI.
-fn start_cooldown(
+pub(crate) fn start_cooldown(
     db: &Db,
     wait: Duration,
     reason: &str,
@@ -1754,28 +1836,84 @@ fn fail_command(
 }
 
 /// What outlives one queue run in the worker: the limiter every client of every run draws its
-/// send slots from, and the reply timeout of the UDP clients.
+/// send slots from, the reply timeout of the UDP clients, and the AniDB session that is kept
+/// between runs while automatic runs are on (see [`crate::session`]).
 struct Network {
     limits: Arc<Limits>,
     udp_timeout: Duration,
+    session: SessionSlot,
 }
 
 impl Network {
-    fn new(limits: Arc<Limits>) -> Network {
+    /// `session_open` is set while a queue run is in progress or a session is kept.
+    fn new(limits: Arc<Limits>, session_open: Arc<AtomicBool>) -> Network {
         Network {
             limits,
             udp_timeout: UdpConfig::default().timeout,
+            session: SessionSlot::new(session_open),
+        }
+    }
+
+    fn udp_config(&self, settings: &AnidbSettings) -> UdpConfig {
+        UdpConfig {
+            server: settings.udp_server.clone(),
+            local_port: settings.local_port,
+            client: settings.client_name.clone(),
+            client_version: settings.client_version,
+            username: settings.username.clone(),
+            password: settings.password.clone(),
+            api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
+            timeout: self.udp_timeout,
         }
     }
 }
 
-/// Run the AniDB command queue until it is empty, cancelled, blocked or put on cooldown.
+/// Run the AniDB command queue until it is empty, cancelled, blocked or put on cooldown: the
+/// user's run (**Synchronize now**, **Run command queue**), which sends every runnable command.
 fn process_queue(
     db_path: &Path,
     settings: AnidbSettings,
     events: &Sender<Event>,
     cancel: &AtomicBool,
     network: &Network,
+) {
+    run_queue(
+        db_path,
+        settings,
+        events,
+        cancel,
+        network,
+        QueueScope::Manual,
+    );
+}
+
+/// An automatic run (roadmap M5.5): like [`process_queue`], but it never sends `MylistDelete`,
+/// which stays queued until the user runs the queue, and it says nothing when there is nothing
+/// for it to do.
+fn process_auto_queue(
+    db_path: &Path,
+    settings: AnidbSettings,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    network: &Network,
+) {
+    run_queue(
+        db_path,
+        settings,
+        events,
+        cancel,
+        network,
+        QueueScope::Automatic,
+    );
+}
+
+fn run_queue(
+    db_path: &Path,
+    settings: AnidbSettings,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    network: &Network,
+    scope: QueueScope,
 ) {
     if settings.offline {
         let _ = events.send(Event::Error(
@@ -1806,30 +1944,36 @@ fn process_queue(
             return;
         }
     }
+    if scope == QueueScope::Automatic {
+        // Another run, or the user, may have emptied the queue since it was submitted.
+        match db.queue_peek_in(scope) {
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(e) => {
+                let _ = events.send(Event::Error(e.to_string()));
+                return;
+            }
+        }
+    }
     let _ = events.send(Event::Started {
-        label: "Synchronizing with AniDB".into(),
+        label: match scope {
+            QueueScope::Manual => "Synchronizing with AniDB".into(),
+            QueueScope::Automatic => "Synchronizing with AniDB (automatic run)".into(),
+        },
         total: 0,
     });
-    let mut udp = UdpClient::new(
-        UdpConfig {
-            server: settings.udp_server.clone(),
-            local_port: settings.local_port,
-            client: settings.client_name.clone(),
-            client_version: settings.client_version,
-            username: settings.username.clone(),
-            password: settings.password.clone(),
-            api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
-            timeout: network.udp_timeout,
-        },
-        network.limits.clone(),
-    );
+    // The session of an earlier run is reused when it is kept (automatic runs on).
+    let keep_session = settings.auto_run_queue;
+    let mut udp = network
+        .session
+        .take(network.udp_config(&settings), &network.limits);
     let mut http = HttpClient::new(
         &settings.client_name,
         settings.client_version,
         network.limits.clone(),
     );
     while !cancel.load(Ordering::Relaxed) {
-        let next = match db.queue_peek() {
+        let next = match db.queue_peek_in(scope) {
             Ok(v) => v,
             Err(e) => {
                 let _ = events.send(Event::Error(e.to_string()));
@@ -1871,7 +2015,8 @@ fn process_queue(
     {
         log::warn!("could not save the image server: {e}");
     }
-    let _ = udp.logout();
+    // Logs out and drops the client, unless the session is kept for the next run.
+    network.session.finish(udp, keep_session);
     let _ = events.send(Event::Finished);
 }
 
@@ -2061,6 +2206,7 @@ mod tests {
         Network {
             limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
             udp_timeout: Duration::from_secs(5),
+            session: SessionSlot::new(Arc::default()),
         }
     }
 
@@ -3390,6 +3536,7 @@ mod tests {
         let network = Network {
             limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
             udp_timeout: Duration::from_millis(300),
+            session: SessionSlot::new(Arc::default()),
         };
         run_queue_with(&db, &settings(fixture.addr), &network);
         let seen = seen.lock().clone();
@@ -3477,6 +3624,7 @@ mod tests {
             let network = Network {
                 limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
                 udp_timeout: Duration::from_millis(300),
+                session: SessionSlot::new(Arc::default()),
             };
             let started = format::now();
             let events = run_queue_with(&db, &s, &network);
@@ -3603,3 +3751,6 @@ mod tests {
         assert_eq!(fixture.packets(), 0);
     }
 }
+
+#[cfg(test)]
+mod session_tests;

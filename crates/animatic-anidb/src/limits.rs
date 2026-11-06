@@ -58,6 +58,30 @@ pub const AUTH_BACKOFF: [Duration; 6] = [
     Duration::from_secs(2 * 3600),
 ];
 
+/// AniDB drops a login session after this long without a command. Rule: UDP API, "Session" in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)
+/// (35 minutes idle).
+pub const UDP_SESSION_TIMEOUT: Duration = Duration::from_secs(35 * 60);
+
+/// Longest a session that is being kept goes without a command: AniDB asks for one "at least
+/// every 30 min". Rule: UDP API, "Session" in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits).
+pub const UDP_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// Longest an idle session may be held before the client logs out. It keeps every setting
+/// below [`UDP_KEEP_ALIVE_INTERVAL`], so a session never reaches [`UDP_SESSION_TIMEOUT`]
+/// unnoticed. Rule: UDP API, "Session" in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)
+/// ("`LOGOUT` when idling longer").
+pub const UDP_MAX_IDLE_LOGOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Longest silence on a NAT-mapped session before a `PING nat=1` keeps the mapping, and with
+/// it the port AniDB bound the session to. Rule: UDP API, "NAT" in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)
+/// (router timeouts of 5 to 15 minutes, `PING` "no more often than needed"). The 4 minutes are
+/// a design choice: just under the shortest timeout.
+pub const UDP_NAT_PING_INTERVAL: Duration = Duration::from_secs(4 * 60);
+
 /// Wall-clock time and sleeping, replaceable so tests need not wait.
 pub trait Clock: Send + Sync {
     /// Milliseconds since the Unix epoch.
@@ -145,6 +169,13 @@ impl Limits {
             udp: Mutex::new(None),
             http: Mutex::new(None),
         })
+    }
+
+    /// Milliseconds since the Unix epoch on the clock that spaces the packets. Everything that
+    /// asks "how long ago was the last packet" uses this clock, not its own, so tests that
+    /// drive the spacing with a manual clock drive session timing too.
+    pub fn now_ms(&self) -> i64 {
+        self.clock.now_ms()
     }
 
     /// Wait until the next UDP packet may be sent, and save its send time. Call it right before

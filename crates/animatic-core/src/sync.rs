@@ -43,6 +43,35 @@ pub struct QueueEntry {
     pub blocked: bool,
 }
 
+/// Which queued commands a run may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueScope {
+    /// Every runnable command: what the user starts with **Synchronize now**.
+    Manual,
+    /// What an automatic run may send: everything except `MylistDelete`. Removals from
+    /// MyList are destructive on AniDB, so they stay queued until the user runs the queue.
+    Automatic,
+}
+
+impl QueueScope {
+    /// SQL that narrows `WHERE blocked = 0` to this scope. A queued command is its serde JSON
+    /// (externally tagged), so a delete starts with its variant name; a test pins the shape.
+    fn filter(self) -> &'static str {
+        match self {
+            QueueScope::Manual => "",
+            QueueScope::Automatic => " AND payload NOT LIKE '{\"MylistDelete\":%'",
+        }
+    }
+}
+
+/// What the runnable part of the queue looks like: see [`Db::queue_pending`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuePending {
+    pub count: i64,
+    /// Highest id among them, 0 when there are none.
+    pub newest: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Command {
     /// Look a hashed file up on AniDB; optionally add it to mylist with `add`.
@@ -562,14 +591,19 @@ impl Db {
     /// Next runnable command: lowest priority value, oldest first; blocked rows are skipped.
     /// A row this version cannot read is blocked with an error (never deleted) and skipped.
     pub fn queue_peek(&self) -> Result<Option<(i64, Command, i64)>> {
+        self.queue_peek_in(QueueScope::Manual)
+    }
+
+    /// [`Db::queue_peek`] among the commands `scope` may run.
+    pub fn queue_peek_in(&self, scope: QueueScope) -> Result<Option<(i64, Command, i64)>> {
+        let sql = format!(
+            "SELECT id, payload, tries FROM command_queue WHERE blocked = 0{} ORDER BY priority, id LIMIT 1",
+            scope.filter()
+        );
         loop {
             let row: Option<(i64, String, i64)> = self
                 .conn()
-                .query_row(
-                    "SELECT id, payload, tries FROM command_queue WHERE blocked = 0 ORDER BY priority, id LIMIT 1",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
+                .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .optional()?;
             let Some((id, payload, tries)) = row else {
                 return Ok(None);
@@ -582,6 +616,22 @@ impl Db {
                 }
             }
         }
+    }
+
+    /// How many runnable commands `scope` may run, and the id of the newest. Blocked rows do
+    /// not count. Ids are never reused, so a newer id (or a higher count) than before means
+    /// commands arrived, or were unblocked, since.
+    pub fn queue_pending(&self, scope: QueueScope) -> Result<QueuePending> {
+        let sql = format!(
+            "SELECT count(*), coalesce(max(id), 0) FROM command_queue WHERE blocked = 0{}",
+            scope.filter()
+        );
+        Ok(self.conn().query_row(&sql, [], |r| {
+            Ok(QueuePending {
+                count: r.get(0)?,
+                newest: r.get(1)?,
+            })
+        })?)
     }
 
     /// Acknowledge a finished command. Does nothing when `id` was superseded or cleared in
@@ -1125,6 +1175,103 @@ mod tests {
         assert_eq!(db.queue_len().unwrap(), 2);
         let (_, cmd, _) = db.queue_peek().unwrap().unwrap();
         assert_eq!(cmd, Command::MylistDelete { lid: 5 });
+    }
+
+    #[test]
+    fn an_automatic_scope_goes_on_past_a_mylist_delete_and_leaves_it_queued() {
+        let db = Db::memory().unwrap();
+        db.queue_push(&Command::MylistRefresh { lid: 6 }).unwrap();
+        let delete = db.queue_push(&Command::MylistDelete { lid: 5 }).unwrap();
+        db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+
+        // The user's run takes the delete first (priority 0) ...
+        let (id, cmd, _) = db.queue_peek().unwrap().unwrap();
+        assert_eq!((id, cmd), (delete, Command::MylistDelete { lid: 5 }));
+        // ... an automatic run takes everything else, in the usual order, and then stops.
+        let mut taken = Vec::new();
+        while let Some((id, cmd, _)) = db.queue_peek_in(QueueScope::Automatic).unwrap() {
+            taken.push(cmd);
+            db.queue_remove(id).unwrap();
+        }
+        assert_eq!(
+            taken,
+            [
+                Command::FetchAnime { aid: 1 },
+                Command::MylistRefresh { lid: 6 }
+            ]
+        );
+        assert_eq!(db.queue_len().unwrap(), 1, "the delete is still queued");
+        assert_eq!(db.queue_peek().unwrap().unwrap().0, delete);
+    }
+
+    #[test]
+    fn pending_counts_show_new_and_unblocked_commands_but_not_deletes_or_blocked_rows() {
+        let db = Db::memory().unwrap();
+        let none = QueuePending {
+            count: 0,
+            newest: 0,
+        };
+        assert_eq!(db.queue_pending(QueueScope::Automatic).unwrap(), none);
+        assert_eq!(db.queue_pending(QueueScope::Manual).unwrap(), none);
+
+        let first = db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+        db.queue_push(&Command::MylistDelete { lid: 5 }).unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap(),
+            QueuePending {
+                count: 1,
+                newest: first
+            },
+            "a delete is not work for an automatic run"
+        );
+        assert_eq!(db.queue_pending(QueueScope::Manual).unwrap().count, 2);
+
+        let second = db.queue_push(&Command::FetchAnime { aid: 2 }).unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap(),
+            QueuePending {
+                count: 2,
+                newest: second
+            }
+        );
+        db.queue_block(second, "synthetic failure").unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap(),
+            QueuePending {
+                count: 1,
+                newest: first
+            },
+            "a blocked row waits for an explicit retry"
+        );
+        db.queue_retry_failed().unwrap();
+        assert_eq!(db.queue_pending(QueueScope::Automatic).unwrap().count, 2);
+    }
+
+    #[test]
+    fn only_a_mylist_delete_matches_the_automatic_filter() {
+        // The filter reads the JSON of the stored command; pin the shape it relies on.
+        let payload = serde_json::to_string(&Command::MylistDelete { lid: 1 }).unwrap();
+        assert!(payload.starts_with("{\"MylistDelete\":"), "{payload}");
+        let db = Db::memory().unwrap();
+        for command in [
+            Command::MylistRefresh { lid: 1 },
+            Command::MylistEdit {
+                lid: 1,
+                edit: watched(1_700_000_000),
+            },
+            Command::MylistStats,
+            Command::TitlesDump,
+            Command::FetchFile { fid: 3 },
+        ] {
+            db.queue_push(&command).unwrap();
+        }
+        assert_eq!(db.queue_pending(QueueScope::Automatic).unwrap().count, 5);
+        db.queue_push(&Command::MylistDelete { lid: 1 }).unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap().count,
+            4,
+            "queueing the delete of an entry also drops its queued edit"
+        );
     }
 
     #[test]

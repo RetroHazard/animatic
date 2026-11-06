@@ -296,6 +296,15 @@ pub struct UdpFixture {
 
 impl UdpFixture {
     pub fn start(reply: impl Fn(usize, &str) -> String + Send + 'static) -> UdpFixture {
+        UdpFixture::start_from(move |index, request, _| reply(index, request))
+    }
+
+    /// Like [`UdpFixture::start`], with the address the packet came from as the third
+    /// argument: a reply can then report the client's own port (no NAT) or another one (a
+    /// router that rewrites it), as `AUTH ... nat=1` does.
+    pub fn start_from(
+        reply: impl Fn(usize, &str, std::net::SocketAddr) -> String + Send + 'static,
+    ) -> UdpFixture {
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind loopback");
         let addr = socket.local_addr().expect("local address");
         let packets = Arc::new(AtomicUsize::new(0));
@@ -319,7 +328,7 @@ impl UdpFixture {
                     .rsplit_once("&tag=")
                     .map(|(_, t)| t.trim().to_string())
                     .unwrap_or_default();
-                let answer = reply(index, &request);
+                let answer = reply(index, &request, from);
                 if !answer.is_empty() {
                     let _ = socket.send_to(format!("{tag} {answer}").as_bytes(), from);
                 }

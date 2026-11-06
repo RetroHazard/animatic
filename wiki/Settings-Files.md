@@ -242,7 +242,8 @@ The previous settings otherwise survive only in the backup file. Migration workf
 | `manager` records (`name` required) | `file_managers.managers[]` (all rule keys; absent booleans become false except `includesubdirs` and `caneditpath`, which become true; absent `myliststate` becomes 0) |
 
 Not touched by the import (they keep fresh-file defaults): `anidb.client_name`, `client_version`,
-`api_key`, `udp_server`, `local_port`, `idle_logout_minutes`, `hashing.identify_after_hashing`,
+`api_key`, `udp_server`, `local_port`, `idle_logout_minutes`, `auto_run_queue` (so an import never
+turns automatic queue runs on), `hashing.identify_after_hashing`,
 `avdump.executable`, `avdump.arguments`, `ui.theme`, `ui.zoom`, `ui.columns`,
 `ui.colored_rows`, and `ed2k_space_replacement`. After an import you therefore still have to
 enter a registered client name and review every managed folder before going online or scanning.

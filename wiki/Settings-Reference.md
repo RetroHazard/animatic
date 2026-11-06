@@ -59,10 +59,13 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 ## AniDB account
 
 Object `anidb`. See [Storage and network contracts](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md) for what the queue sends
-and how failures are handled. Animatic contacts **AniDB** only when you run the command queue (Tools →
-Run command queue, or Queue → Synchronize now) and when an anime detail window needs a cover picture
-that is not on disk yet. The worker receives a copy of this object at that
-moment, so edits apply from the next run. (Update checks contact GitHub, not AniDB; see [Updates](#updates).)
+and how failures are handled. Animatic contacts **AniDB** only when the command queue runs (when you
+start it with Tools → Run command queue or Queue → Synchronize now, or, if you switch on `auto_run_queue`,
+when Animatic starts a run itself, see
+[Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)) and when an anime
+detail window needs a cover picture that is not on disk yet. A manual run receives a copy of this
+object when you start it, so edits apply from the next run; an automatic run uses the values from
+when Options was last closed. (Update checks contact GitHub, not AniDB; see [Updates](#updates).)
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
@@ -77,7 +80,8 @@ moment, so edits apply from the next run. (Update checks contact GitHub, not Ani
 | `download_covers` | boolean | `true` | "Download anime covers when a detail window opens" | **Active.** When true, opening an anime's detail window downloads its cover once if it is not on disk yet (never offline, never during a ban or cooldown); see [Cover](Library-Pages.md#cover). When false nothing is downloaded, and covers already in the [covers folder](Data-Locations.md#cover-pictures) are still shown. Files without the key load as `true`. |
 | `update_file_information` | boolean | `false` | "Update known file information" | **Active.** When true, hashing a file that is already identified (it has an AniDB file id) again queues a refresh of its AniDB record (`Fetch file`), at most once per file per 7 days; with the default `false`, re-hashing a known file queues nothing. Unidentified files follow *Identify after hashing*. (Import fills it from AOM.) |
 | `offline` | boolean | `false` | "Work offline (keep commands queued)" | **Active.** When true, Run command queue / Synchronize now send nothing and report "Offline mode is enabled; commands remain queued", and no cover is downloaded (covers already on disk are still shown). Commands are still queued locally. The status bar shows "Offline" or "Ready for AniDB". Forced to `true` by backup recovery and by applying imported AOM settings. It also suppresses the automatic startup [update check](#updates); an explicit **Help → Check for updates…** is still allowed. |
-| `idle_logout_minutes` | integer (u32) | `10` | none | **Stored only.** Not read. Each queue run ends with a logout regardless of this value. |
+| `idle_logout_minutes` | integer (u32) | `10` | "Log out of AniDB when idle for … min" (enabled only with automatic runs) | **Active, with `auto_run_queue`.** While automatic runs keep one AniDB session between runs, the client logs out after this many minutes without a command (unless more commands are waiting for an automatic run). Kept from 1 to 30 on load, so a session is always logged out before AniDB expires it after 35 idle minutes. Without `auto_run_queue` it has no effect: every run logs out when it ends. |
+| `auto_run_queue` | boolean | `false` | "Run the command queue automatically" | **Active.** Off: nothing is sent unless you start a run. On: Animatic starts a queue run 30 seconds after new commands are queued and every 15 minutes for anything still waiting, and keeps one AniDB login between runs. Never while Work offline is on, an AniDB cooldown is active, the account or client name is not set, another task is running or an import/restore review is open. Blocked commands are not retried, and **MyList removals are never sent automatically**: they stay queued until you run the queue yourself. Not imported from AOM. |
 
 Registration of a client identifier and the first online run are covered in
 [AniDB client registration](First-Launch.md#anidb-client-registration); verify any imported or hand-typed identifier before going

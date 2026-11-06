@@ -15,7 +15,8 @@ for where data is kept and [First launch](First-Launch.md) for safe first-run se
   Releases when a maintainer merges a reviewed release pull request; see
   [Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md). A CI build artifact is not a release.
 - Animatic never contacts AniDB at startup. Network traffic to AniDB happens only when you start
-  **Tools → Run command queue** or **Queue → Synchronize now** (see
+  **Tools → Run command queue** or **Queue → Synchronize now**, or when Animatic starts a run
+  itself because you switched on **Run the command queue automatically** (off by default) (see
   [Synchronization](AniDB-Synchronization.md#synchronization)). The default settings still have
   *Work offline* **off**, so the first thing to do in a fresh profile is turn it on
   ([first launch](First-Launch.md#first-launch)).

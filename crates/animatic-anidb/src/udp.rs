@@ -17,7 +17,10 @@ use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use md5::{Digest, Md5};
 
 use crate::error::{AnidbError, Result};
-use crate::limits::Limits;
+use crate::limits::{
+    Limits, UDP_KEEP_ALIVE_INTERVAL, UDP_MAX_IDLE_LOGOUT, UDP_NAT_PING_INTERVAL,
+    UDP_SESSION_TIMEOUT,
+};
 
 pub const DEFAULT_SERVER: &str = "api.anidb.net:9000";
 pub const PROTOVER: u32 = 3;
@@ -115,6 +118,48 @@ pub fn escape(s: &str) -> String {
         .replace('\n', "<br />")
 }
 
+/// The source port AniDB saw the login packet come from. With `nat=1` a successful `AUTH`
+/// answers `{session} {ip}:{port} LOGIN ACCEPTED`; a reply without an address (or with a port
+/// that is not a number) says nothing about NAT.
+fn reported_port(message: &str) -> Option<u16> {
+    let address = message.split_whitespace().nth(1)?;
+    address.rsplit_once(':')?.1.parse().ok()
+}
+
+/// What a held session needs between commands: see [`UdpClient::upkeep`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpkeepPolicy {
+    /// More commands are expected soon: keep the session, with a keep-alive command at least
+    /// every [`UDP_KEEP_ALIVE_INTERVAL`], instead of logging out when it idles.
+    pub work_expected: bool,
+    /// Without expected work, log out after this long without a command. Longer than
+    /// [`UDP_MAX_IDLE_LOGOUT`] counts as that.
+    pub idle_logout: Duration,
+}
+
+/// What one [`UdpClient::upkeep`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upkeep {
+    /// Nothing was due.
+    Nothing,
+    /// `PING nat=1` went out to keep the router mapping, and with it the session's port.
+    NatPing,
+    /// A keep-alive command went out.
+    KeepAlive,
+    /// `LOGOUT` went out after the session idled.
+    LoggedOut,
+    /// AniDB no longer has the session; it was forgotten and nothing was sent for it.
+    Expired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Expire,
+    KeepAlive,
+    Logout,
+    NatPing,
+}
+
 /// A UDP client. Spacing between packets is not its own: every client of a process shares one
 /// [`Limits`], so a new client per queue run cannot restart the burst allowance.
 pub struct UdpClient {
@@ -132,6 +177,16 @@ pub struct UdpClient {
     /// Earliest time another packet may be sent after a server-side error (600/601/602/604).
     backoff_until: Option<Instant>,
     banned: Option<String>,
+    /// The port AniDB saw the login packet come from (`nat=1`), when it said so. A session is
+    /// bound to it: if it differs from our own port, a router rewrote it and only a mapping
+    /// that stays alive keeps the session valid.
+    reported_port: Option<u16>,
+    /// When the last packet of any kind was sent, on the limiter's clock (ms since the epoch).
+    last_packet_ms: Option<i64>,
+    /// When the last packet that belongs to the session (login or authenticated command) was
+    /// sent. `PING` is not authenticated and does not count: AniDB expires a session after 35
+    /// minutes without a command.
+    last_session_ms: Option<i64>,
 }
 
 impl UdpClient {
@@ -148,6 +203,9 @@ impl UdpClient {
             new_version_available: false,
             backoff_until: None,
             banned: None,
+            reported_port: None,
+            last_packet_ms: None,
+            last_session_ms: None,
         }
     }
 
@@ -169,9 +227,34 @@ impl UdpClient {
             self.addr = None;
         }
         if relogin {
-            self.session = None;
-            self.cipher = None;
+            self.forget_session();
             self.banned = None;
+        }
+    }
+
+    /// Drop the session, its cipher and what was learned at login, without sending anything.
+    fn forget_session(&mut self) {
+        self.session = None;
+        self.cipher = None;
+        self.reported_port = None;
+        self.last_session_ms = None;
+    }
+
+    /// The local UDP port in use, once the socket is open.
+    pub fn local_port(&self) -> Option<u16> {
+        self.socket
+            .as_ref()
+            .and_then(|s| s.local_addr().ok())
+            .map(|a| a.port())
+    }
+
+    /// True when AniDB reported a source port at login that is not our own: a router
+    /// rewrites the port, so the mapping must be kept alive (see [`UdpClient::upkeep`]). False
+    /// when the ports agree or AniDB did not say.
+    pub fn nat_mapped(&self) -> bool {
+        match (self.reported_port, self.local_port()) {
+            (Some(reported), Some(local)) => reported != local,
+            _ => false,
         }
     }
 
@@ -275,6 +358,7 @@ impl UdpClient {
         let addr = self.socket()?.1;
         // The send time is saved before the packet leaves (see `Limits::wait_udp`).
         self.limits.wait_udp()?;
+        self.last_packet_ms = Some(self.limits.now_ms());
         let sock = self.socket.as_ref().expect("opened by socket()");
         sock.set_read_timeout(Some(timeout)).ok();
         sock.send_to(&payload, addr)
@@ -334,7 +418,7 @@ impl UdpClient {
                     resp.message.clone()
                 };
                 self.banned = Some(reason.clone());
-                self.session = None;
+                self.forget_session();
                 Err(AnidbError::Banned(reason))
             }
             503 => Err(AnidbError::ClientOutdated),
@@ -457,6 +541,8 @@ impl UdpClient {
                     ));
                 }
                 self.session = Some(session);
+                self.reported_port = reported_port(&resp.message);
+                self.last_session_ms = self.last_packet_ms;
                 self.new_version_available = resp.code == 201;
                 self.image_server = resp
                     .lines
@@ -476,11 +562,11 @@ impl UdpClient {
     }
 
     pub fn logout(&mut self) -> Result<()> {
-        if let Some(s) = self.session.take() {
+        if let Some(s) = self.session.clone() {
             let line = Self::encode("LOGOUT", &[("s", s)]);
             let _ = self.exchange(&line);
         }
-        self.cipher = None;
+        self.forget_session();
         Ok(())
     }
 
@@ -497,10 +583,12 @@ impl UdpClient {
                 Err(AnidbError::Timeout) if attempt == 0 => continue,
                 other => other?,
             };
+            if !matches!(resp.code, 501 | 506) {
+                self.last_session_ms = self.last_packet_ms;
+            }
             match resp.code {
                 501 | 506 if attempt == 0 => {
-                    self.session = None;
-                    self.cipher = None;
+                    self.forget_session();
                     continue;
                 }
                 502 => return Err(AnidbError::Auth("access denied".into())),
@@ -520,12 +608,112 @@ impl UdpClient {
             Err(AnidbError::Unexpected(resp.code, resp.message))
         }
     }
+
+    /// How long until [`UdpClient::upkeep`] has something to do for the held session, on the
+    /// same policy; `None` when there is no session. Zero means it is due now.
+    pub fn next_upkeep(&self, policy: &UpkeepPolicy) -> Option<Duration> {
+        self.next_step(policy).map(|(_, due)| due)
+    }
+
+    /// Do what the held session needs now, if anything, and say what it was: at most one
+    /// packet. Call it when [`UdpClient::next_upkeep`] is due; it does nothing earlier. Every
+    /// packet takes its send slot from the shared limiter.
+    ///
+    /// - A session idle for [`UDP_SESSION_TIMEOUT`] is already gone at AniDB: it is forgotten
+    ///   without a packet.
+    /// - While work is expected, a keep-alive command goes out every
+    ///   [`UDP_KEEP_ALIVE_INTERVAL`] of silence.
+    /// - Otherwise the client logs out after the policy's idle time.
+    /// - On a NAT-mapped session ([`UdpClient::nat_mapped`]) a `PING nat=1` goes out after
+    ///   [`UDP_NAT_PING_INTERVAL`] without any packet. Any other packet restarts that interval,
+    ///   so a busy session never pings.
+    pub fn upkeep(&mut self, policy: &UpkeepPolicy) -> Result<Upkeep> {
+        match self.next_step(policy) {
+            Some((step, due)) if due.is_zero() => match step {
+                Step::Expire => {
+                    self.forget_session();
+                    Ok(Upkeep::Expired)
+                }
+                Step::KeepAlive => self.keep_alive(),
+                Step::Logout => {
+                    self.logout()?;
+                    Ok(Upkeep::LoggedOut)
+                }
+                Step::NatPing => {
+                    self.ping()?;
+                    Ok(Upkeep::NatPing)
+                }
+            },
+            _ => Ok(Upkeep::Nothing),
+        }
+    }
+
+    /// The step the held session needs next and how long until it is due. Ties go to the
+    /// step listed first: forgetting an expired session beats sending anything.
+    fn next_step(&self, policy: &UpkeepPolicy) -> Option<(Step, Duration)> {
+        self.session.as_ref()?;
+        let now = self.limits.now_ms();
+        let since = |at: Option<i64>| {
+            at.map_or(Duration::ZERO, |at| {
+                Duration::from_millis(u64::try_from(now.saturating_sub(at)).unwrap_or(0))
+            })
+        };
+        let session_idle = since(self.last_session_ms);
+        let mut best: Option<(Step, Duration)> = None;
+        let mut consider = |step: Step, due: Duration| {
+            if best.is_none_or(|(_, earliest)| due < earliest) {
+                best = Some((step, due));
+            }
+        };
+        consider(
+            Step::Expire,
+            UDP_SESSION_TIMEOUT.saturating_sub(session_idle),
+        );
+        if policy.work_expected {
+            consider(
+                Step::KeepAlive,
+                UDP_KEEP_ALIVE_INTERVAL.saturating_sub(session_idle),
+            );
+        } else {
+            let idle_logout = policy.idle_logout.min(UDP_MAX_IDLE_LOGOUT);
+            consider(Step::Logout, idle_logout.saturating_sub(session_idle));
+        }
+        if self.nat_mapped() {
+            consider(
+                Step::NatPing,
+                UDP_NAT_PING_INTERVAL.saturating_sub(since(self.last_packet_ms)),
+            );
+        }
+        best
+    }
+
+    /// `UPTIME`, the cheapest authenticated command: it shows AniDB the session is in use.
+    fn keep_alive(&mut self) -> Result<Upkeep> {
+        let Some(session) = self.session.clone() else {
+            return Ok(Upkeep::Nothing);
+        };
+        let line = Self::encode("UPTIME", &[("s", session)]);
+        let resp = self.exchange(&line)?;
+        match resp.code {
+            208 => {
+                self.last_session_ms = self.last_packet_ms;
+                Ok(Upkeep::KeepAlive)
+            }
+            // AniDB no longer knows the session (it expired, or the source port changed). The
+            // next command logs in again.
+            501 | 506 => {
+                self.forget_session();
+                Ok(Upkeep::Expired)
+            }
+            _ => Err(AnidbError::Unexpected(resp.code, resp.message)),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::limits::{Limits, Protocol};
+    use crate::limits::{Clock as _, Limits, Protocol};
     use crate::testing::{TestLimits, UdpFixture, test_limits};
     use parking_lot::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -750,5 +938,301 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    fn mins(n: u64) -> Duration {
+        Duration::from_secs(n * 60)
+    }
+
+    fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    /// Log out after `minutes` idle minutes; no work is expected.
+    fn idle_for(minutes: u64) -> UpkeepPolicy {
+        UpkeepPolicy {
+            work_expected: false,
+            idle_logout: mins(minutes),
+        }
+    }
+
+    fn expecting_work() -> UpkeepPolicy {
+        UpkeepPolicy {
+            work_expected: true,
+            idle_logout: mins(10),
+        }
+    }
+
+    /// A stand-in AniDB that logs in, keeps sessions and answers the upkeep commands, and the
+    /// log of every request it got. With `nat` it reports a source port that is not the
+    /// client's own, as behind a router that rewrites it.
+    fn session_server(nat: bool, uptime: &'static str) -> (UdpFixture, Arc<Mutex<Vec<String>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let seen = log.clone();
+        let server = UdpFixture::start_from(move |_, request, peer| {
+            seen.lock().push(request.to_string());
+            let port = if nat { peer.port() ^ 1 } else { peer.port() };
+            let name = request.split([' ', '&']).next().unwrap_or_default();
+            match name {
+                "AUTH" => format!("200 session {}:{port} LOGIN ACCEPTED", peer.ip()),
+                "UPTIME" => uptime.into(),
+                "PING" => format!("300 PONG\n{port}"),
+                "LOGOUT" => "203 LOGGED OUT".into(),
+                _ => "598 UNKNOWN COMMAND".into(),
+            }
+        });
+        (server, log)
+    }
+
+    /// The command names the server has received, in order.
+    fn sent(log: &Mutex<Vec<String>>) -> Vec<String> {
+        log.lock()
+            .iter()
+            .map(|r| r.split([' ', '&']).next().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// A logged-in client of `server` whose clock is `t.clock`.
+    fn logged_in(server: &UdpFixture, t: &TestLimits) -> UdpClient {
+        let mut c = UdpClient::new(config_for(server.addr), t.limits.clone());
+        c.auth().unwrap();
+        c
+    }
+
+    /// Let `total` pass, doing each upkeep step when it falls due; returns what was done.
+    fn drive(
+        c: &mut UdpClient,
+        t: &TestLimits,
+        policy: &UpkeepPolicy,
+        total: Duration,
+    ) -> Vec<Upkeep> {
+        let end = t.clock.now_ms() + i64::try_from(total.as_millis()).unwrap();
+        let mut done = Vec::new();
+        for _ in 0..1000 {
+            let Some(due) = c.next_upkeep(policy) else {
+                break;
+            };
+            if t.clock.now_ms() + i64::try_from(due.as_millis()).unwrap() > end {
+                break;
+            }
+            t.clock.advance(due);
+            done.push(c.upkeep(policy).unwrap());
+        }
+        done
+    }
+
+    #[test]
+    fn the_login_reply_tells_whether_a_router_rewrote_the_port() {
+        assert_eq!(
+            reported_port("abcde 1.2.3.4:9000 LOGIN ACCEPTED"),
+            Some(9000)
+        );
+        assert_eq!(
+            reported_port("abcde 1.2.3.4:9000 LOGIN ACCEPTED - NEW VERSION AVAILABLE"),
+            Some(9000)
+        );
+        assert_eq!(reported_port("abcde LOGIN ACCEPTED"), None);
+        assert_eq!(reported_port("abcde 1.2.3.4:port LOGIN ACCEPTED"), None);
+        assert_eq!(reported_port(""), None);
+
+        let t = test_limits();
+        let (same, _) = session_server(false, "208 UPTIME");
+        assert!(!logged_in(&same, &t).nat_mapped());
+        let (rewritten, _) = session_server(true, "208 UPTIME");
+        assert!(logged_in(&rewritten, &t).nat_mapped());
+    }
+
+    #[test]
+    fn an_idle_session_logs_out_after_the_idle_time_and_not_before() {
+        let t = test_limits();
+        let (server, log) = session_server(false, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        let policy = idle_for(10);
+        assert_eq!(c.next_upkeep(&policy), Some(mins(10)));
+
+        t.clock.advance(mins(10) - secs(1));
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::Nothing);
+        assert_eq!(sent(&log), ["AUTH"]);
+        t.clock.advance(secs(1));
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::LoggedOut);
+        assert_eq!(sent(&log), ["AUTH", "LOGOUT"]);
+        assert!(!c.is_logged_in());
+        assert_eq!(c.next_upkeep(&policy), None, "nothing is held any more");
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::Nothing);
+        assert_eq!(server.packets(), 2);
+    }
+
+    #[test]
+    fn the_idle_time_counts_from_the_last_command_and_never_exceeds_the_server_timeout() {
+        let t = test_limits();
+        let (server, log) = session_server(false, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        let policy = idle_for(10);
+
+        t.clock.advance(mins(9));
+        c.request("UPTIME", &[]).unwrap();
+        t.clock.advance(mins(9));
+        assert_eq!(
+            c.upkeep(&policy).unwrap(),
+            Upkeep::Nothing,
+            "the command restarted the idle time"
+        );
+        t.clock.advance(mins(1));
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::LoggedOut);
+        assert_eq!(sent(&log), ["AUTH", "UPTIME", "LOGOUT"]);
+
+        // A setting longer than the keep-alive interval is held to it, so the session is
+        // always logged out before AniDB would expire it.
+        let c = logged_in(&server, &t);
+        let hours = idle_for(180);
+        assert_eq!(c.next_upkeep(&hours), Some(UDP_MAX_IDLE_LOGOUT));
+        assert!(UDP_MAX_IDLE_LOGOUT < UDP_SESSION_TIMEOUT);
+        // No idle time at all logs out at once.
+        assert_eq!(c.next_upkeep(&idle_for(0)), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_session_with_expected_work_is_kept_by_a_command_at_least_every_30_minutes() {
+        let t = test_limits();
+        let (server, log) = session_server(false, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        let policy = expecting_work();
+        assert_eq!(c.next_upkeep(&policy), Some(UDP_KEEP_ALIVE_INTERVAL));
+
+        // Two hours: a keep-alive every 30 minutes, no login, no logout.
+        let done = drive(&mut c, &t, &policy, mins(120));
+        assert_eq!(done, [Upkeep::KeepAlive; 4]);
+        assert_eq!(sent(&log), ["AUTH", "UPTIME", "UPTIME", "UPTIME", "UPTIME"]);
+        assert!(
+            log.lock()[1].starts_with("UPTIME s=session&tag="),
+            "an authenticated command keeps the session: {:?}",
+            log.lock()[1]
+        );
+        assert!(c.is_logged_in());
+    }
+
+    #[test]
+    fn when_the_work_is_gone_the_session_logs_out_instead_of_being_kept() {
+        let t = test_limits();
+        let (server, log) = session_server(false, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+
+        t.clock.advance(mins(20));
+        let no_work = idle_for(10);
+        assert_eq!(c.upkeep(&no_work).unwrap(), Upkeep::LoggedOut);
+        assert_eq!(sent(&log), ["AUTH", "LOGOUT"], "no keep-alive was due");
+    }
+
+    #[test]
+    fn a_session_that_idled_past_the_server_timeout_is_forgotten_without_a_packet() {
+        let t = test_limits();
+        let (server, log) = session_server(false, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+
+        t.clock.advance(UDP_SESSION_TIMEOUT);
+        assert_eq!(c.upkeep(&expecting_work()).unwrap(), Upkeep::Expired);
+        assert!(!c.is_logged_in());
+        assert_eq!(sent(&log), ["AUTH"], "AniDB has no session to log out");
+
+        // A keep-alive that finds the session gone does the same, and the next command logs
+        // in again.
+        let (server, log) = session_server(false, "506 INVALID SESSION");
+        let mut c = logged_in(&server, &t);
+        t.clock.advance(UDP_KEEP_ALIVE_INTERVAL);
+        assert_eq!(c.upkeep(&expecting_work()).unwrap(), Upkeep::Expired);
+        assert!(!c.is_logged_in());
+        assert_eq!(sent(&log), ["AUTH", "UPTIME"]);
+    }
+
+    #[test]
+    fn pings_go_out_only_when_the_ports_differ_and_never_more_often_than_every_4_minutes() {
+        let t = test_limits();
+        // The same port on both ends: no router, so a quiet session never pings.
+        let (server, log) = session_server(false, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        assert!(!c.nat_mapped());
+        let done = drive(&mut c, &t, &expecting_work(), mins(29));
+        assert_eq!(done, []);
+        assert_eq!(sent(&log), ["AUTH"]);
+
+        // Behind a router: a ping whenever 4 minutes pass without any packet, until the
+        // keep-alive command at 30 minutes (which restarts the 4 minutes as well).
+        let (server, log) = session_server(true, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        assert!(c.nat_mapped());
+        assert_eq!(
+            c.next_upkeep(&expecting_work()),
+            Some(UDP_NAT_PING_INTERVAL)
+        );
+        let done = drive(&mut c, &t, &expecting_work(), mins(31));
+        let mut expected = vec![Upkeep::NatPing; 7];
+        expected.push(Upkeep::KeepAlive);
+        assert_eq!(done, expected);
+        let arrivals = sent(&log);
+        assert_eq!(arrivals[0], "AUTH");
+        assert_eq!(arrivals[1..8], ["PING"; 7]);
+        assert_eq!(arrivals[8], "UPTIME");
+        assert!(
+            log.lock()[1].starts_with("PING nat=1&tag="),
+            "{:?}",
+            log.lock()[1]
+        );
+    }
+
+    #[test]
+    fn a_command_restarts_the_ping_interval() {
+        let t = test_limits();
+        let (server, log) = session_server(true, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        let policy = expecting_work();
+
+        t.clock.advance(UDP_NAT_PING_INTERVAL - secs(1));
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::Nothing);
+        t.clock.advance(secs(1));
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::NatPing);
+        t.clock.advance(mins(2));
+        c.request("UPTIME", &[]).unwrap();
+        t.clock.advance(UDP_NAT_PING_INTERVAL - secs(1));
+        assert_eq!(
+            c.upkeep(&policy).unwrap(),
+            Upkeep::Nothing,
+            "4 minutes since the command, not since the ping"
+        );
+        t.clock.advance(secs(1));
+        assert_eq!(c.upkeep(&policy).unwrap(), Upkeep::NatPing);
+        assert_eq!(sent(&log), ["AUTH", "PING", "UPTIME", "PING"]);
+    }
+
+    #[test]
+    fn an_idle_session_behind_a_router_pings_until_it_logs_out() {
+        let t = test_limits();
+        let (server, log) = session_server(true, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        // A ping is not a command: the idle time still runs from the login.
+        let done = drive(&mut c, &t, &idle_for(10), mins(12));
+        assert_eq!(done, [Upkeep::NatPing, Upkeep::NatPing, Upkeep::LoggedOut]);
+        assert_eq!(sent(&log), ["AUTH", "PING", "PING", "LOGOUT"]);
+    }
+
+    #[test]
+    fn changed_credentials_drop_the_held_session_and_with_it_every_timer() {
+        let t = test_limits();
+        let (server, log) = session_server(true, "208 UPTIME");
+        let mut c = logged_in(&server, &t);
+        assert!(c.nat_mapped());
+
+        // The same settings change nothing.
+        c.set_config(config_for(server.addr));
+        assert!(c.is_logged_in());
+        c.set_config(Config {
+            password: "another-synthetic-password".into(),
+            ..config_for(server.addr)
+        });
+        assert!(!c.is_logged_in());
+        assert!(!c.nat_mapped());
+        assert_eq!(c.next_upkeep(&expecting_work()), None);
+        t.clock.advance(mins(60));
+        assert_eq!(c.upkeep(&expecting_work()).unwrap(), Upkeep::Nothing);
+        assert_eq!(sent(&log), ["AUTH"]);
     }
 }

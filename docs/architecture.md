@@ -69,7 +69,8 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 
 ### `animatic-anidb`
 
-`udp` (session, encryption, compression, tag matching, no silent port fallback), `commands` (typed
+`udp` (session, encryption, compression, tag matching, no silent port fallback, the upkeep of a
+held session: idle logout, keep-alive, NAT ping), `commands` (typed
 UDP requests and strict reply decoding), `http` (anime XML, title dump streaming, image
 download), `limits` (the process-wide `Limits`: UDP and HTTP spacing shared by every client,
 send times saved before each request, `AUTH` backoff; plus the `Clock` and `LimitStore` seams),
@@ -79,7 +80,7 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `hash_jobs.rs` (worker side of the persistent hash queue).
+projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `auto_queue.rs` (opt-in automatic queue runs), `session.rs` (the AniDB session kept between runs), `hash_jobs.rs` (worker side of the persistent hash queue).
 The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash queue panel is `app/hash_queue_panel.rs`.
 `media.rs` (the media tools thread for `ffprobe` detection and install, and the body of `Job::ReadMedia`),
 `app/media_options.rs` (the Options section, the install confirmation and the read after hashing).
@@ -89,9 +90,10 @@ The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash
 | Thread | Database connection | Work |
 |---|---|---|
 | UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump, an anime refresh or a MyList export; the one-file rename preview (point reads of the local database); settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: one per drain); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash` (queue files, then drain), `ResumeHashQueue`, `ClearHashQueue`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ImportMylistExport`, `ProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: one per drain); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash` (queue files, then drain), `ResumeHashQueue`, `ClearHashQueue`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ImportMylistExport`, `ProcessQueue`, `AutoProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary`; between jobs it looks after a kept AniDB session (`SessionSlot::maintain`, which may open a short connection) |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
 | `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; also submits the one-time `Job::ResumeHashQueue` for hashing autostart; see [Scheduled folder scans](#scheduled-folder-scans) and [Persistent hash queue](#persistent-hash-queue) |
+| `animatic-queue-scheduler` | One `Db` held only while automatic runs are on, read-only use | Decides when an automatic queue run is due (`auto_queue::QueueSchedule`, polled every 2 s: it watches the queue in the database) and submits `Job::AutoProcessQueue`; see [Automatic queue runs and the kept AniDB session](#automatic-queue-runs-and-the-kept-anidb-session) |
 | `animatic-covers` | A fresh `Db::open` per request | `Worker::load_cover` (not a `Job`): cache lookup, at most one image download through the shared limiter, decoding; answers with `Event::CoverLoaded`. Joined, like the worker, only by `stop_and_join` (restore) |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
@@ -111,7 +113,9 @@ Dropping `Worker` (application exit) sets the shutdown and cancel flags, sends `
 only the projection thread, so accepted statistics and hash exports finish. The network threads
 (the main worker and the cover thread) are not joined: either can be inside an exchange of up to
 the 20 s UDP timeout (or the 60 s HTTP budget) and
-is simply abandoned at process exit. The updater thread is the exception described below: its
+is simply abandoned at process exit. The one exception is a kept AniDB session (or a queue run that
+may open one): `Worker::close` then waits at most `session::EXIT_LOGOUT_WAIT` (8 s) for the main
+worker thread to send its `LOGOUT` and end. The updater thread is the exception described below: its
 network work is cancelled on drop, and an install in progress is joined.
 
 SQLite is the shared state. WAL mode lets the projection thread and the UI read while the worker
@@ -166,6 +170,39 @@ called once at start: the scheduler thread submits `Job::ResumeHashQueue` throug
 `worker::submit_if_idle` under the same UI blocker as a scan, ahead of any scan, and an empty queue
 reports nothing. `hashing.priority` is stored for AOM compatibility only: there is no
 cross-platform thread-priority abstraction, so hashing threads run at normal priority (rule 10).
+
+### Automatic queue runs and the kept AniDB session
+
+`auto_queue.rs` follows the scan scheduler's pattern for the opt-in `anidb.auto_run_queue`.
+`QueueSchedule` is pure state driven by explicit `Instant`s: new commands (a higher newest id or a
+higher count in `Db::queue_pending(QueueScope::Automatic)`; ids are never reused, and a run only
+shrinks the queue) arm a 30 s debounce, restarted by each further command; an interval of 15 min
+counted from the last start picks up what is still waiting; a due run with nothing to send starts
+nothing; a due run that cannot start stays due and is reported once. The thread owns the
+schedule, watches the queue itself (commands are queued from the UI, the worker and full
+updates, so it is not told) and starts a run only through `worker::submit_if_idle`, with a
+blocker checked right before submitting: the UI's (`AnimaticApp::sync_queue_schedule` publishes
+the AniDB settings and the same `scan_blocker` as for scans through `QueueControl`), Work offline,
+an unset account or client name, an active persisted cooldown (read from the database) and a busy
+worker. A run is `Job::AutoProcessQueue`, which differs from `ProcessQueue` only by its scope:
+`QueueScope::Automatic` (`Db::queue_peek_in`) never takes a `MylistDelete`, so removals stay
+queued for the user's run, and it returns silently when there is nothing to send.
+
+`session.rs` keeps the worker's one `UdpClient` between runs while `auto_run_queue` is on
+(`Network::session`, a `SessionSlot` that only the worker thread uses): `run_queue` takes the kept
+client (`set_config` drops its session when the account, key, client name, version, server or
+port changed) and `finish` stores it back, or logs out and drops it when automatic runs are off,
+the client is banned or there is no session. Before the worker waits for a job (and when the wait
+ran out) it calls `SessionSlot::maintain`, which does what `UdpClient::upkeep` says is due and
+returns the time until the next step, so the worker uses `recv_timeout`: forget a session idle for
+35 min without a packet; a keep-alive command (`UPTIME`) every 30 min while an automatic run has
+commands waiting; otherwise `LOGOUT` after `idle_logout_minutes` (1 to 30); a `PING nat=1` after 4
+min of silence only when the `AUTH` reply's source port differs from the local port. Timing runs
+on the limiter's clock (`Limits::now_ms`), so tests drive it with a manual clock, and every packet
+waits for its send slot in the shared `Limits`. `maintain` sends nothing while Work offline is on
+or a cooldown is active, and any upkeep error forgets the session and starts the cooldown it calls
+for. On `Stop` or shutdown the worker calls `logout_on_exit` (one `LOGOUT`, 3 s reply timeout,
+skipped offline or cooling down), and `Worker::close` waits for it a bounded time.
 
 ## Principal data flows
 

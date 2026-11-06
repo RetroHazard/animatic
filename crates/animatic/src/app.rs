@@ -3196,6 +3196,29 @@ impl AnimaticApp {
         if let Some(text) = &cooling {
             ui.colored_label(Color32::YELLOW, text);
         }
+        if self.settings.anidb.auto_run_queue {
+            let removals = self
+                .projection
+                .queue
+                .iter()
+                .filter(|e| {
+                    !e.blocked
+                        && matches!(
+                            e.command,
+                            Some(animatic_core::sync::Command::MylistDelete { .. })
+                        )
+                })
+                .count();
+            ui.weak(
+                "Automatic runs are on. They never remove MyList entries: removals stay queued until you click Synchronize now.",
+            );
+            if removals > 0 {
+                ui.colored_label(
+                    Color32::YELLOW,
+                    format!("{removals} MyList removal(s) wait for you to click Synchronize now."),
+                );
+            }
+        }
         if clear {
             match self.db.queue_clear() {
                 Ok(()) => self.request_library_refresh(),
@@ -3454,6 +3477,29 @@ impl AnimaticApp {
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",
                     );
+                    ui.checkbox(
+                        &mut self.settings.anidb.auto_run_queue,
+                        "Run the command queue automatically",
+                    )
+                    .on_hover_text(
+                        "Sends the queued commands 30 seconds after new ones arrive and every 15 \
+                         minutes, and keeps one AniDB login between those runs. Never while Work \
+                         offline is on or AniDB has paused syncing, and MyList removals are never \
+                         sent automatically.",
+                    );
+                    ui.add_enabled_ui(self.settings.anidb.auto_run_queue, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Log out of AniDB when idle for");
+                            ui.add(
+                                egui::DragValue::new(&mut self.settings.anidb.idle_logout_minutes)
+                                    .range(
+                                        animatic_core::settings::MIN_IDLE_LOGOUT_MINUTES
+                                            ..=animatic_core::settings::MAX_IDLE_LOGOUT_MINUTES,
+                                    )
+                                    .suffix(" min"),
+                            );
+                        });
+                    });
                     ui.checkbox(
                         &mut self.settings.anidb.update_file_information,
                         "Update known file information",
@@ -4523,6 +4569,18 @@ impl AnimaticApp {
             );
         }
     }
+
+    /// Give the automatic queue scheduler and the worker's session upkeep the current AniDB
+    /// settings and the same blocker as the scan scheduler. While Options is open the settings
+    /// they hold stay as they were, so half-edited values never start a run.
+    fn sync_queue_schedule(&self) {
+        let control = self.worker.queue_control();
+        if self.settings_open {
+            control.set_blocker(self.scan_blocker());
+        } else {
+            control.sync(&self.settings.anidb, self.scan_blocker());
+        }
+    }
 }
 
 impl eframe::App for AnimaticApp {
@@ -4545,6 +4603,7 @@ impl eframe::App for AnimaticApp {
         self.process_media_events(&ctx);
         self.retry_deferred();
         self.sync_scan_schedule();
+        self.sync_queue_schedule();
         self.pump_library(&ctx);
         self.top_bar(root);
         self.navigation(root);

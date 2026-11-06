@@ -158,7 +158,9 @@ The durable AniDB command queue. Header: `N pending commands`, a red `N blocked`
 | **Retry failed** | Enabled when something is blocked. Unblocks every blocked row with fresh attempts (edits of the same MyList entry are merged first). Does not run anything and does not bypass a cooldown. |
 | **Synchronize now** | Starts the same job as **Tools → Run command queue**. Disabled during a settings review or an active cooldown (the tooltip shows the cooldown). |
 
-A yellow line repeats an active cooldown. Table columns: **ID** (`#n`, never reused),
+A yellow line repeats an active cooldown. While **Run the command queue automatically** is on, a
+grey line says that automatic runs never remove MyList entries, and a yellow line counts the
+removals that wait for you to click **Synchronize now**. Table columns: **ID** (`#n`, never reused),
 **Command**, **Status**, **Last error** (hover for the full text).
 
 | Status | Meaning |

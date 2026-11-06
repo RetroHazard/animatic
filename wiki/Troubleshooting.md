@@ -35,7 +35,9 @@ Know the limits before you rely on a recovery path:
   entry; you request a MyList export from AniDB and import the file you download (see
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed
-  folders**, the queue runs only from **Tools → Run command queue** or **Synchronize now**,
+  folders**, the queue runs from **Tools → Run command queue** or **Synchronize now** (or by
+  itself only if you switch on **Run the command queue automatically**, off by default, see
+  [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)),
   and renaming is automatic only in a managed folder you set to **Auto rename: On**. The one unasked action is the optional startup
   *check* for a newer Animatic release on GitHub (`updates.auto_check`); it downloads and
   installs nothing. See [Update problems](Network-and-Sync-Problems.md#update-problems).

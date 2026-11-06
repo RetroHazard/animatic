@@ -267,7 +267,11 @@ Every command can be queued from the desktop application. See
 | Blocked | `blocked=1` | Blocked | no | `queue_retry_failed` (resets `blocked` and `tries`), or clear |
 | Unreadable | `payload` does not deserialize | Blocked, "Unreadable queued command: ..." | no | Retry unblocks it, but the next `queue_peek` blocks it again with the parse error |
 
-- `queue_peek` returns `(id, Command, tries)`; a row it cannot deserialize is blocked with
+- `queue_peek` returns `(id, Command, tries)`; `queue_peek_in(QueueScope)` takes the scope: `Manual`
+  (the user's run, everything runnable) or `Automatic`, which skips `MylistDelete`, so an
+  automatic run (below) leaves removals queued for the user. `queue_pending(scope)` counts the
+  runnable commands of a scope with the newest id, which the automatic-run scheduler uses to see
+  that commands arrived. A row it cannot deserialize is blocked with
   `unreadable queued command: <serde error>` (logged as a warning) and skipped. **A payload this
   version cannot read is never deleted automatically**, so downgrading, or a removed variant,
   keeps the user's work visible. It cannot be merged or overlaid, though: a MyList edit stored
@@ -341,8 +345,10 @@ Cooldown mechanics:
 - Offline mode (`anidb.offline`) is checked first and leaves the queue untouched.
 - Inside one `UdpClient`, a server-error reply also arms an in-memory backoff (600/601/602:
   30 min, 604: 60 s) during which `ServerUnavailable` is returned without sending a packet, and
-  a ban reply (510, 555) latches the client so it sends nothing further. Each queue run builds
-  new clients, which is why the persistent cooldown exists.
+  a ban reply (510, 555) latches the client so it sends nothing further. A banned client is never
+  kept between runs (the end of the run drops it), so the latch ends with the run and cannot
+  outlive its cooldown; the persistent cooldown is what applies to the next run, and survives a
+  restart.
 - `504` is not a timed ban: the client name and version are banned, so it blocks every runnable
   row like an outdated client (`503`) until they are corrected, and sets no cooldown.
 - An `AUTH` without a reply escalates instead of using the flat 60 s: the `AuthTimeout`
@@ -424,7 +430,9 @@ Animatic implements both halves (see [MyList export import](#mylist-export-impor
 | Rule | Status |
 |---|---|
 | 2 s / 4 s UDP spacing | **Process-wide**: one `Limits` owned by the worker serves every `UdpClient` of every queue run, and each packet's send time is saved in `meta.udp_last_send_ms` *before* it is sent. After a restart the burst size is unknown, so the next packet keeps the 4 s spacing from the saved time |
-| No `AUTH`/`LOGOUT` per command | Per queue run, not per command; a session is not kept across runs |
+| No `AUTH`/`LOGOUT` per command | Per queue run, not per command. With `anidb.auto_run_queue` on, one session is kept across runs (the same `UdpClient`), so consecutive automatic runs share one `AUTH`; with it off every run still logs in and out once ([Session upkeep](#session-upkeep)) |
+| Session expiry (35 min), keep-alive (30 min), `LOGOUT` when idle | Only for a kept session: it is logged out after `anidb.idle_logout_minutes` (1 to 30) without a command, kept by a `UPTIME` command at least every 30 min while an automatic run has commands waiting, and forgotten without a packet once 35 min passed. Nothing is sent while Work offline is on or a cooldown is active. One `LOGOUT` on exit, bounded wait |
+| `PING` for NAT | Only for a kept session whose `AUTH` reply reports a source port different from the local one: `PING nat=1` after 4 min without any packet, never more often; no pings when the ports agree |
 | Fixed local port | Uses `anidb.local_port` (default 29456) and **never another port**: a port that cannot be bound is an error that names the setting, and nothing is sent. Port `0` (a new OS-chosen port for every client) exists for tests only |
 | `504` | Fatal like an outdated client: every runnable row is blocked with "this AniDB client version is banned" until the client name and version are corrected; no timed ban |
 | `AUTH` no-reply backoff | Escalating and persisted: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 h; a successful login resets it |
@@ -433,7 +441,7 @@ Animatic implements both halves (see [MyList export import](#mylist-export-impor
 | Title dump once a day | Enforced by a saved attempt time (24 h); **Download anime titles**, full updates and queued retries skip it inside the window and say when it is next allowed |
 | MyList export | Only on the user's request (**Tools → Request MyList export…**), never scheduled and never part of a full update; once per 24 h by a saved attempt; the file is imported locally from the web download (see [MyList export import](#mylist-export-import)) |
 | `User-Agent` | Sent: `Animatic/VERSION` |
-| `nat=1`, `comp=1`, `imgserver=1` | Sent on `AUTH`; `PING` exists but is unused |
+| `nat=1`, `comp=1`, `imgserver=1` | Sent on `AUTH`; `PING nat=1` is sent by the session upkeep only as described above |
 | Images: on demand only, no crawl, no redistribution | **Anime covers.** A cover is requested only when the anime detail window opens on an anime whose picture is not on disk, one file per request, and a cached cover is never requested again (a new `picname` is a new file). Covers are kept in `<data folder>/covers/` for the user's own display and are never exported, backed up, uploaded or re-hosted. See [Anime covers](#anime-covers) |
 | Image host from `AUTH` | The host of the last login is saved in `meta.image_server` and used for covers; `anidb.image_server` is the fallback until one login has happened |
 | Image pacing | Image requests share the HTTP limiter (2 s between any two HTTP requests of the process, covers included) and a failed cover is not retried within `COVER_MIN_AGE`. They never go out offline, while a ban or cooldown is active, or when cover downloads are switched off (`anidb.download_covers`) |
@@ -447,6 +455,9 @@ Every limit is a named constant whose doc comment links the rule above.
 |---|---|---|
 | `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING` | 5 packets at 2 s, then 4 s | [`animatic_anidb::limits`](../crates/animatic-anidb/src/limits.rs) |
 | `UDP_BURST_RESET` | 10 min of idle time restarts the burst allowance *(not documented)* | same |
+| `UDP_SESSION_TIMEOUT`, `UDP_KEEP_ALIVE_INTERVAL` | 35 min (AniDB expires an idle session), 30 min (a command at least this often keeps a session) | same |
+| `UDP_MAX_IDLE_LOGOUT` | 30 min: the longest idle logout, below the keep-alive interval so a session is logged out before AniDB would expire it | same |
+| `UDP_NAT_PING_INTERVAL` | 4 min of silence before a `PING nat=1`; just under the shortest router timeout (5 min), a design choice | same |
 | `HTTP_SPACING` | 2 s between any two HTTP requests | same |
 | `AUTH_BACKOFF` | 30 s, 2 min, 5 min, 10 min, 30 min, 2 h (the last repeats) | same |
 | `TITLES_DUMP_MIN_INTERVAL` | 24 h from the last attempt | [`animatic_core::limits`](../crates/animatic-core/src/limits.rs) |
@@ -558,7 +569,7 @@ untagged reply is accepted. A reply whose code is not three digits is a `Protoco
 
 **Flood spacing (client side).** Spacing belongs to the process, not to a client: the
 application's worker creates one [`Limits`](../crates/animatic-anidb/src/limits.rs) and every
-`UdpClient` (one per queue run) takes its send slots from it. Before every packet `wait_udp`
+`UdpClient` (the one the worker keeps, or one per queue run) takes its send slots from it. Before every packet `wait_udp`
 sleeps so that consecutive packets are at least 2 s apart for the first five of a burst and 4 s
 apart afterwards; the burst counter resets after 10 idle minutes. `AUTH`, `ENCRYPT`, `LOGOUT`
 and `PING` are paced too. The send time is saved in `meta.udp_last_send_ms` through
@@ -579,7 +590,8 @@ imgserver=1`. Requires a non-empty client name, username and password, otherwise
 is returned locally without any packet. 200/201 return the session key (first word of the
 message; empty is a `Protocol` error) and the image server (first data line); 201 sets
 `new_version_available`. 500 is wrong credentials, 505 illegal input or unregistered client
-(both `Auth`); anything else is `Unexpected`. `LOGOUT` is sent at the end of each queue run.
+(both `Auth`); anything else is `Unexpected`. `LOGOUT` is sent at the end of a queue run, unless
+the session is kept for the next run ([Session upkeep](#session-upkeep)), or when the session idles.
 An `AUTH` (or the `ENCRYPT` before it) that gets no reply is not retried inside the run: it
 returns `AuthTimeout(wait)` with the next step of the escalating backoff, 30 s, 2 min, 5 min,
 10 min, 30 min, then 2 h, kept in `meta.auth_backoff_step` so it survives restarts and is reset
@@ -612,10 +624,47 @@ be read as absence.
 | `MYLISTSTATS` | 222 | none | Missing/non-numeric fields become 0 |
 | `MYLISTEXPORT` (`template=xml-plain-new`, or `cancel=1`) | 217 queued; 318 already queued (reported); 218 cancelled; 319 nothing to cancel | none | 317 (unknown template) and every other code → `Unexpected`, permanent for the command. See [MyList export import](#mylist-export-import) |
 | `ANIME` (wrapper exists; not used by `execute`) | 230 | 330 | |
-| `PING nat=1` (wrapper exists; unused) | 300 | | |
+| `PING nat=1` | 300 | | Only from the session upkeep, on a NAT-mapped session; the reply is not read for the port |
+| `UPTIME s=<session>` | 208 | | The keep-alive command of the session upkeep; 501/506 means AniDB no longer has the session |
 
 `set_config` closes the socket when the server or port changes and drops the session (and
 clears a ban latch) when credentials, key, client name or version change.
+
+### Session upkeep
+
+`UdpClient` times the session on the limiter's clock (`Limits::now_ms`): `last_packet_ms` (any
+packet sent), `last_session_ms` (login or authenticated command; a `PING` is not one) and the
+source port from the `AUTH` reply (`200 {session} {ip}:{port} LOGIN ACCEPTED`, `reported_port`).
+`nat_mapped()` is true when that port differs from the local one; a reply without an address
+says nothing and counts as no NAT. `upkeep(&UpkeepPolicy { work_expected, idle_logout })` does at
+most one packet's worth of work, `next_upkeep(&policy)` says how long until it is due:
+
+| Step | Due | Does |
+|---|---|---|
+| Expire | 35 min after `last_session_ms` | Forgets the session locally, no packet (AniDB has dropped it) |
+| Keep-alive | `work_expected`: 30 min after `last_session_ms` | `UPTIME s=<session>`; 501/506 forgets the session |
+| Logout | not `work_expected`: `idle_logout` (at most 30 min) after `last_session_ms` | `LOGOUT` |
+| NAT ping | `nat_mapped()`: 4 min after `last_packet_ms` | `PING nat=1` |
+
+The earliest due step wins, ties going to the first row. Any packet restarts the 4 minutes (a busy
+session never pings), and a ping does not restart the idle time. `UPTIME` is documented as an
+authenticated command; this was not re-read from the AniDB definition (the wiki refuses plain
+HTTP clients), so it is an [INFERENCE]: if it were not session-bound, a kept session would simply
+expire after 35 minutes and the next command would log in again.
+
+The desktop worker (`session.rs`, see [Architecture](architecture.md#automatic-queue-runs-and-the-kept-anidb-session))
+keeps one `UdpClient` between runs only while `anidb.auto_run_queue` is on. `SessionSlot::maintain`
+runs before the worker waits for a job, with `work_expected` = the queue holds a command an
+automatic run would send (`Db::queue_pending(QueueScope::Automatic).count > 0`; blocked commands
+and `MylistDelete` do not count) and `idle_logout` from `anidb.idle_logout_minutes` (1 to 30; with
+automatic runs off it is zero, which logs a kept session out at once). It does nothing while Work
+offline is on or a cooldown is active (and never sends a courtesy `LOGOUT` then), an error from the
+upkeep forgets the session and starts the cooldown the error calls for (`AnidbError::retry_after`),
+and a ban reply stops everything for the usual 30 minutes. `logout_on_exit` sends one `LOGOUT` with
+a 3 s reply timeout when the worker ends, and `Worker::close` waits at most 8 s for it.
+Every upkeep packet waits for its slot in the shared `Limits`; since they count in the burst, a
+kept session on a NAT never restarts the burst allowance (its pings arrive less than 10 minutes
+apart), so runs after it keep the 4 s spacing.
 
 ## HTTP API
 
@@ -1051,7 +1100,7 @@ durable contracts.
 | Module | Principal public items |
 |---|---|
 | `db` | `SCHEMA_VERSION`; `Db::{open(&Path), memory(), path(), conn(), conn_mut(), meta(&str), set_meta(&str,&str), meta_i64(&str), sync_cooldown() -> Result<Option<(i64, String)>>, set_sync_cooldown(i64, &str), clear_sync_cooldown(), is_empty()}` |
-| `sync` | `Command`, `Outcome`, `QueueEntry`, `CommandError`, `MAX_QUEUE_TRIES`, `manager_mylist_edit(&FileManager) -> MylistEdit`, `apply_edit_locally(&Db, i64, &MylistEdit)`, `execute(queue_id: i64, &Command, &Db, &mut UdpClient, &mut HttpClient) -> Result<Outcome, CommandError>`; on `Db`: `queue_push(&Command) -> Result<i64>`, `queue_push_many(&[Command]) -> Result<usize>`, `queue_edit_mylist(i64, &MylistEdit) -> Result<i64>`, `overlay_pending_mylist(&mut MylistEntry)`, `mylist_has_pending_intent(i64) -> Result<bool>`, `queue_peek() -> Result<Option<(i64, Command, i64)>>`, `queue_remove(i64)`, `queue_failed(i64, &str)`, `queue_deferred(i64, &str)`, `queue_block(i64, &str)`, `queue_block_all(&str) -> Result<usize>`, `queue_retry_failed() -> Result<usize>`, `queue_len()`, `queue_blocked_len()`, `queue_list() -> Result<Vec<QueueEntry>>`, `queue_clear()` |
+| `sync` | `Command`, `Outcome`, `QueueEntry`, `QueueScope::{Manual, Automatic}`, `QueuePending { count, newest }`, `CommandError`, `MAX_QUEUE_TRIES`, `manager_mylist_edit(&FileManager) -> MylistEdit`, `apply_edit_locally(&Db, i64, &MylistEdit)`, `execute(queue_id: i64, &Command, &Db, &mut UdpClient, &mut HttpClient) -> Result<Outcome, CommandError>`; on `Db`: `queue_push(&Command) -> Result<i64>`, `queue_push_many(&[Command]) -> Result<usize>`, `queue_edit_mylist(i64, &MylistEdit) -> Result<i64>`, `overlay_pending_mylist(&mut MylistEntry)`, `mylist_has_pending_intent(i64) -> Result<bool>`, `queue_peek() -> Result<Option<(i64, Command, i64)>>`, `queue_peek_in(QueueScope) -> Result<Option<(i64, Command, i64)>>`, `queue_pending(QueueScope) -> Result<QueuePending>`, `queue_remove(i64)`, `queue_failed(i64, &str)`, `queue_deferred(i64, &str)`, `queue_block(i64, &str)`, `queue_block_all(&str) -> Result<usize>`, `queue_retry_failed() -> Result<usize>`, `queue_len()`, `queue_blocked_len()`, `queue_list() -> Result<Vec<QueueEntry>>`, `queue_clear()` |
 | `store` | `TITLES_DUMP_DATE_KEY`, `MYLIST_STATS_KEY`, `StoredMylistStats { fetched, stats }`, `TitleImport { titles, added }`; on `Db`: `store_file_info(&FileInfo)`, `store_api_mylist(&MylistEntry)` (anidb type), `upsert_mylist(&library::MylistEntry)`, `delete_mylist(i64)`, `store_mylist_stats(&MylistStats, i64)`, `mylist_stats_snapshot() -> Result<Option<StoredMylistStats>>`, `store_anime_xml(&AnimeXml)`, `store_anime_info`, `store_episode_info`, `store_group_info`, `import_title_dump::<E>(read)`, `add_local_file(&str, &Hashes, i64) -> Result<i64>`, `remove_local_file`, `clear_local_files`, `move_local_file(i64, &str)`, `local_file_id_by_path(&str)` |
 | `library` | Display types (`Anime`, `Episode`, `FileRec`, `Group`, `MylistEntry`, `MylistItem`, `LocalFile` (with `mylist_add_pending`), `MylistPending`, `Review`, `AnimeDetail`), `LibraryProjection::load(&Db) -> Result<LibraryProjection>` (including `account_stats` and `mylist_pending`), `pending_by_lid(&[QueueEntry])`, `LibrarySummary`, `SearchKeys`, name/id helpers (`anime_type_name`, `title_kind_id`, `relation_id`, ...); read queries on `Db` (`all_anime`, `anime`, `anime_detail`, `mylist_entry`, `mylist_items`, `local_files`, `file`, `group`, `genres`, ...) |
 | `limits` | `TITLES_DUMP_MIN_INTERVAL`, `ANIME_MIN_AGE`, `KNOWN_FILE_MIN_AGE`, `COVER_MIN_AGE`, `MYLIST_EXPORT_MIN_INTERVAL`, `MYLIST_EXPORT_ID`, the `meta` key names, `RequestKind::{Anime, File, Cover, MylistExport}`, `DbLimitStore` (the `LimitStore` over `meta`), `open_limits(&Path) -> Arc<Limits>`, `open_limits_with_clock`, message helpers (`titles_dump_wait_message`, `anime_wait_message`, `file_wait_message`, `mylist_export_wait_message`); on `Db`: `titles_dump_next_allowed(now) -> Result<Option<i64>>`, `record_titles_dump_attempt(i64)`, `request_next_allowed(RequestKind, i64, now) -> Result<Option<i64>>`, `record_request_attempt(RequestKind, i64, i64)`, `request_last_attempt`, `recent_requests(RequestKind, now) -> Result<HashSet<i64>>` |
@@ -1076,12 +1125,12 @@ durable contracts.
 
 | Module | Principal public items |
 |---|---|
-| `udp` | `UdpClient::{new(Config, Arc<Limits>), config(), set_config(Config), is_logged_in(), banned_reason(), auth(), ensure_login(), logout(), request(&str, &[(&str, String)]) -> Result<Response>, ping()}`, public fields `image_server`, `new_version_available`; `Config { server, local_port, client, client_version, username, password, api_key: Option<String>, timeout }` (`Default`: `api.anidb.net:9000`, port 0, version 1, 20 s); `Response::{parse, fields}`, `escape`, `unescape`, `split_fields`, `DEFAULT_SERVER`, `PROTOVER` |
+| `udp` | `UdpClient::{new(Config, Arc<Limits>), config(), set_config(Config), is_logged_in(), banned_reason(), local_port(), nat_mapped(), auth(), ensure_login(), logout(), request(&str, &[(&str, String)]) -> Result<Response>, ping(), next_upkeep(&UpkeepPolicy) -> Option<Duration>, upkeep(&UpkeepPolicy) -> Result<Upkeep>}`, public fields `image_server`, `new_version_available`; `UpkeepPolicy { work_expected, idle_logout }`, `Upkeep::{Nothing, NatPing, KeepAlive, LoggedOut, Expired}`; `Config { server, local_port, client, client_version, username, password, api_key: Option<String>, timeout }` (`Default`: `api.anidb.net:9000`, port 0, version 1, 20 s); `Response::{parse, fields}`, `escape`, `unescape`, `split_fields`, `DEFAULT_SERVER`, `PROTOVER` |
 | `commands` | `file_by_hash(&mut UdpClient, u64, &str)`, `file_by_fid`, `anime`, `episode`, `group`, `mylist_add(&mut UdpClient, &FileRef, &MylistEdit, edit_existing: bool) -> Result<MylistAddResult>`, `mylist_del`, `mylist`, `mylist_stats`, `mylist_export(&mut UdpClient, template) -> Result<MylistExportReply>`, `mylist_export_cancel(&mut UdpClient) -> Result<MylistExportCancelReply>`, `MYLIST_EXPORT_TEMPLATE`, `MYLIST_EXPORT_PAGE`; types `FileRef::{Fid, Hash{size, ed2k}, Lid}`, `MylistEdit` (all-`Option` fields, `Default`), `MylistEntry`, `FileInfo`, `AnimeInfo`, `EpisodeInfo`, `GroupInfo`, `MylistStats`, `MylistAddResult`, `MylistExportReply::{Queued, AlreadyQueued}`, `MylistExportCancelReply::{Cancelled, NothingToCancel}`, `EpNo` |
 | `http` | `HttpClient::{new(client, version, Arc<Limits>), check_client(), anime(i64) -> Result<AnimeXml>, titles_dump::<E>(&TitlesLimits, sink), image(&str, &str) -> Result<Vec<u8>> (validates both arguments), get_bytes(&str, u64)}`, `read_titles_dump::<R, E>(R, &TitlesLimits, sink) -> Result<usize, E>`, `parse_anime_xml(&str)`, `decode_maybe_gzip(&[u8])`, `validate_picname(&str)`, `validate_image_host(&str)`, `MAX_IMAGE_BYTES`, `TitlesLimits`, `DumpTitle { aid, kind, lang, name }`, `AnimeXml`, `HTTP_API`, `TITLES_DUMP`, `DEFAULT_IMAGE_SERVER`; with `test-support`, `HttpClient::with_loopback_image_base(&str)` |
-| `limits` | `Limits::{new(Arc<dyn Clock>, Arc<dyn LimitStore>) -> Arc<Limits>, wait_udp(), wait_http(), auth_unanswered() -> Result<Duration>, auth_answered()}`, traits `Clock` (`SystemClock`) and `LimitStore`, `Protocol::{Udp, Http}`, constants `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING`, `UDP_BURST_RESET`, `HTTP_SPACING`, `AUTH_BACKOFF` |
+| `limits` | `Limits::{new(Arc<dyn Clock>, Arc<dyn LimitStore>) -> Arc<Limits>, wait_udp(), wait_http(), now_ms(), auth_unanswered() -> Result<Duration>, auth_answered()}`, traits `Clock` (`SystemClock`) and `LimitStore`, `Protocol::{Udp, Http}`, constants `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING`, `UDP_BURST_RESET`, `UDP_SESSION_TIMEOUT`, `UDP_KEEP_ALIVE_INTERVAL`, `UDP_MAX_IDLE_LOGOUT`, `UDP_NAT_PING_INTERVAL`, `HTTP_SPACING`, `AUTH_BACKOFF` |
 | `error` | `AnidbError` with `is_transient()`, `is_fatal()`, `retry_after()` (variants include `ClientBanned`, `AuthTimeout(Duration)` and `Storage(String)`); `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN`; `Result<T, E = AnidbError>` |
-| `testing` (feature `test-support`, enabled by the dev-dependencies of `animatic-core` and `animatic` only) | `ManualClock`, `MemoryStore`, `test_limits()`, `HttpFixture`/`HttpReply` (loopback HTTP server), `UdpFixture` (loopback UDP server), and `HttpClient::with_loopback_endpoints` |
+| `testing` (feature `test-support`, enabled by the dev-dependencies of `animatic-core` and `animatic` only) | `ManualClock`, `MemoryStore`, `test_limits()`, `HttpFixture`/`HttpReply` (loopback HTTP server), `UdpFixture` (loopback UDP server; `start`, or `start_from`, which also hands the reply the client's address so it can report the client's own port or another one), and `HttpClient::with_loopback_endpoints` |
 
 `animatic-core` depends on `animatic-anidb`; library users typically add both as path (or git)
 dependencies, because persisted `MylistEdit`/`FileRef` values come from `animatic_anidb::commands`.
@@ -1184,16 +1233,20 @@ which is not a library API. An alternative executor that skips any step can hamm
 or duplicate work, or turn a recoverable outage into blocked commands.
 
 What `process_queue(db_path, AnidbSettings, events, cancel, network)` does, in order (`network` is
-the worker's long-lived `Network`: the process-wide `Limits` plus the UDP reply timeout):
+the worker's long-lived `Network`: the process-wide `Limits`, the UDP reply timeout and the kept
+session). `process_auto_queue` is the same run for an automatic queue run (scope
+`QueueScope::Automatic`: no `MylistDelete`, and silent when nothing is left to send):
 
 1. If `AnidbSettings.offline` is set, report and return; the queue is untouched.
 2. `Db::open`, then `Db::sync_cooldown()`. An active cooldown (or a database error reading it)
    ends the run before any network client exists.
-3. Build `UdpClient` from `animatic_anidb::udp::Config` (server, local port, client name and
-   version, username, password, optional API key, timeout) and
-   `HttpClient::new(client, version, limits)` from the settings. Both take their send slots from
-   the shared `Limits` (`network.limits`), so a new pair per run cannot restart the spacing.
-4. Loop until cancelled: `Db::queue_peek()` yields `(id, Command, tries)`, lowest priority
+3. Take the `UdpClient`: the one kept from an earlier run (told the current settings through
+   `set_config`, which drops its session if the account, key, client name or version changed) or
+   a new one from `animatic_anidb::udp::Config` (server, local port, client name and version,
+   username, password, optional API key, timeout); and `HttpClient::new(client, version, limits)`
+   from the settings. Both take their send slots from the shared `Limits` (`network.limits`), so
+   a new pair per run cannot restart the spacing.
+4. Loop until cancelled: `Db::queue_peek_in(scope)` yields `(id, Command, tries)`, lowest priority
    then oldest first; none left ends the run.
 5. Call [`sync::execute`](../crates/animatic-core/src/sync.rs)`(id, &command, &db, &mut udp,
    &mut http)`. On `Ok(Outcome)` acknowledge with `Db::queue_remove(id)`; if that write fails,
@@ -1206,7 +1259,8 @@ the worker's long-lived `Network`: the process-wide `Limits` plus the UDP reply 
    (`queue_deferred`), persist a cooldown (an unanswered `AUTH` the escalating one) and stop;
    permanent errors `queue_block` that command and continue. If even recording the failure
    fails, the run stops.
-7. At the end, `UdpClient::logout()`.
+7. At the end, hand the client back: it stays for the next run when `anidb.auto_run_queue` is on and
+   it still has a session (and is not banned); otherwise `UdpClient::logout()` and drop it.
 
 For your own front end, reuse these library pieces rather than the loop: `Db::queue_*` for
 state, `sync_cooldown`/`set_sync_cooldown` for pauses, `sync::execute` for execution, and the

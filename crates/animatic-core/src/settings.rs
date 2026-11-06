@@ -97,6 +97,13 @@ impl<'de> Deserialize<'de> for AutoRename {
 /// Mylist state values used by AniDB (`state=` parameter).
 pub const MYLIST_STATES: [&str; 5] = ["Unknown", "On HDD", "On CD/DVD", "Deleted", "Remote/Shared"];
 
+/// Shortest and longest idle logout, in minutes. The longest is
+/// [`animatic_anidb::limits::UDP_MAX_IDLE_LOGOUT`]: a kept session is logged out before AniDB
+/// would expire it after 35 idle minutes.
+pub const MIN_IDLE_LOGOUT_MINUTES: u32 = 1;
+pub const MAX_IDLE_LOGOUT_MINUTES: u32 =
+    (animatic_anidb::limits::UDP_MAX_IDLE_LOGOUT.as_secs() / 60) as u32;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnidbSettings {
@@ -120,8 +127,14 @@ pub struct AnidbSettings {
     pub update_file_information: bool,
     /// Work offline: commands are queued until this is switched off.
     pub offline: bool,
-    /// Log out after this many idle minutes.
+    /// Log out after this many idle minutes, from [`MIN_IDLE_LOGOUT_MINUTES`] to
+    /// [`MAX_IDLE_LOGOUT_MINUTES`]. It only applies while a session is kept between queue
+    /// runs (`auto_run_queue`); without automatic runs every queue run logs out when it ends.
     pub idle_logout_minutes: u32,
+    /// Run the command queue automatically (roadmap M5.5): shortly after new commands are
+    /// queued and at an interval, and keep one AniDB session between those runs. Off by
+    /// default. An automatic run never sends `MylistDelete`: removals wait for a manual run.
+    pub auto_run_queue: bool,
 }
 
 impl Default for AnidbSettings {
@@ -139,6 +152,7 @@ impl Default for AnidbSettings {
             update_file_information: false,
             offline: false,
             idle_logout_minutes: 10,
+            auto_run_queue: false,
         }
     }
 }
@@ -155,6 +169,24 @@ pub fn parse_client_version(text: &str) -> std::result::Result<u32, &'static str
         Ok(0) => Err("The client version must be at least 1."),
         Ok(n) => Ok(n),
         Err(_) => Err("The client version must be a whole number of 1 or more."),
+    }
+}
+
+impl AnidbSettings {
+    /// Bring the idle logout into its valid range. A session must be logged out before AniDB
+    /// expires it after 35 idle minutes, so more than 30 is not allowed.
+    pub fn clamp_timing(&mut self) {
+        self.idle_logout_minutes = self
+            .idle_logout_minutes
+            .clamp(MIN_IDLE_LOGOUT_MINUTES, MAX_IDLE_LOGOUT_MINUTES);
+    }
+
+    /// How long a kept session may idle before the client logs out.
+    pub fn idle_logout(&self) -> std::time::Duration {
+        let minutes = self
+            .idle_logout_minutes
+            .clamp(MIN_IDLE_LOGOUT_MINUTES, MAX_IDLE_LOGOUT_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
     }
 }
 
@@ -1006,6 +1038,7 @@ impl Settings {
                 .insert(0, FileManager::builtin_default());
         }
         self.file_managers.clamp_timing();
+        self.anidb.clamp_timing();
         if self.ui.zoom <= 0.3 {
             self.ui.zoom = 1.0;
         }
@@ -1437,6 +1470,44 @@ x</renamingPattern>
         assert_eq!(
             huge.file_managers.scan_interval_minutes,
             MAX_SCAN_INTERVAL_MINUTES
+        );
+    }
+
+    #[test]
+    fn automatic_queue_runs_are_off_by_default_and_the_idle_logout_stays_below_the_server_timeout()
+    {
+        let old = parse_settings(br#"{"anidb":{"username":"animatic-test-user"}}"#).unwrap();
+        assert!(
+            !old.anidb.auto_run_queue,
+            "settings files from before have no such field"
+        );
+        assert_eq!(old.anidb.idle_logout_minutes, 10);
+        assert_eq!(
+            old.anidb.idle_logout(),
+            std::time::Duration::from_secs(10 * 60)
+        );
+
+        let on = parse_settings(br#"{"anidb":{"auto_run_queue":true}}"#).unwrap();
+        assert!(on.anidb.auto_run_queue);
+
+        for (stored, kept) in [
+            (0u32, 1u32),
+            (1, 1),
+            (30, 30),
+            (35, 30),
+            (4_000_000_000, 30),
+        ] {
+            let text = format!(r#"{{"anidb":{{"idle_logout_minutes":{stored}}}}}"#);
+            let loaded = parse_settings(text.as_bytes()).unwrap();
+            assert_eq!(loaded.anidb.idle_logout_minutes, kept, "stored {stored}");
+            assert_eq!(
+                loaded.anidb.idle_logout(),
+                std::time::Duration::from_secs(u64::from(kept) * 60)
+            );
+        }
+        assert!(
+            std::time::Duration::from_secs(u64::from(MAX_IDLE_LOGOUT_MINUTES) * 60)
+                < animatic_anidb::limits::UDP_SESSION_TIMEOUT
         );
     }
 

@@ -18,6 +18,7 @@ written with the settings.
 |---|---|---|
 | AniDB account | Username, Password (masked), API key (shown in clear), Client name, Client version | Used by sync and AVDump. *Client version* is the version registered with AniDB for your client name: a whole number of 1 or more, shown red with an explanation (and **Save options** disabled) while the text is not one. Animatic updates never change it |
 | | Work offline | Active |
+| | Run the command queue automatically; Log out of AniDB when idle for N min (1–30, enabled only with the automatic option) | Active, **off by default**; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session). The settings reach the background timer when Options is closed, not while you edit |
 | | Download anime covers when a detail window opens | Active (default on); see [Cover](Library-Pages.md#cover) |
 | | Update known file information | Active: re-hashing an identified file queues a refresh of its AniDB record (at most every 7 days per file); off by default |
 | Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Active; applied at launch and on Save |
@@ -37,7 +38,7 @@ written with the settings.
 | Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
-Not in Options (JSON only): UDP server, local port, image server (the fallback host for covers), idle logout,
+Not in Options (JSON only): UDP server, local port, image server (the fallback host for covers),
 row colors, `ed2k_space_replacement`.
 The full list with active/stored-only status is the [settings reference](Settings-Reference.md).
 The password, API key and AVDump key are saved to the system keystore (Windows Credential Manager,

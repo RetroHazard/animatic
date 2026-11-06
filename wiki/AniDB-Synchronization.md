@@ -6,7 +6,9 @@ command fails. Error messages and recovery steps are in
 
 Animatic works **offline-first**. Hashing, browsing, searching and local MyList edits never
 touch the network. Network traffic happens only in the *Synchronizing with AniDB* job, started
-by **Tools → Run command queue** or **Queue → Synchronize now** (nothing runs on a timer).
+by **Tools → Run command queue** or **Queue → Synchronize now**, or by Animatic itself when you
+switch on **Run the command queue automatically** ([below](#automatic-runs-and-the-anidb-session);
+off by default, so nothing runs on a timer unless you ask for it).
 
 Before the first run: set **Client name** (registered with AniDB), **Username** and
 **Password**, optionally an **API key** (encrypted UDP sessions), clear **Work offline**, press
@@ -23,7 +25,8 @@ The job (`process_queue`):
    the next unblocked command until the queue is empty, you cancel, a command stops the run or a
    cooldown begins. Every successful command is removed from the queue and logged
    (`known file F (anime A), mylist entry L`, `mylist entry updated`, `anime A updated`,
-   `N titles downloaded (M new)`, …). It logs out of UDP at the end.
+   `N titles downloaded (M new)`, …). It logs out of UDP at the end, unless automatic runs are on
+   and the login is kept for the next run ([below](#automatic-runs-and-the-anidb-session)).
 4. Requests are paced for the whole program, not per run: UDP packets at least 2 s apart for
    the first five of a burst and 4 s apart afterwards (10 idle minutes restart the burst), HTTP
    requests (anime records, the title list, images) at least 2 s apart. Repeated **Synchronize
@@ -65,6 +68,56 @@ the last 7 days (the log then says when it is allowed). With the option off, has
 again queues nothing; a file AniDB did not know yet keeps the *Identify after hashing* path. A
 folder that adds files to MyList automatically still queues `Identify` (which refreshes the record
 too).
+
+## Automatic runs and the AniDB session
+
+**Run the command queue automatically** (Options → AniDB account, `anidb.auto_run_queue`) is **off
+by default**. With it off nothing is sent unless you start a run, and every run logs in when its
+first command needs it and out when it ends. With it on, Animatic starts the same job for you:
+
+- **When.** 30 seconds after the newest command was queued (a burst of edits becomes one run) and
+  every 15 minutes for whatever is still waiting. Switching the option on counts the commands
+  already queued as new. A queue holding nothing a run may send starts no run at all.
+- **What.** The log shows `Automatic command queue run started` and the job is labelled
+  *Synchronizing with AniDB (automatic run)*. Spacing, cooldowns, blocking and failure handling
+  are exactly those of a manual run ([Request limits](#request-limits),
+  [Failure handling](#failure-handling)), so a burst of new commands never goes out faster than
+  AniDB allows. Blocked commands are not retried automatically: they wait for **Retry failed**.
+- **MyList removals are never sent automatically.** A removal queued with **Remove from MyList…**
+  stays queued until you click **Queue → Synchronize now** or **Tools → Run command queue**; an
+  automatic run sends everything else around it. The Queue page says so while the option is on
+  and counts the removals that are waiting.
+- **When it waits.** The run is postponed, with one log line (`Automatic command queue run
+  postponed (reason); it starts when that is over`), while Work offline is on, an AniDB cooldown
+  is active, the user name, password or client name is not set (the queue is *not* blocked for
+  that), another task is running, an import, settings review or restore is open, or changes are
+  not saved to the database yet. It then starts by itself.
+- **Settings** reach the background timer when Options is closed, not while you edit.
+
+With the option on, **one AniDB login is kept between runs** (AniDB asks clients not to log in and
+out around every command):
+
+- Consecutive runs share one login. The session is logged out after
+  `idle_logout_minutes` (default 10, from 1 to 30) without a command, so it never reaches AniDB's
+  35 idle minutes. While commands that an automatic run would send are still waiting (the run was
+  postponed or stopped), the session is kept instead, with a keep-alive command (`UPTIME`) at least
+  every 30 minutes.
+- A session that AniDB has already dropped (for example after a long hashing job) is forgotten
+  without sending anything; the next run logs in again. A rejected session (`506`) is replaced by
+  a new login, as before.
+- **Behind a router.** The login reply tells which source port AniDB saw. Only when that differs
+  from your local port, a `PING nat=1` is sent whenever 4 minutes pass without any packet (home
+  routers forget a mapping after 5 to 15 minutes), until the logout. When the ports agree there
+  are no pings. Pings are not commands: they do not postpone the idle logout.
+- Every packet of this upkeep takes its place in the program-wide spacing like any other, and
+  none is sent while Work offline is on or an AniDB cooldown is active, not even a logout (AniDB
+  drops the session by itself).
+- Switching the option off logs a kept session out as soon as nothing else is running. Changing
+  the account, API key, client name, version, server or port drops the session without a packet,
+  and the next run logs in with the new values. A ban reply or a failed keep-alive forgets the
+  session and starts the usual cooldown.
+- **On exit** Animatic sends one `LOGOUT` and waits for it at most about 8 seconds. It sends nothing
+  when offline or cooling down.
 
 ## Request limits
 
