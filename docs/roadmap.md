@@ -80,8 +80,8 @@ flowchart LR
 | M4.1 | Full update menu action | Planned |
 | M4.2 | Update known file information | Planned |
 | M4.3 | Full-account MyList import through MyList export | Planned |
-| M5.1 | Scheduler for folder scans | Planned |
-| M5.2 | Settle delay for files being written | Planned |
+| M5.1 | Scheduler for folder scans | Done |
+| M5.2 | Settle delay for files being written | Done |
 | M5.3 | `exclude_system` and `clear_empty_folders` | Planned |
 | M5.4 | Persistent hash queue and autostart | Planned |
 | M5.5 | Opt-in automatic queue run | Planned |

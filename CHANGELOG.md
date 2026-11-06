@@ -95,6 +95,14 @@ the generated line for that pull request's squash commit.
   and an AOM settings import never registers it. Launching Animatic with media files while another
   instance has the same database open hands the files to that window (loopback only,
   token-protected lock file next to the database); a different `--database` starts normally.
+- Scheduled folder scanning (Options → Managed folders, off by default): scan at start and every
+  N minutes (5 minutes to one week). A background timer submits the ordinary scan and never
+  overlaps a running task, an import or settings review, a restore or unsaved commands. A scan
+  holds back files that may still be written: a file is hashed only once its size and modification
+  time have been unchanged for `action_delay_ms` (default 500 ms), and the next scan retries
+  deferred files. `sleep_time_ms` paces the hashed files of a scan (default 0, at most 10 s)
+  instead of storing AOM's pause between scans; an AOM import turns that pause into the scan
+  interval.
 
 ### Changed
 
