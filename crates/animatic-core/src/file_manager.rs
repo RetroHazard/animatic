@@ -418,9 +418,47 @@ pub fn move_file(
     new: &Path,
     ctl: MoveControl,
 ) -> Result<MoveOutcome> {
-    move_file_with(db, local_id, old, new, ctl, &|from, to| {
-        fs::rename(from, to)
-    })
+    move_file_with(db, local_id, old, new, ctl, &rename_no_replace)
+}
+
+/// Rename `from` to `to` on one volume, atomically refusing to replace anything at `to`
+/// (`ErrorKind::AlreadyExists`), even a file created after any earlier existence check. A
+/// cross-volume target fails with `ErrorKind::CrossesDevices`. `fs::rename` is not used: it
+/// replaces an existing file on every platform.
+pub fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+        let wide = |p: &Path| -> Vec<u16> {
+            p.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        };
+        let (f, t) = (wide(from), wide(to));
+        // Flags 0: no MOVEFILE_REPLACE_EXISTING and no MOVEFILE_COPY_ALLOWED, so an existing
+        // target fails and another volume reports ERROR_NOT_SAME_DEVICE.
+        // SAFETY: both buffers are NUL-terminated UTF-16 strings that outlive the call.
+        if unsafe { MoveFileExW(f.as_ptr(), t.as_ptr(), 0) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(unix)]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        match renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE) {
+            Ok(()) => Ok(()),
+            // The file system or kernel cannot do an atomic no-replace rename: a hard link
+            // fails on an existing target just as atomically; the source is removed only after.
+            Err(e) if e == rustix::io::Errno::INVAL || e == rustix::io::Errno::NOSYS => {
+                fs::hard_link(from, to)?;
+                fs::remove_file(from)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
 }
 
 /// [`move_file`] with the same-volume step injected, so the cross-volume path can be driven on a
@@ -462,7 +500,7 @@ pub fn move_file_with(
         Ok(()) => {
             if let Err(e) = db.move_local_file(local_id, &new.to_string_lossy()) {
                 // The record must not point at a path that no longer exists.
-                let _ = rename(new, old);
+                let _ = rename_no_replace(new, old);
                 return Err(e);
             }
             Ok(same)
@@ -919,6 +957,42 @@ mod tests {
         assert!(!old.exists());
         assert_eq!(fs::read(&new).unwrap(), b"synthetic episode");
         assert_eq!(recorded_path(&db, id), new.to_string_lossy());
+    }
+
+    #[test]
+    fn a_destination_created_after_the_check_is_never_replaced_by_a_same_volume_move() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::memory().unwrap();
+        let old = dir.path().join("old.mkv");
+        let new = dir.path().join("new.mkv");
+        let id = register(&db, &old, b"synthetic episode");
+
+        // Another program creates the destination between the existence check and the rename.
+        let racing = |from: &Path, to: &Path| {
+            fs::write(to, b"someone else's file")?;
+            rename_no_replace(from, to)
+        };
+        let err = move_with(&db, id, &old, &new, &racing).unwrap_err();
+
+        assert!(err.to_string().to_lowercase().contains("exist"), "{err}");
+        assert_eq!(fs::read(&new).unwrap(), b"someone else's file");
+        assert_eq!(fs::read(&old).unwrap(), b"synthetic episode");
+        assert_eq!(recorded_path(&db, id), old.to_string_lossy());
+    }
+
+    #[test]
+    fn rename_no_replace_moves_but_refuses_an_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&a, b"a").unwrap();
+        fs::write(&b, b"b").unwrap();
+        let err = rename_no_replace(&a, &b).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&b).unwrap(), b"b");
+        fs::remove_file(&b).unwrap();
+        rename_no_replace(&a, &b).unwrap();
+        assert!(!a.exists());
+        assert_eq!(fs::read(&b).unwrap(), b"a");
     }
 
     #[test]

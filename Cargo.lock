@@ -264,6 +264,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "rand 0.10.3",
  "rusqlite",
+ "rustix 1.1.6",
  "self-replace",
  "semver",
  "serde",
