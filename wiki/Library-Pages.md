@@ -39,8 +39,10 @@ Columns: **Anime** (link; opens the [detail window](#anime-detail-window)), **Ep
 (short name, else full name), **State** (combo box), **Watched** (checkbox), **Size**, **Queue**
 (`Edit queued`, `Removal queued`, or the same with `blocked`; hover shows the last error).
 
-The page lists the MyList entries stored locally. They come from an AOM import or from files
-identified or added through the [queue](#queue); there is no "download my whole MyList" action (see
+The page lists the MyList entries stored locally. They come from an AOM import, from files
+identified or added through the [queue](#queue), or from a
+[MyList export import](AniDB-Synchronization.md#full-account-mylist-import) (**File → Import
+MyList export…**); Animatic never downloads your MyList entry by entry (see
 [Not implemented](Feature-Parity.md#not-implemented)). State and Watched toggle in the row; the
 buttons above the table act on the selected row. All changes are queued first, so they work
 offline; see [MyList editing](AniDB-Synchronization.md#mylist-editing).
@@ -155,13 +157,14 @@ A yellow line repeats an active cooldown. Table columns: **ID** (`#n`, never reu
 
 Order of execution (and of the list, blocked rows last): lower priority number first, then
 oldest. Priorities: MyList writes 0; Identify 1; file/episode/group lookups 2; anime refresh,
-MyList statistics, title list 3; MyList entry refresh 4.
+MyList statistics, title list, MyList export 3; MyList entry refresh 4.
 
 Command descriptions you will see: `Identify file <ed2k> (<n> bytes)` (with ` + add to
 mylist` when the folder rule adds it), `Add to mylist: file N` or `Add to mylist: <ed2k> (<n>
 bytes)`, `Edit mylist entry N`, `Remove mylist entry N`, `Refresh mylist entry N`, `Fetch anime N`,
 `Fetch episode N`, `Fetch group N`, `Fetch file N` (from the full update), `Fetch mylist
-statistics`, `Download anime title list`. A row whose stored payload this version cannot read is kept, blocked, as `Unreadable
+statistics`, `Download anime title list`, `Request MyList export from AniDB`, `Cancel the queued
+MyList export`. A row whose stored payload this version cannot read is kept, blocked, as `Unreadable
 queued command: …`; it is never deleted silently.
 
 ## Log

@@ -860,6 +860,64 @@ pub fn mylist_stats(c: &mut UdpClient) -> Result<MylistStats> {
     })
 }
 
+/// The template Animatic requests: the one AniDB documents for building a local database.
+pub const MYLIST_EXPORT_TEMPLATE: &str = "xml-plain-new";
+
+/// The web page where a finished export is downloaded; AniDB documents no API for it.
+pub const MYLIST_EXPORT_PAGE: &str = "https://anidb.net/perl-bin/animedb.pl?show=export";
+
+/// What AniDB answered to a `MYLISTEXPORT` request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MylistExportReply {
+    /// 217: the export is queued; AniDB announces it as a message when it is ready.
+    Queued,
+    /// 318: an export is already queued or being prepared. Not an error and not retried.
+    AlreadyQueued,
+}
+
+/// What AniDB answered to `MYLISTEXPORT cancel=1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MylistExportCancelReply {
+    /// 218: the queued export was cancelled.
+    Cancelled,
+    /// 319: there was nothing to cancel.
+    NothingToCancel,
+}
+
+/// Ask AniDB to prepare a MyList export with `template` (`MYLISTEXPORT template=...`). One
+/// export can be queued at a time. A `317` (no such template) and every unknown code is an
+/// error that blocks the command: retrying cannot succeed.
+pub fn mylist_export(c: &mut UdpClient, template: &str) -> Result<MylistExportReply> {
+    let resp = c.request("MYLISTEXPORT", &[("template", template.to_string())])?;
+    mylist_export_reply(resp, template)
+}
+
+fn mylist_export_reply(resp: Response, template: &str) -> Result<MylistExportReply> {
+    match resp.code {
+        217 => Ok(MylistExportReply::Queued),
+        318 => Ok(MylistExportReply::AlreadyQueued),
+        317 => Err(AnidbError::Unexpected(
+            317,
+            format!("AniDB does not know the MyList export template {template}"),
+        )),
+        code => Err(AnidbError::Unexpected(code, resp.message)),
+    }
+}
+
+/// Cancel the queued MyList export (`MYLISTEXPORT cancel=1`).
+pub fn mylist_export_cancel(c: &mut UdpClient) -> Result<MylistExportCancelReply> {
+    let resp = c.request("MYLISTEXPORT", &[("cancel", "1".to_string())])?;
+    mylist_export_cancel_reply(resp)
+}
+
+fn mylist_export_cancel_reply(resp: Response) -> Result<MylistExportCancelReply> {
+    match resp.code {
+        218 => Ok(MylistExportCancelReply::Cancelled),
+        319 => Ok(MylistExportCancelReply::NothingToCancel),
+        code => Err(AnidbError::Unexpected(code, resp.message)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1096,6 +1154,36 @@ mod tests {
                     Err(AnidbError::Protocol(_))
                 ),
                 "{code} {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mylistexport_replies_are_mapped_and_unknown_codes_are_errors() {
+        let ask = |code| mylist_export_reply(reply(code, &[]), "t");
+        assert_eq!(ask(217).unwrap(), MylistExportReply::Queued);
+        assert_eq!(ask(318).unwrap(), MylistExportReply::AlreadyQueued);
+        match ask(317) {
+            Err(AnidbError::Unexpected(317, text)) => assert!(text.contains("template t")),
+            other => panic!("{other:?}"),
+        }
+        let cancel = |code| mylist_export_cancel_reply(reply(code, &[]));
+        assert_eq!(cancel(218).unwrap(), MylistExportCancelReply::Cancelled);
+        assert_eq!(
+            cancel(319).unwrap(),
+            MylistExportCancelReply::NothingToCancel
+        );
+        // A code that belongs to the other request, or an unknown one, is never a success.
+        for code in [218, 319, 500, 320] {
+            assert!(
+                matches!(ask(code), Err(AnidbError::Unexpected(c, _)) if c == code),
+                "{code}"
+            );
+        }
+        for code in [217, 318, 317, 500] {
+            assert!(
+                matches!(cancel(code), Err(AnidbError::Unexpected(c, _)) if c == code),
+                "{code}"
             );
         }
     }

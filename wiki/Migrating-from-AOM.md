@@ -68,6 +68,12 @@ What happens (`legacy::import::import_databank`):
 - Nothing is queued, sent to AniDB or deleted. The import does not create queue entries; the
   Queue only fills as you hash/identify or refresh. Imported MyList entries stay as the local copy
   until an identify reply for their file says otherwise (see [Hashing and identification](Hashing-and-Identification.md)).
+- To bring an imported library up to date with your whole AniDB account, request a MyList
+  export and import the downloaded file (**Tools → Request MyList export…**, then **File →
+  Import MyList export…**; see [Full-account MyList import](AniDB-Synchronization.md#full-account-mylist-import)).
+  It fills what the databank lacked and refreshes state and watched data; it never deletes
+  entries, so entries you removed on AniDB since the databank was made stay until you remove
+  them here.
 - Local file paths are imported verbatim (AOM's Windows paths). On Linux those paths do not
   exist; *Remove missing* only acts under an explicit folder rule whose directory exists, so
   they remain as stale records until you configure rules or remove them.

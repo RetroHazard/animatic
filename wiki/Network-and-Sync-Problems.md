@@ -175,13 +175,26 @@ Two connections write to the database: the background worker and the interface. 
 
 ## The library is missing entries
 
-- **A full-account bootstrap is not implemented.** Animatic never downloads your whole AniDB
-  MyList. **Tools → Fetch mylist statistics** only fetches counts (kept and shown on Overview).
+- **Loading your whole AniDB MyList is a two-step export, not a download.** Animatic never walks
+  your MyList entry by entry (AniDB forbids it). **Tools → Request MyList export…** asks AniDB to
+  prepare an export (up to 24 hours; AniDB sends a message when it is ready), you download the
+  file from AniDB's export page, and **File → Import MyList export…** merges it. See
+  [Full-account MyList import](AniDB-Synchronization.md#full-account-mylist-import).
+  **Tools → Fetch mylist statistics** only fetches counts (kept and shown on Overview).
   **Tools → Download anime
   titles** fetches the public titles dump only. **Tools → Full update…** (after a confirmation) or `--full-update` queues the titles dump plus lookups for the files and anime your **hashed local files**
   already reference, leaving out what was requested too recently (see the next point). Library
   content comes from an AOM import, from hashing and identifying files, from the anime detail
-  window's **Refresh from AniDB**, and from your own edits.
+  window's **Refresh from AniDB**, from a MyList export import and from your own edits.
+- **MyList export messages.** `A MyList export is already queued on AniDB…` is information, not
+  an error: wait for AniDB's message. `MyList export not requested: … allowed after …` means one
+  was requested within 24 hours. A blocked *Request MyList export* command with `unexpected
+  reply 317` means AniDB no longer knows the template; it needs a new Animatic version. An
+  import that ends with `MyList export not imported, the library was not changed: …` names why
+  the file was refused (for example `larger than the … byte limit`, `truncated export`,
+  `root element is <…>`, a missing element or an invalid value); nothing was written. Download
+  the export again, or open an issue without attaching the file (it holds your account's
+  library).
 - Not every hashed file is known to AniDB. A file AniDB does not know logs `file unknown to
   AniDB`.
 - **Download anime titles** failures leave your existing titles and the "last updated"

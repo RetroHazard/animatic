@@ -49,6 +49,15 @@ pub const KNOWN_FILE_MIN_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)).
 /// A cover that arrived is never requested again; this only spaces out retries after a failure.
 pub const COVER_MIN_AGE: Duration = Duration::from_secs(3600);
+/// Least time between two MyList export requests, counted from the last attempt. A design
+/// choice: AniDB queues one export at a time, needs up to 24 h to prepare it and asks that the
+/// export tool is not abused (see "Whole MyList" in
+/// [AniDB server limits](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#anidb-server-limits)).
+pub const MYLIST_EXPORT_MIN_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+
+/// The `request_attempt` id of the MyList export, which is one account-wide request rather than
+/// one per record.
+pub const MYLIST_EXPORT_ID: i64 = 0;
 
 /// `meta` key: epoch milliseconds of the last UDP packet sent (saved before sending).
 pub const UDP_LAST_SEND_KEY: &str = "udp_last_send_ms";
@@ -72,6 +81,9 @@ pub enum RequestKind {
     /// [`COVER_MIN_AGE`]. Covers are cached for good, so only a download that failed is ever
     /// repeated.
     Cover,
+    /// A MyList export (UDP `MYLISTEXPORT`, id [`MYLIST_EXPORT_ID`]), limited by
+    /// [`MYLIST_EXPORT_MIN_INTERVAL`].
+    MylistExport,
 }
 
 impl RequestKind {
@@ -80,6 +92,7 @@ impl RequestKind {
             RequestKind::Anime => "anime",
             RequestKind::File => "file",
             RequestKind::Cover => "cover",
+            RequestKind::MylistExport => "export",
         }
     }
 
@@ -89,6 +102,7 @@ impl RequestKind {
             RequestKind::Anime => ANIME_MIN_AGE,
             RequestKind::File => KNOWN_FILE_MIN_AGE,
             RequestKind::Cover => COVER_MIN_AGE,
+            RequestKind::MylistExport => MYLIST_EXPORT_MIN_INTERVAL,
         }
     }
 }
@@ -129,6 +143,14 @@ pub fn file_wait_message(fid: i64, until: i64) -> String {
     format!(
         "File {fid} skipped: it was requested from AniDB recently (known files are refreshed at most every {} days). The next refresh is allowed after {}",
         KNOWN_FILE_MIN_AGE.as_secs() / 86_400,
+        when(until)
+    )
+}
+
+/// Why a MyList export is not requested now, with the time it is allowed again.
+pub fn mylist_export_wait_message(until: i64) -> String {
+    format!(
+        "MyList export not requested: one was requested recently and AniDB prepares it for up to 24 hours. A new request is allowed after {}",
         when(until)
     )
 }
@@ -195,7 +217,7 @@ impl Db {
                 })
                 .optional()?
                 .filter(|t| *t > 0),
-            RequestKind::File | RequestKind::Cover => None,
+            RequestKind::File | RequestKind::Cover | RequestKind::MylistExport => None,
         };
         Ok(attempt.max(fetched))
     }

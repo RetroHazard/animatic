@@ -31,7 +31,8 @@ Know the limits before you rely on a recovery path:
   [Rename problems](File-and-Import-Problems.md#rename-problems)); there is no undo. The only
   folders Animatic removes are completely empty ones that a rename emptied inside a managed folder
   whose **Remove emptied folders** is on (off by default).
-- **No full-account import.** Animatic does not download your complete AniDB MyList (see
+- **No direct account download.** Animatic does not fetch your complete AniDB MyList entry by
+  entry; you request a MyList export from AniDB and import the file you download (see
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed
   folders**, the queue runs only from **Tools → Run command queue** or **Synchronize now**,

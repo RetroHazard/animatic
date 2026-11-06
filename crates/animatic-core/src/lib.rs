@@ -19,6 +19,9 @@
 //!   anime and per file).
 //! * [`covers`] — the permanent on-disk cache of anime cover pictures and the rules for when one
 //!   may be fetched (on demand only, through the shared limiter, never redistributed).
+//! * [`mylist_export`] — import of a MyList export file (the supported full-account MyList
+//!   bootstrap): streamed and bounded like the title dump, validated completely, merged
+//!   atomically with pending local intent winning.
 //! * [`store`] — write side: AniDB records, MyList rows, hashed local files, and the atomic
 //!   title-dump merge (`Db::import_title_dump`, implemented in [`store`]).
 //! * [`library`] — read side: display types, queries and the immutable
@@ -89,6 +92,7 @@ pub mod legacy;
 pub mod library;
 pub mod limits;
 pub mod maintenance;
+pub mod mylist_export;
 pub mod rename;
 pub mod secrets;
 pub mod settings;

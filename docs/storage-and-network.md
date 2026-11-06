@@ -103,7 +103,7 @@ time).
 | `local_hash` | Hashes of local content | PK `id`; **UNIQUE `(ed2k, size)`** | | `add_local_file` (upsert); legacy | Hashing fills only `ed2k, size, crc32, md5, sha1`; the media columns (`fps`, `video_*`, `audio_*`) are populated only by legacy import |
 | `local_file` | Paths of hashed files | PK `id`; **UNIQUE index on `path`** (exact text) | `hash_id` | `add_local_file` (upsert by path), `move_local_file`, legacy | `hash_id` softly references `local_hash.id`. `mtime` = modification time read after hashing. `remove_local_file` also deletes `local_hash` rows left without any path. Scan comparisons use a normalized key (slashes, and lower case on Windows) while the index is exact text |
 | `command_queue` | Persistent outbox of AniDB commands | PK `id` **AUTOINCREMENT** | `(blocked, priority, id)`; `lid`; `payload` | `sync.rs` queue operations, migration | See below |
-| `request_attempt` | When a request for one record was last **sent** to AniDB, successful or not | PK `(kind, id)`; `kind` is `anime` (`id` = `aid`, HTTP record), `file` (`id` = `fid`, UDP `FILE`) or `cover` (`id` = `aid`, the cover download); `attempted` = epoch seconds | | `sync::execute` and `covers::download_cover` through `Db::record_request_attempt`, before the request | Created by the idempotent schema script, so existing databases gain it on the next open and lose nothing. See [Request guards](#request-guards) |
+| `request_attempt` | When a request for one record was last **sent** to AniDB, successful or not | PK `(kind, id)`; `kind` is `anime` (`id` = `aid`, HTTP record), `file` (`id` = `fid`, UDP `FILE`), `cover` (`id` = `aid`, the cover download) or `export` (`id` = `0`, UDP `MYLISTEXPORT`); `attempted` = epoch seconds | | `sync::execute` and `covers::download_cover` through `Db::record_request_attempt`, before the request | Created by the idempotent schema script, so existing databases gain it on the next open and lose nothing. See [Request guards](#request-guards) |
 
 Key relations (all soft):
 
@@ -198,6 +198,7 @@ Payload shapes (synthetic values):
 ```json
 {"FetchAnime":{"aid":1}}
 "MylistStats"
+"MylistExport"
 {"MylistEdit":{"lid":1,"edit":{"state":null,"viewed":true,"viewdate":1700000000,"storage":null,"source":null,"other":null}}}
 {"MylistAdd":{"file":{"Hash":{"size":1234,"ed2k":"00112233445566778899aabbccddeeff"}},"edit":{"state":1,"viewed":null,"viewdate":null,"storage":"","source":null,"other":null}}}
 ```
@@ -222,6 +223,8 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 | `MylistStats` | 3 | UDP `MYLISTSTATS` | Stored in `meta.mylist_stats` with the arrival time; the summary is also logged | Yes: Tools menu |
 | `TitlesDump` | 3 | HTTPS title dump | Spool then merge | Yes: Tools menu; full update |
 | `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry (queued edits overlaid), or deletes it if AniDB says it is gone and no local intent is queued | Yes: My list "Refresh entry" |
+| `MylistExport` | 3 | UDP `MYLISTEXPORT template=xml-plain-new` (217 queued, 318 already queued) | None; the file is imported separately. Guarded: once per 24 h | Yes: Tools → Request MyList export… (never scheduled, never by a full update) |
+| `MylistExportCancel` | 3 | UDP `MYLISTEXPORT cancel=1` (218, 319) | None | Yes: the same dialog's Cancel pending export |
 
 Every command can be queued from the desktop application. See
 [Feature parity](https://github.com/RetroHazard/animatic/wiki/Feature-Parity).
@@ -411,6 +414,7 @@ at a time (`217` queued, `318` already queued, `317` unknown template, `cancel=1
 can take up to 24 h, completion is announced as an AniDB message, and the file is downloaded
 from the web export page (no documented API for fetching it). Request it only when the user asks,
 never on a schedule. `xml-plain-new` is the template meant for building a local database.
+Animatic implements both halves (see [MyList export import](#mylist-export-import)).
 
 **Where Animatic stands.**
 
@@ -424,6 +428,7 @@ never on a schedule. `xml-plain-new` is the template meant for building a local 
 | HTTP one request per 2 s | **Process-wide** for every HTTP request (anime records, title dump, images, `get_bytes`); the send time is saved in `meta.http_last_send_ms` before sending |
 | Same dataset once a day | Enforced by a saved attempt time per anime (24 h) and per known file (7 days, a design choice); see [Request guards](#request-guards) |
 | Title dump once a day | Enforced by a saved attempt time (24 h); **Download anime titles**, full updates and queued retries skip it inside the window and say when it is next allowed |
+| MyList export | Only on the user's request (**Tools → Request MyList export…**), never scheduled and never part of a full update; once per 24 h by a saved attempt; the file is imported locally from the web download (see [MyList export import](#mylist-export-import)) |
 | `User-Agent` | Sent: `Animatic/VERSION` |
 | `nat=1`, `comp=1`, `imgserver=1` | Sent on `AUTH`; `PING` exists but is unused |
 | Images: on demand only, no crawl, no redistribution | **Anime covers.** A cover is requested only when the anime detail window opens on an anime whose picture is not on disk, one file per request, and a cached cover is never requested again (a new `picname` is a new file). Covers are kept in `<data folder>/covers/` for the user's own display and are never exported, backed up, uploaded or re-hosted. See [Anime covers](#anime-covers) |
@@ -445,6 +450,7 @@ Every limit is a named constant whose doc comment links the rule above.
 | `ANIME_MIN_AGE` | 24 h from the last attempt, per anime | same |
 | `KNOWN_FILE_MIN_AGE` | 7 days from the last attempt, per file; a design choice, because AniDB only says "extended periods" | same |
 | `COVER_MIN_AGE` | 1 hour from the last attempt, per anime; a design choice (AniDB publishes no image rules). It only spaces out retries after a failure: a cover that arrived is cached and never requested again | same |
+| `MYLIST_EXPORT_MIN_INTERVAL` | 24 h from the last attempt; a design choice: AniDB queues one export at a time and asks that the export tool is not abused | same |
 | `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN` | 30 min, 60 s | [`animatic_anidb::error`](../crates/animatic-anidb/src/error.rs) |
 
 ### Request guards
@@ -463,7 +469,8 @@ a failed, truncated or invalid download cannot be repeated inside the interval e
   is saved), and the local spool of the title dump failing to start. A guard refusal is not an
   attempt either.
 - **Minimum ages.** Title dump 24 h; one anime 24 h; one known file (`FetchFile`) 7 days; one
-  anime's cover 1 hour (retries only, see [Anime covers](#anime-covers)).
+  anime's cover 1 hour (retries only, see [Anime covers](#anime-covers)); the MyList export 24 h
+  (account-wide, one row).
   `titles_dump_date` and `anime.fetched` keep recording only successes; for databases from
   before attempts were saved, a success also counts as an attempt (the later of the two is
   used). A saved time in the future (the clock was set back) is treated as now, so a guard
@@ -478,8 +485,13 @@ a failed, truncated or invalid download cannot be repeated inside the interval e
   - *Desktop*: **Download anime titles** and the anime detail **Refresh from AniDB** check the
     guard when clicked, queue nothing inside the window and log when the request becomes
     available. The executor checks again when the command runs.
-- **Not guarded.** Hash lookups (`Identify`), `FetchEpisode`, `FetchGroup` and the other UDP
-  commands have no age guard; they are only subject to the shared spacing.
+  - *MyList export*: `Command::MylistExport` is guarded like a known file (`request_attempt`
+    kind `export`, id `0`, 24 h, saved after the login and before the packet); the dialog's
+    **Request export** checks the guard when clicked and queued commands inside the window
+    complete as skipped. See [MyList export import](#mylist-export-import).
+- **Not guarded.** Hash lookups (`Identify`), `FetchEpisode`, `FetchGroup`, the cancellation of a
+  MyList export and the other UDP commands have no age guard; they are only subject to the
+  shared spacing.
 
 ### Anime covers
 
@@ -595,6 +607,7 @@ be read as absence.
 | `EPISODE` | 240 (>= 10 fields) | 340 | Numbers parsed leniently (bad value becomes 0) |
 | `GROUP` | 250 (>= 11 fields) | 350 | Lenient numbers |
 | `MYLISTSTATS` | 222 | none | Missing/non-numeric fields become 0 |
+| `MYLISTEXPORT` (`template=xml-plain-new`, or `cancel=1`) | 217 queued; 318 already queued (reported); 218 cancelled; 319 nothing to cancel | none | 317 (unknown template) and every other code → `Unexpected`, permanent for the command. See [MyList export import](#mylist-export-import) |
 | `ANIME` (wrapper exists; not used by `execute`) | 230 | 330 | |
 | `PING nat=1` (wrapper exists; unused) | 300 | | |
 
@@ -684,9 +697,129 @@ proportional to the dump, during which other connections wait up to their busy t
 
 **Not provided:** resume of an interrupted download (the whole 60 s budget applies and the
 dump is rejected on any failure), conditional requests, protection against a valid but wrong
-dump, cancellation inside the dump (cancel acts between commands), and any full-MyList
-bootstrap. MyList rows come only from legacy import, FILE replies for identified local files,
-`MYLISTADD` results, and the (non-desktop) `MylistRefresh`.
+dump and cancellation inside the dump (cancel acts between commands). The dump is not a MyList
+download: MyList rows come from legacy import, FILE replies for identified local files,
+`MYLISTADD` results, the (non-desktop) `MylistRefresh` and the
+[MyList export import](#mylist-export-import).
+
+## MyList export import
+
+The only full-account MyList path (no API returns a whole MyList; walking it with `MYLIST` is
+the bulk extraction AniDB forbids, see [AniDB server limits](#anidb-server-limits)). It has two
+independent halves, both started by the user and never scheduled:
+
+1. **Request** (`Command::MylistExport`, **Tools → Request MyList export…**): UDP
+   `MYLISTEXPORT template=xml-plain-new`, queued like any other command (sent only when the
+   command queue runs, through the shared UDP limiter). AniDB prepares the export for up to 24 h
+   and announces it as an AniDB message; the file is downloaded from the web export page
+   `https://anidb.net/perl-bin/animedb.pl?show=export`, for which AniDB documents no API. The
+   dialog can open that page in the browser (a link the user follows, not a request Animatic
+   sends). **Cancel pending export** queues `Command::MylistExportCancel`
+   (`MYLISTEXPORT cancel=1`).
+2. **Import** (**File → Import MyList export…**, `Job::ImportMylistExport` on the worker,
+   `Db::import_mylist_export`): reads the downloaded file locally. Nothing in the import touches
+   the network.
+
+| Reply | Meaning | Handling |
+|---|---|---|
+| `217` | Export queued | Success: `MyList export requested…`, removed from the queue |
+| `318` | An export is already queued or being prepared | **Reported, not retried and not an error**: the command completes as `Outcome::Skipped` (`A MyList export is already queued on AniDB…`), the queue continues |
+| `317` | Unknown template | `AnidbError::Unexpected(317, …)`: permanent, only this command is blocked (visible with the reason), the queue continues |
+| `218` / `319` (`cancel=1`) | Export cancelled / nothing queued or processing | Success / `Outcome::Skipped` |
+| any other code | Unexpected | `AnidbError::Unexpected`: permanent for the command; the global classes (ban, outdated client, server error) apply as for every command |
+
+**Request guard.** At most one request per 24 hours, counted from the last *attempt*
+(`request_attempt` row `kind = 'export'`, `id = 0`, saved after the login and before the packet,
+like the known-file guard; `RequestKind::MylistExport`, `MYLIST_EXPORT_MIN_INTERVAL`). Inside the
+window the dialog's **Request export** is disabled and says when a new request is allowed, and
+a queued command completes as skipped. A login that fails sends no export request and is no
+attempt. The cancel request is not guarded (it only undoes a request) but is paced like every
+packet. Cancelling does not clear the attempt.
+
+### Reading the file
+
+`animatic_core::mylist_export::read_export` streams the file like the title dump
+([rule 18](../AGENTS.md#architectural-rules)): bounded while it is read, validated completely and
+spooled into a private temporary SQLite database with the library untouched, then merged in one
+`BEGIN IMMEDIATE` transaction. The container is told from the content, not the extension:
+
+| Container | Handling |
+|---|---|
+| `.tgz` / `.tar.gz` (gzip around a tar) | Every regular `.xml` entry is a document; other regular entries (for example a readme) are skipped; links and special files are refused. The gzip checksum is verified by reading to the end |
+| `.tar` | Likewise, without compression |
+| `.zip` | Every `.xml` entry is a document (stored or deflated; encrypted entries and links are refused) |
+| `.xml.gz` | A single gzip member holding one document; nothing may follow it |
+| `.xml` | One document (a UTF-8 byte order mark is skipped) |
+
+| Limit (`ExportLimits::default()`) | Value |
+|---|---|
+| File on disk | 256 MiB (also enforced while reading) |
+| Decoded bytes over all documents | 1 GiB |
+| Container entries | 100,000 |
+| Anime | 250,000 |
+| Episodes per anime / files per anime | 20,000 / 100,000 |
+| `<file>` elements in all | 5,000,000 |
+| Bytes per text value or attribute | 2,048 |
+| Bytes between two `<` (a text node or tag) | 1 MiB |
+| Element depth | 24 |
+
+Any limit, a truncated or damaged container, a document that is not well formed, the wrong root,
+a DOCTYPE, an encoding other than UTF-8 or any value that fails validation rejects the **whole**
+file with a message naming the problem; nothing is written. Cancelling during the read or the
+merge likewise leaves the library unchanged.
+
+**Accepted structure.** [INFERENCE: the element names follow what third-party parsers of AniDB's
+XML export read; Animatic's authors may not download AniDB's example files, so the layout has not
+been checked against a file AniDB produced for `xml-plain-new`. A file that differs is rejected
+with the first element that is missing or invalid, never half-imported.] A document is `<mylist>`
+with `<anime>` children, or a single `<anime>` as the root (the per-anime documents of the full
+template). Elements that are not listed are skipped with their content; an element the importer
+reads must appear at most once in its parent (`<episode>` and `<file>` may repeat).
+
+| Element | Content |
+|---|---|
+| `anime/id` | Required, positive, unique over the whole export |
+| `anime/name`, `year`, `type` | Optional text; `type` is mapped like the HTTP API's type names |
+| `anime/count` | Optional attributes `eps`, `specials` (numbers) |
+| `anime/startdate`, `enddate` | `dd.mm.yyyy`, as text or in a `<long>` child; empty, `-` or a value with `?` mean unknown |
+| `anime/episodes/episode` | Attributes `id` (positive, unique) and `number` (`12`, `S1`, `C2`, `T3`, `P1`, `O4`) |
+| `episode/aired` | `dd.mm.yyyy hh:mm` (UTC) or a date; unknown as above |
+| `episode/length`, `name`, `name_romaji`, `name_kanji` | Minutes; titles (English, romaji, kanji) |
+| `episode/files/file` | Attributes `id` (file id) and **`lid`** (the MyList entry id), both positive. A file of several episodes is listed under each and must be identical |
+| `file/size_plain` | Bytes; `0` is a generic file. A file with a size needs a `hash_ed2k` |
+| `file/group` | Attribute `id` (0 = none); the text is the group name |
+| `file/filetype`, `hash_crc`, `hash_md5`, `hash_sha1`, `hash_tth` | Extension; lowercase or uppercase hex of 8, 32 and 40 digits, TTH up to 64 alphanumerics |
+| `file/hash_ed2k/key` | 32 hex digits |
+| `file/mystate` | Attribute `id`: the MyList state |
+| `file/state/iswatched` | `0`/`1`/`true`/`false` |
+| `file/viewdate`, `mydate` | When it was watched / added, `dd.mm.yyyy hh:mm` (UTC) as text or in `<long>`; empty or `-` is none |
+| `file/storage` | Text |
+
+An anime without any file (a wishlist row) is counted and not imported; an export without any
+file is an error.
+
+### Merge rules
+
+Run in one write transaction after the whole file was validated.
+
+- **Absence is never established.** MyList rows the export does not list are **kept** and only
+  counted (`not in the export` in the log line): the export is a snapshot that may be a day old,
+  and an entry added since would otherwise be deleted. Removing local rows stays the job of the
+  acknowledged removal and of `Refresh entry`.
+- **Pending local intent wins** (rules 13 and 14). An entry with any queued add, edit or removal
+  (blocked rows included) is not touched at all and counted as kept. The queue itself is not
+  read-modified.
+- **Richer local data is kept.** Anime, episode, file and group rows are created when missing;
+  an existing row only gets blank or zero fields filled (year, counts, dates, titles when there
+  are none, hashes, file type, group name). Nothing is replaced with a sparser value, `updated`
+  and `fetched` are not touched (an imported anime is still eligible for its full refresh), and
+  a file that exists locally keeps its episode links. A file of several episodes gets
+  `file_episode` rows only when it is new.
+- **MyList rows.** A new entry takes the export's values. An existing entry (same `lid`, same
+  file) takes the export's state, watched flag and view date, and a date added or storage text
+  when the export has one; it keeps its ids and everything the export leaves out. An entry the
+  library holds for another file is left alone and counted as a conflict.
+- **Idempotent.** Importing the same file again writes the same values: no table changes.
 
 ## GitHub update transport
 
@@ -845,8 +978,9 @@ durable contracts.
 | `sync` | `Command`, `Outcome`, `QueueEntry`, `CommandError`, `MAX_QUEUE_TRIES`, `manager_mylist_edit(&FileManager) -> MylistEdit`, `apply_edit_locally(&Db, i64, &MylistEdit)`, `execute(queue_id: i64, &Command, &Db, &mut UdpClient, &mut HttpClient) -> Result<Outcome, CommandError>`; on `Db`: `queue_push(&Command) -> Result<i64>`, `queue_push_many(&[Command]) -> Result<usize>`, `queue_edit_mylist(i64, &MylistEdit) -> Result<i64>`, `overlay_pending_mylist(&mut MylistEntry)`, `mylist_has_pending_intent(i64) -> Result<bool>`, `queue_peek() -> Result<Option<(i64, Command, i64)>>`, `queue_remove(i64)`, `queue_failed(i64, &str)`, `queue_deferred(i64, &str)`, `queue_block(i64, &str)`, `queue_block_all(&str) -> Result<usize>`, `queue_retry_failed() -> Result<usize>`, `queue_len()`, `queue_blocked_len()`, `queue_list() -> Result<Vec<QueueEntry>>`, `queue_clear()` |
 | `store` | `TITLES_DUMP_DATE_KEY`, `MYLIST_STATS_KEY`, `StoredMylistStats { fetched, stats }`, `TitleImport { titles, added }`; on `Db`: `store_file_info(&FileInfo)`, `store_api_mylist(&MylistEntry)` (anidb type), `upsert_mylist(&library::MylistEntry)`, `delete_mylist(i64)`, `store_mylist_stats(&MylistStats, i64)`, `mylist_stats_snapshot() -> Result<Option<StoredMylistStats>>`, `store_anime_xml(&AnimeXml)`, `store_anime_info`, `store_episode_info`, `store_group_info`, `import_title_dump::<E>(read)`, `add_local_file(&str, &Hashes, i64) -> Result<i64>`, `remove_local_file`, `clear_local_files`, `move_local_file(i64, &str)`, `local_file_id_by_path(&str)` |
 | `library` | Display types (`Anime`, `Episode`, `FileRec`, `Group`, `MylistEntry`, `MylistItem`, `LocalFile` (with `mylist_add_pending`), `MylistPending`, `Review`, `AnimeDetail`), `LibraryProjection::load(&Db) -> Result<LibraryProjection>` (including `account_stats` and `mylist_pending`), `pending_by_lid(&[QueueEntry])`, `LibrarySummary`, `SearchKeys`, name/id helpers (`anime_type_name`, `title_kind_id`, `relation_id`, ...); read queries on `Db` (`all_anime`, `anime`, `anime_detail`, `mylist_entry`, `mylist_items`, `local_files`, `file`, `group`, `genres`, ...) |
-| `limits` | `TITLES_DUMP_MIN_INTERVAL`, `ANIME_MIN_AGE`, `KNOWN_FILE_MIN_AGE`, `COVER_MIN_AGE`, the `meta` key names, `RequestKind::{Anime, File, Cover}`, `DbLimitStore` (the `LimitStore` over `meta`), `open_limits(&Path) -> Arc<Limits>`, `open_limits_with_clock`, message helpers (`titles_dump_wait_message`, `anime_wait_message`, `file_wait_message`); on `Db`: `titles_dump_next_allowed(now) -> Result<Option<i64>>`, `record_titles_dump_attempt(i64)`, `request_next_allowed(RequestKind, i64, now) -> Result<Option<i64>>`, `record_request_attempt(RequestKind, i64, i64)`, `request_last_attempt`, `recent_requests(RequestKind, now) -> Result<HashSet<i64>>` |
+| `limits` | `TITLES_DUMP_MIN_INTERVAL`, `ANIME_MIN_AGE`, `KNOWN_FILE_MIN_AGE`, `COVER_MIN_AGE`, `MYLIST_EXPORT_MIN_INTERVAL`, `MYLIST_EXPORT_ID`, the `meta` key names, `RequestKind::{Anime, File, Cover, MylistExport}`, `DbLimitStore` (the `LimitStore` over `meta`), `open_limits(&Path) -> Arc<Limits>`, `open_limits_with_clock`, message helpers (`titles_dump_wait_message`, `anime_wait_message`, `file_wait_message`, `mylist_export_wait_message`); on `Db`: `titles_dump_next_allowed(now) -> Result<Option<i64>>`, `record_titles_dump_attempt(i64)`, `request_next_allowed(RequestKind, i64, now) -> Result<Option<i64>>`, `record_request_attempt(RequestKind, i64, i64)`, `request_last_attempt`, `recent_requests(RequestKind, now) -> Result<HashSet<i64>>` |
 | `covers` | `COVERS_DIR`, `IMAGE_SERVER_KEY`, `covers_dir(&Path)`, `cover_path`, `cached_cover`, `store_cover` (atomic), `discard_cover`, `plan_cover(&Db, &Path, &CoverRequest, now) -> Result<CoverPlan>`, `download_cover(&Db, &Path, &mut HttpClient, aid, picname, host, readable) -> Result<Downloaded, CoverError>`, `CoverPlan::{Cached, Download, Skip(CoverSkip)}`; on `Db`: `image_server()`, `remember_image_server(&str)` |
+| `mylist_export` | `ExportLimits`, `read_export(&Path, &ExportLimits, &AtomicBool, sink) -> Result<Totals>`, `AnimeRecord`/`EpisodeRecord`/`FileRecord`, `ImportReport::describe()`; on `Db`: `import_mylist_export(&Path, &ExportLimits, &AtomicBool) -> Result<ImportReport>`, `mylist_export_next_allowed(now) -> Result<Option<i64>>` |
 | `hash` | `hash_file(&Path, Ed2kVariant, Control) -> Result<Hashes>`, `hash_bytes(&[u8], Ed2kVariant) -> Hashes`, `Control { cancel: &AtomicBool, pause: &AtomicBool, progress: &mut dyn FnMut(u64, u64) }`, `Hashes::{ed2k_link, export}`, `Ed2k`, `Ed2kVariant::{Red, Blue}`, `ED2K_CHUNK` |
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>` (skips entries with the Windows system attribute when `exclude_system`; no effect elsewhere), `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path, MoveControl) -> Result<MoveOutcome>` (same-volume rename, or copy → verify against the stored ED2K → swap → record → remove the source when the rename fails with `CrossesDevices`), `move_file_with(.., &dyn Fn(&Path, &Path) -> io::Result<()>)` (injected rename step), `MoveControl { cancel, pause, progress: &mut dyn FnMut(u64, u64) }`, `MoveMethod::{Renamed, Copied}`, `MoveOutcome { method, source_left }`, `clear_emptied_folders(&FileManagerSettings, &Path) -> ClearedFolders { removed, errors }` (`clear_empty_folders`: removes the folders an Animatic move emptied, strictly below the matching manager root, only while completely empty), `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path`; `Db::local_file_record(i64) -> Result<Option<(String, Hashes)>>` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
@@ -866,7 +1000,7 @@ durable contracts.
 | Module | Principal public items |
 |---|---|
 | `udp` | `UdpClient::{new(Config, Arc<Limits>), config(), set_config(Config), is_logged_in(), banned_reason(), auth(), ensure_login(), logout(), request(&str, &[(&str, String)]) -> Result<Response>, ping()}`, public fields `image_server`, `new_version_available`; `Config { server, local_port, client, client_version, username, password, api_key: Option<String>, timeout }` (`Default`: `api.anidb.net:9000`, port 0, version 1, 20 s); `Response::{parse, fields}`, `escape`, `unescape`, `split_fields`, `DEFAULT_SERVER`, `PROTOVER` |
-| `commands` | `file_by_hash(&mut UdpClient, u64, &str)`, `file_by_fid`, `anime`, `episode`, `group`, `mylist_add(&mut UdpClient, &FileRef, &MylistEdit, edit_existing: bool) -> Result<MylistAddResult>`, `mylist_del`, `mylist`, `mylist_stats`; types `FileRef::{Fid, Hash{size, ed2k}, Lid}`, `MylistEdit` (all-`Option` fields, `Default`), `MylistEntry`, `FileInfo`, `AnimeInfo`, `EpisodeInfo`, `GroupInfo`, `MylistStats`, `MylistAddResult`, `EpNo` |
+| `commands` | `file_by_hash(&mut UdpClient, u64, &str)`, `file_by_fid`, `anime`, `episode`, `group`, `mylist_add(&mut UdpClient, &FileRef, &MylistEdit, edit_existing: bool) -> Result<MylistAddResult>`, `mylist_del`, `mylist`, `mylist_stats`, `mylist_export(&mut UdpClient, template) -> Result<MylistExportReply>`, `mylist_export_cancel(&mut UdpClient) -> Result<MylistExportCancelReply>`, `MYLIST_EXPORT_TEMPLATE`, `MYLIST_EXPORT_PAGE`; types `FileRef::{Fid, Hash{size, ed2k}, Lid}`, `MylistEdit` (all-`Option` fields, `Default`), `MylistEntry`, `FileInfo`, `AnimeInfo`, `EpisodeInfo`, `GroupInfo`, `MylistStats`, `MylistAddResult`, `MylistExportReply::{Queued, AlreadyQueued}`, `MylistExportCancelReply::{Cancelled, NothingToCancel}`, `EpNo` |
 | `http` | `HttpClient::{new(client, version, Arc<Limits>), check_client(), anime(i64) -> Result<AnimeXml>, titles_dump::<E>(&TitlesLimits, sink), image(&str, &str) -> Result<Vec<u8>> (validates both arguments), get_bytes(&str, u64)}`, `read_titles_dump::<R, E>(R, &TitlesLimits, sink) -> Result<usize, E>`, `parse_anime_xml(&str)`, `decode_maybe_gzip(&[u8])`, `validate_picname(&str)`, `validate_image_host(&str)`, `MAX_IMAGE_BYTES`, `TitlesLimits`, `DumpTitle { aid, kind, lang, name }`, `AnimeXml`, `HTTP_API`, `TITLES_DUMP`, `DEFAULT_IMAGE_SERVER`; with `test-support`, `HttpClient::with_loopback_image_base(&str)` |
 | `limits` | `Limits::{new(Arc<dyn Clock>, Arc<dyn LimitStore>) -> Arc<Limits>, wait_udp(), wait_http(), auth_unanswered() -> Result<Duration>, auth_answered()}`, traits `Clock` (`SystemClock`) and `LimitStore`, `Protocol::{Udp, Http}`, constants `UDP_BURST_PACKETS`, `UDP_BURST_SPACING`, `UDP_SUSTAINED_SPACING`, `UDP_BURST_RESET`, `HTTP_SPACING`, `AUTH_BACKOFF` |
 | `error` | `AnidbError` with `is_transient()`, `is_fatal()`, `retry_after()` (variants include `ClientBanned`, `AuthTimeout(Duration)` and `Storage(String)`); `BAN_COOLDOWN`, `TRANSIENT_COOLDOWN`; `Result<T, E = AnidbError>` |

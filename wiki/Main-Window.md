@@ -62,6 +62,7 @@ Jobs and what the controls do:
 | Synchronizing with AniDB | Run command queue / Synchronize now | No effect | Stops before the next command; a request already in flight finishes or times out (UDP 20 s, HTTP 60 s) |
 | Queueing full update | `--full-update`, Tools → Full update… (after confirming) | No effect | – |
 | Backing up library | File → Back up library… | No effect | No effect; it runs to completion and a half-written file is never left |
+| Importing MyList export | File → Import MyList export… | No effect | Checked while the file is read and during the merge; the library is unchanged when it stops |
 | Checking backup file | File → Restore library… | No effect | No effect; the check changes nothing |
 | Checking library | Tools → Check library | No effect | No effect |
 | Compacting library | Tools → Compact library… | No effect | No effect; `VACUUM` is atomic |
@@ -69,7 +70,7 @@ Jobs and what the controls do:
 Jobs run one at a time in submission order. Library snapshots and the statistics and hash exports run on
 their own thread and do not show a progress bar or take part in Cancel.
 
-**NOT saved yet.** Identify, MyList add, removal and refresh, episode and group refresh, title-download, statistics-fetch and anime-refresh commands are
+**NOT saved yet.** Identify, MyList add, removal and refresh, episode and group refresh, title-download, statistics-fetch, MyList-export and anime-refresh commands are
 written to the durable queue. If the worker holds the database lock, the command is kept in
 memory, flagged in the status bar and retried every 500 ms with no retry-count ceiling. Up to 1000
 distinct unsaved commands can be held at once; a new command is refused with `NOT queued: …` only
@@ -152,6 +153,7 @@ uncolored unless you set a color for them.
 | File | Add files… | Picker; hashes the chosen files. Disabled during a settings review. Remembers the last folder. When *Restrict file extensions* is on the picker filter is "Configured media files". |
 | File | Import AOM databank… | Folder picker → [databank import](Migrating-from-AOM.md#migrate-an-aom-databank); a database that already holds data first shows **Import into a database that has data?** (Continue / Cancel). Disabled during a settings review. |
 | File | Import AOM settings… | File picker (`.xml`) → [settings import](Migrating-from-AOM.md#import-aom-settings). |
+| File | Import MyList export… | File picker (`.tgz`, `.gz`, `.xml`, `.zip`, `.tar`, or any file) → [import of the downloaded export](AniDB-Synchronization.md#full-account-mylist-import) on the worker. Validates the whole file first; a refused file changes nothing. Disabled while a job runs, during an import or settings review, or during a restore. |
 | File | Export statistics… | Save dialog (default `animatic-stats.xml`/`.ini`) → [statistics export](Exports.md#statistics-export). |
 | File | Export hashes… | Save dialog (default `animatic-hashes.txt`) → [hash export](Exports.md#hash-export). |
 | File | Back up library… | Save dialog (default `animatic-backup-YYYYMMDD-HHMMSS.sqlite3`) → [online backup](Backups-and-Recovery.md#back-up-and-restore-inside-animatic) of the library. Disabled while a job runs, during an import or settings review, or during a restore. |
@@ -163,6 +165,7 @@ uncolored unless you set a color for them.
 | Tools | Download anime titles | Queues the title-list download (nothing is sent yet). The list is requested at most once per 24 hours: inside that window after the last attempt (even a failed one) nothing is queued and the log says when the next download is allowed. |
 | Tools | Full update… | Works out in the background what a [full update](AniDB-Synchronization.md#synchronization) would queue (the title list, a file refresh and an anime refresh for each identified hashed local file, minus what AniDB's limits do not allow yet and what the queue holds already) and asks for confirmation, showing the counts, how many were left out and when the title list is next allowed. **Queue** adds them (the same as `--full-update`); nothing is sent until you run the queue. Disabled during an import or settings review and while a preview is open. |
 | Tools | Fetch mylist statistics | Queues a MyList-statistics request. When run, the figures are stored with the time they arrived and shown on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures; the log also gets a line (`N anime, N episodes, N files in mylist`). |
+| Tools | Request MyList export… | Opens a dialog that explains the [MyList export](AniDB-Synchronization.md#full-account-mylist-import): AniDB prepares the export for up to 24 hours, announces it as an AniDB message, and the file is downloaded from AniDB's web export page. **Request export** queues the request (nothing is sent until the command queue runs; one request per 24 hours, and it is disabled with the next allowed time inside that window), **Open export page** opens the page in the browser, **Cancel pending export** queues the cancellation. |
 | Tools | Check library | Runs [`integrity_check` and `foreign_key_check`](Backups-and-Recovery.md#check-and-compact-the-library) in the background; never repairs. Disabled while a job runs, during an import or settings review, or during a restore. |
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
 | Tools | Edit AniDB data ▸ | Opens AniDB web pages in the browser: Add anime, Add episode, Add file, Submit change request (`anidb.net/anime/add`, `/episode/add`, `/file/add`, `/creq`). |

@@ -44,8 +44,9 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | Module | Responsibility |
 |---|---|
 | `db` | Connection setup (WAL), idempotent schema creation, `command_queue` upgrade, `write_tx`, cooldown storage in `meta` |
-| `limits` | Saved AniDB limit state: the `LimitStore` over `meta` (send times, `AUTH` backoff step) behind the process-wide spacing, and the attempt-based request guards (title dump once a day, minimum age per anime and per known file) |
+| `limits` | Saved AniDB limit state: the `LimitStore` over `meta` (send times, `AUTH` backoff step) behind the process-wide spacing, and the attempt-based request guards (title dump once a day, minimum age per anime and per known file, one MyList export per day) |
 | `store` | Transactional application of API records, local hash/path writes, title dump spool and merge |
+| `mylist_export` | MyList export import: bounded container and XML reading, validation, private spool and the atomic merge (`Db::import_mylist_export`); the export request guard (`Db::mylist_export_next_allowed`) |
 | `library` | Read queries, display types and `LibraryProjection` snapshots with search keys |
 | `sync` | `Command`, queue operations (`impl Db`), edit coalescing, overlays, `CommandError`, `execute` |
 | `hash` | One-pass ED2K (red/blue), CRC32, MD5, SHA-1; hash-export template expansion |
@@ -84,8 +85,8 @@ The Options row for the file-menu entry is `app/shell_menu.rs`.
 
 | Thread | Database connection | Work |
 |---|---|---|
-| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump or an anime refresh; the one-file rename preview (point reads of the local database); settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
+| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump, an anime refresh or a MyList export; the one-file rename preview (point reads of the local database); settings save |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: per file); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ImportMylistExport`, `ProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary` |
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
 | `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; see [Scheduled folder scans](#scheduled-folder-scans) |
 | `animatic-covers` | A fresh `Db::open` per request | `Worker::load_cover` (not a `Job`): cache lookup, at most one image download through the shared limiter, decoding; answers with `Event::CoverLoaded`. Joined, like the worker, only by `stop_and_join` (restore) |
@@ -275,8 +276,8 @@ SQLite spool; only after the whole document validated does `Db::import_title_dum
 one `BEGIN IMMEDIATE` transaction together with the `titles_dump_date` timestamp. The library
 database is neither written nor locked while the network is read. The attempt time that keeps
 the dump to once a day is saved before the request, outside that transaction, so a failed
-download counts too. It is a public title list, not an account download: there is no
-full-MyList bootstrap, no resume and no external checksum.
+download counts too. It is a public title list, not an account download (the account's MyList
+comes from the [MyList export](#mylist-export)); there is no resume and no external checksum.
 Limits and exact semantics are in [Title dump](storage-and-network.md#title-dump).
 
 ### Anime covers
@@ -295,6 +296,30 @@ never cached. A ban met by the request sets the shared sync cooldown. The host c
 last `AUTH` (`meta.image_server`, saved when a queue run ends) or the `anidb.image_server` setting.
 Covers are for the user's own display and are never redistributed. Rules and the full contract:
 [Anime covers](storage-and-network.md#anime-covers).
+### MyList export
+
+The supported full-account MyList path: nothing walks the MyList entry by entry. It has two
+independent user actions.
+
+1. **Tools → Request MyList export…** opens a dialog (UI thread, no network). **Request export**
+   checks the 24 h request guard (one cheap `request_attempt` read, like the title dump) and queues
+   `Command::MylistExport`; **Cancel pending export** queues `Command::MylistExportCancel`;
+   **Open export page** opens AniDB's web export page in the browser. Nothing is sent until the
+   command queue runs. `execute` then logs in, saves the attempt and sends UDP `MYLISTEXPORT
+   template=xml-plain-new` through the worker's shared `Limits`; `217` is a success, `318`
+   (already queued) completes as skipped and is reported, `317` is a permanent error for that
+   command only. A full update never queues it and nothing schedules it.
+2. **File → Import MyList export…** picks the file the user downloaded from AniDB and submits
+   `Job::ImportMylistExport`. The worker calls `Db::import_mylist_export`, which reads the file
+   like the title dump (bounded by `ExportLimits`; tar/tgz/zip/gzip/plain XML told from the
+   content), validates all of it while spooling into a private temporary SQLite database, and
+   only then merges in one `BEGIN IMMEDIATE` transaction: pending queue intent wins, richer local
+   rows keep their data, local rows missing from the export are kept and only counted. The job
+   answers `Event::Imported` (or `Event::Error`, with the library unchanged) and the cancel flag is
+   checked between anime and during the merge.
+
+Details, accepted XML structure and merge rules:
+[MyList export import](storage-and-network.md#mylist-export-import).
 
 ### Legacy migration
 
@@ -607,6 +632,7 @@ report the tray as unavailable.
 | Outbox edits | Edit merge, queue row and optimistic local row commit together or not at all; ids never reused | Delivery exactly once (at-least-once); that AniDB accepted a UDP packet whose reply was lost |
 | API reply application | FILE multi-table writes and MyList reply overlays are atomic, also when nested in a caller's transaction (`write_tx` savepoint) | Atomicity of `store_episode_info`, `store_group_info`, `store_anime_info`, `add_local_file` (separate statements); `store_anime_xml` is one transaction but must not be nested |
 | Title dump | Invalid, truncated or over-limit dumps leave titles and timestamp unchanged | Resume, external checksum, protection against a *valid* but wrong dump |
+| MyList export import | The whole file is validated (limits, container, XML structure, values) while it is spooled; the library is written once, in one transaction; a truncated, malformed, over-limit or cancelled file changes nothing; queued local intent is never overwritten; absent rows are never deleted; a second import of the same file changes nothing | That the element layout matches a file AniDB produced (see [MyList export import](storage-and-network.md#mylist-export-import)); that the export is current (it is a snapshot up to a day old); resume; external checksum |
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
 | Library backup and restore | A backup is a consistent snapshot, written to a temporary file and renamed into place; a restore validates the file twice, keeps a byte-for-byte copy of the replaced library and swaps the database file with one rename, after removing the old `-wal`/`-shm`, so the database path is the old or the new library; a refused file changes nothing | That the restored queue matches what AniDB already received; settings (not part of the database); a crash between removing the old `-wal` and the rename (the kept copy is then the way back); automatic or rolling backups; repair |
 | `move_file` | The library never points at a missing file and the only copy is never deleted. Same volume: one `rename`, then the path update (undone if the update fails). A rename that fails because the volumes differ (`ErrorKind::CrossesDevices`: `EXDEV` / `ERROR_NOT_SAME_DEVICE`) falls back to copy → verify → swap → record → remove the source; any failure or cancel before the swap deletes the temporary copy and changes nothing. An existing destination is never replaced | See below |
@@ -737,5 +763,6 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
 | Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |
 | Anime covers | `crates/animatic-core/src/covers.rs`: `plan_cover`, `download_cover`, `store_cover` (and `validate_picname` in `animatic-anidb`'s `http.rs`); `worker/covers.rs`: `run_covers`, `load_cover`, `decode_cover`; `worker.rs`: `Worker::load_cover`, `Event::CoverLoaded`; `app/covers.rs`: `CoverUi`; `app.rs`: `anime_detail_window` |
+| MyList export request and import | `crates/animatic-anidb/src/commands.rs`: `mylist_export`, `mylist_export_cancel`; `crates/animatic-core/src/sync.rs`: `Command::{MylistExport, MylistExportCancel}`, `execute`; `limits.rs`: `RequestKind::MylistExport`; `crates/animatic-core/src/mylist_export/`: `read_export`, `xml::read_document`, `Db::import_mylist_export`; `worker.rs`: `Job::ImportMylistExport`; `crates/animatic/src/app/mylist_export.rs`: `mylist_export_window`, `import_mylist_export` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |
 | Single instance, file-menu entry | `crates/animatic-core/src/instance.rs`: `start`, `Primary`, `Incoming`; `shell_integration.rs`: `ShellIntegration`, `Status`; `crates/animatic/src/app/shell_menu.rs`; `app.rs`: `process_handoff`, `apply_shell_integration`; `main.rs`: `instance::start` |

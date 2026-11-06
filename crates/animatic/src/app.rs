@@ -28,6 +28,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 
 mod covers;
 mod mylist_editor;
+mod mylist_export;
 mod player_actions;
 mod refresh;
 mod shell_menu;
@@ -499,6 +500,7 @@ pub struct AnimaticApp {
     covers: covers::CoverUi,
     mylist_overlay: HashMap<i64, MylistOverlay>,
     mylist_ui: mylist_editor::MylistUi,
+    export_ui: mylist_export::ExportUi,
     /// Queue pushes that hit a busy database, retried until saved.
     deferred: Vec<animatic_core::sync::Command>,
     last_deferred_retry: Instant,
@@ -618,6 +620,7 @@ impl AnimaticApp {
             covers: covers::CoverUi::default(),
             mylist_overlay: HashMap::new(),
             mylist_ui: mylist_editor::MylistUi::default(),
+            export_ui: mylist_export::ExportUi::default(),
             deferred: Vec::new(),
             last_deferred_retry: Instant::now(),
             cooldown: None,
@@ -2105,6 +2108,17 @@ impl AnimaticApp {
                         ui.close();
                         self.import_legacy_settings();
                     }
+                    if ui
+                        .add_enabled(
+                            library_blocker.is_none(),
+                            egui::Button::new("Import MyList export…"),
+                        )
+                        .on_disabled_hover_text(library_blocker.unwrap_or_default())
+                        .clicked()
+                    {
+                        ui.close();
+                        self.import_mylist_export();
+                    }
                     if ui.button("Export statistics…").clicked() {
                         ui.close();
                         self.export_statistics();
@@ -2178,6 +2192,10 @@ impl AnimaticApp {
                     }
                     if ui.button("Fetch mylist statistics").clicked() {
                         self.queue_command(animatic_core::sync::Command::MylistStats);
+                        ui.close();
+                    }
+                    if ui.button("Request MyList export…").clicked() {
+                        self.open_export_request();
                         ui.close();
                     }
                     if ui
@@ -4504,6 +4522,7 @@ impl eframe::App for AnimaticApp {
         self.rename_window(&ctx);
         self.mylist_windows(&ctx);
         self.full_update_window(&ctx);
+        self.mylist_export_window(&ctx);
         self.batch_rename_window(&ctx);
         if self.about_open {
             let mut open = true;

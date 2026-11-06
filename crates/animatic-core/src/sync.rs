@@ -6,7 +6,9 @@
 use std::time::Duration;
 
 use animatic_anidb::AnidbError;
-use animatic_anidb::commands::{self, FileRef, MylistAddResult, MylistEdit};
+use animatic_anidb::commands::{
+    self, FileRef, MylistAddResult, MylistEdit, MylistExportCancelReply, MylistExportReply,
+};
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::{HttpClient, TitlesLimits};
 use animatic_anidb::udp::UdpClient;
@@ -17,7 +19,10 @@ use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::format;
 use crate::library::MylistEntry;
-use crate::limits::{RequestKind, anime_wait_message, file_wait_message, titles_dump_wait_message};
+use crate::limits::{
+    MYLIST_EXPORT_ID, RequestKind, anime_wait_message, file_wait_message,
+    mylist_export_wait_message, titles_dump_wait_message,
+};
 use crate::settings::FileManager;
 
 /// A command that failed this many times (counting only failures its own fault can explain,
@@ -77,6 +82,12 @@ pub enum Command {
     },
     MylistStats,
     TitlesDump,
+    /// Ask AniDB to prepare a full MyList export (`MYLISTEXPORT`, user-initiated, never
+    /// scheduled). The file itself is downloaded from AniDB's web export page and imported
+    /// through [`crate::mylist_export`].
+    MylistExport,
+    /// Cancel the queued MyList export (`MYLISTEXPORT cancel=1`).
+    MylistExportCancel,
 }
 
 impl Command {
@@ -102,6 +113,8 @@ impl Command {
             Command::FetchFile { fid } => format!("Fetch file {fid}"),
             Command::MylistStats => "Fetch mylist statistics".into(),
             Command::TitlesDump => "Download anime title list".into(),
+            Command::MylistExport => "Request MyList export from AniDB".into(),
+            Command::MylistExportCancel => "Cancel the queued MyList export".into(),
         }
     }
 
@@ -115,7 +128,11 @@ impl Command {
             Command::FetchFile { .. }
             | Command::FetchEpisode { .. }
             | Command::FetchGroup { .. } => 2,
-            Command::FetchAnime { .. } | Command::MylistStats | Command::TitlesDump => 3,
+            Command::FetchAnime { .. }
+            | Command::MylistStats
+            | Command::TitlesDump
+            | Command::MylistExport
+            | Command::MylistExportCancel => 3,
             Command::MylistRefresh { .. } => 4,
         }
     }
@@ -947,6 +964,39 @@ pub fn execute(
             db.store_mylist_stats(&stats, format::now())?;
             Ok(Outcome::Stats(stats))
         }
+        Command::MylistExport => {
+            let now = format::now();
+            if let Some(until) =
+                db.request_next_allowed(RequestKind::MylistExport, MYLIST_EXPORT_ID, now)?
+            {
+                return Ok(Outcome::Skipped(mylist_export_wait_message(until)));
+            }
+            // Log in first: a login that fails sent no export request, so it is no attempt.
+            udp.ensure_login()?;
+            // Saved before the request leaves: a failure, crash or restart cannot allow a repeat.
+            db.record_request_attempt(RequestKind::MylistExport, MYLIST_EXPORT_ID, now)?;
+            Ok(
+                match commands::mylist_export(udp, commands::MYLIST_EXPORT_TEMPLATE)? {
+                    MylistExportReply::Queued => Outcome::Updated(
+                        "MyList export requested: AniDB announces it as a message when it is ready (up to 24 hours); download it from the export page and use File > Import MyList export"
+                            .into(),
+                    ),
+                    // An export is already on its way: report it, never retry or fail.
+                    MylistExportReply::AlreadyQueued => Outcome::Skipped(
+                        "A MyList export is already queued on AniDB; wait for its message, then download it from the export page"
+                            .into(),
+                    ),
+                },
+            )
+        }
+        Command::MylistExportCancel => Ok(match commands::mylist_export_cancel(udp)? {
+            MylistExportCancelReply::Cancelled => {
+                Outcome::Updated("The queued MyList export was cancelled".into())
+            }
+            MylistExportCancelReply::NothingToCancel => {
+                Outcome::Skipped("AniDB has no MyList export queued or being prepared".into())
+            }
+        }),
         Command::TitlesDump => {
             if let Some(until) = db.titles_dump_next_allowed(format::now())? {
                 return Ok(Outcome::Skipped(titles_dump_wait_message(until)));

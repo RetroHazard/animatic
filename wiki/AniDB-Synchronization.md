@@ -48,6 +48,8 @@ What the user-reachable commands do:
 | Fetch episode N | From the **Refresh** button of an episode in the [anime detail window](Library-Pages.md#anime-detail-window). Replaces the cached episode record |
 | Fetch group N | From the **Refresh** link on the [Groups page](Library-Pages.md#groups). Replaces the cached group record |
 | Download anime title list | Streams `anime-titles.xml.gz` into a temporary store, validates it, then merges atomically in one transaction. Creates an anime row for every unknown id and replaces titles only of anime without a full HTTP record (imported AOM anime count as such). Failure leaves titles and the completion time untouched. Limits: 32 MiB compressed, 128 MiB decoded, 250 000 anime, 2 000 000 titles, 2048 bytes per name. At most once per 24 hours (see [Request limits](#request-limits)) |
+| Request MyList export | Sends `MYLISTEXPORT template=xml-plain-new`. Only from **Tools → Request MyList export…**; logs the answer (requested, already queued, or blocked as an unknown template). At most once per 24 hours. See [Full-account MyList import](#full-account-mylist-import) |
+| Cancel MyList export | Sends `MYLISTEXPORT cancel=1` (from the same dialog); logs that the export was cancelled or that none was queued |
 | Fetch mylist statistics | Stores AniDB's account figures with the time they arrived (replacing the previous ones) and shows them on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures. The log line `N anime, N episodes, N files in mylist` is still written |
 
 A full update (**Tools → Full update…** after a confirmation that shows the counts, or `--full-update`) queues the title list plus one file lookup and one anime refresh for
@@ -76,6 +78,7 @@ so a failed or interrupted request does not allow a quick second one:
 | One anime's details (anime detail **Refresh from AniDB**, full update) | 24 hours |
 | One known file (`Fetch file`, full update) | 7 days (Animatic's own conservative choice; AniDB only asks clients to cache file data for long periods) |
 | One anime's cover picture (anime detail window) | Never again once downloaded; 1 hour after a failed try (Animatic's own choice; AniDB publishes no image limits) |
+| The MyList export (**Tools → Request MyList export…**) | 24 hours |
 
 Inside the window the request is not sent and nothing is queued for it: the menu item or **Refresh
 from AniDB** tells you when the next one is allowed (status bar and log). If such a command is
@@ -133,6 +136,65 @@ Failures and edge cases:
   or clear it. If the removal left the queue while it was being sent (for example **Clear queue**
   during a run) and you then edit the entry, that newer edit wins: the acknowledgement does not
   delete the row.
+
+## Full-account MyList import
+
+AniDB has no way to hand a client its whole MyList, and asking for the entries one by one is the
+bulk extraction its rules forbid. The supported way is a **MyList export**: AniDB prepares a file
+on request, and Animatic imports that file. Nothing here runs by itself; each step is yours.
+
+1. **Request the export.** **Tools → Request MyList export…** explains the steps and queues the
+   request (UDP `MYLISTEXPORT`, template `xml-plain-new`). Like every queued command it is sent
+   only when you run the command queue, with Work offline cleared. AniDB prepares **one export
+   at a time**, and **may take up to 24 hours**. Animatic allows one request per 24 hours (the
+   dialog then says when the next one is allowed, and **Request export** is disabled).
+2. **Wait for AniDB's message.** AniDB announces the finished export as a message in your AniDB
+   inbox. Animatic does not poll for it.
+3. **Download the file.** Open [AniDB's export page](https://anidb.net/perl-bin/animedb.pl?show=export)
+   (the dialog's **Open export page** button opens it in your browser) and save the export.
+   AniDB documents no way to fetch it from a program, so Animatic does not try.
+4. **Import it.** **File → Import MyList export…** and pick the downloaded file (an archive
+   `.tgz`/`.zip`, a compressed `.gz` or a plain `.xml`; the kind is recognized from the content).
+
+What AniDB answers to the request:
+
+| Answer | What Animatic does |
+|---|---|
+| Queued (`217`) | Logs that the export was requested and when to expect it; the command leaves the queue |
+| Already queued (`318`) | Logs that an export is already on its way. This is **not an error**, nothing is retried and the rest of the queue goes on |
+| Unknown template (`317`) | Blocks that one command with the reason (a retry cannot succeed); the rest of the queue goes on |
+
+**Cancel pending export** in the dialog queues a cancellation (`cancel=1`) of the export AniDB
+has queued; it does not undo the 24-hour wait for a new request.
+
+The import reads the file on its own, never touching AniDB. It is **all or nothing**: the file is
+checked completely first (size and entry limits, a well-formed document, valid ids, hashes and
+dates), and only then written in a single step. A truncated, damaged, too large or unrecognized
+file is refused with a message naming the problem, and your library is exactly as it was.
+Cancel works while the file is read and during the final step, with the same result. The file may
+hold up to 256 MiB (1 GiB decoded), 250 000 anime and 5 000 000 files.
+
+How the file is merged:
+
+- **Pending changes win.** A MyList entry with a queued add, edit or removal is not touched; the
+  log says how many entries were kept for that reason.
+- **Nothing is deleted.** Entries in your library that are not in the export stay; the log only
+  counts them. The export is a snapshot (up to a day old), so a missing entry is no proof that
+  it is gone. Remove entries with **Remove from MyList…**.
+- **Richer local data stays.** Missing anime, episodes, files and groups are created; known ones
+  only get empty fields filled. An existing MyList entry takes the export's state, watched flag
+  and view date, plus the date added and storage text when the export has them; its other
+  values stay. An entry that your library keeps for a different file is left alone.
+- **Repeatable.** Importing the same file again changes nothing.
+- Anime that are only on your wishlist (no files) are skipped.
+
+The accepted file layout is listed in
+[the storage reference](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#mylist-export-import).
+Because AniDB's own example files may not be downloaded for this project, the layout follows
+what third-party tools read; Animatic has **not** been checked against a real `xml-plain-new`
+file. If AniDB's file differs, the import stops with a message naming the first element it
+could not use, and nothing changes. See
+[Network and sync problems](Network-and-Sync-Problems.md#the-library-is-missing-entries).
 
 ## Failure handling
 

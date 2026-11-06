@@ -16,6 +16,7 @@ use animatic_core::hash::Ed2kVariant;
 use animatic_core::library::LibraryProjection;
 use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
 use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityReport};
+use animatic_core::mylist_export::ExportLimits;
 use animatic_core::rename::plan::{BatchRow, Candidate, Plan};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
 use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
@@ -60,6 +61,12 @@ pub enum Job {
     /// Back the library up into `dest` (online backup, off the UI thread).
     BackupLibrary {
         dest: PathBuf,
+    },
+    /// Import a MyList export file (see `animatic_core::mylist_export`): read and validated
+    /// completely first, then merged in one transaction. Any error or cancellation leaves the
+    /// library unchanged; answered by `Event::Imported` or `Event::Error`.
+    ImportMylistExport {
+        source: PathBuf,
     },
     /// Check that `source` may replace the library; the swap itself is `spawn_restore`.
     ValidateBackup {
@@ -795,6 +802,21 @@ fn run(
                 }
                 let _ = events.send(Event::Finished);
             }
+            Job::ImportMylistExport { source } => {
+                let _ = events.send(Event::Started {
+                    label: "Importing MyList export".into(),
+                    total: 1,
+                });
+                match import_mylist_export(&db_path, &source, &cancel) {
+                    Ok(summary) => {
+                        let _ = events.send(Event::Imported { summary });
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(e));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
             Job::ValidateBackup { source } => {
                 let _ = events.send(Event::Started {
                     label: "Checking backup file".into(),
@@ -929,6 +951,26 @@ fn run(
                 }
             }
         }
+    }
+}
+
+/// Import the MyList export `source` into the library at `db_path`. The text of the error says
+/// that the library was not changed: every failure and a cancel happen before the one write
+/// transaction commits.
+fn import_mylist_export(
+    db_path: &Path,
+    source: &Path,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    let db = Db::open(db_path).map_err(|e| format!("MyList export not imported: {e}"))?;
+    match db.import_mylist_export(source, &ExportLimits::default(), cancel) {
+        Ok(report) => Ok(report.describe()),
+        Err(animatic_core::Error::Cancelled) => {
+            Err("MyList export import cancelled; the library was not changed".to_string())
+        }
+        Err(e) => Err(format!(
+            "MyList export not imported, the library was not changed: {e}"
+        )),
     }
 }
 
