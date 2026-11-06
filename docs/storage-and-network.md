@@ -288,6 +288,79 @@ Cooldown mechanics:
   window or settings file; use **Retry failed**; discard hopeless rows with **Clear queue**.
   See [Troubleshooting](https://github.com/RetroHazard/animatic/wiki/Troubleshooting).
 
+## AniDB server limits
+
+These are the rules AniDB publishes for clients, collected on 2026-11-06 by reading the pages
+with a browser (plain HTTP clients get 403). A client that breaks them gets its users banned,
+so every request path must follow them; the roadmap item
+[M1.8](roadmap.md#m18-honour-anidb-server-limits-across-runs-and-restarts) closes the gaps listed
+at the end. Entries marked *(not documented)* have no official text and are design choices.
+
+Sources: [UDP API definition](https://wiki.anidb.net/UDP_API_Definition) (spec 0.03.730,
+protover 3), [HTTP API definition](https://wiki.anidb.net/HTTP_API_Definition),
+[API overview and dumps](https://wiki.anidb.net/API), [MyList export](https://wiki.anidb.net/MyList_export)
+and the [AniDB policy](https://anidb.net/policy) (last updated 2025-12-31).
+
+**Policy.** AniDB data is CC BY-NC-SA 4.0: no commercial use. Scraping the site or the API is
+forbidden, and so is using the API to "download" AniDB in bulk; software must use the API only
+and must not flood it. The export tool must not be abused.
+
+**UDP API**
+
+| Rule | Value |
+|---|---|
+| Server | `api.anidb.net:9000`, configurable rather than hard-coded |
+| Local port | One fixed port above 1024, reused; many different source ports from one IP within about an hour causes an IP ban |
+| Rate | At most one packet per 2 s, enforced after the first 5; at most one per 4 s over an extended period. Dropped over-limit packets still count, and continuing leads to a permanent ban |
+| Bans | Usually about 30 min; triggered by rate, port churn, repeated `AUTH` failures or too many connections |
+| Registration | `client` lowercase letters, 4 to 16 characters; `clientver` an integer starting at 1, raised per client release; `protover=3` |
+| Session | Expires after 35 min idle; send a command at least every 30 min to keep it, and `LOGOUT` when idling longer. Do not `AUTH`/`LOGOUT` around every command |
+| NAT | `AUTH ... nat=1`; when the reported port differs from the local one, `PING` within the router timeout (5 to 15 min), no more often than needed |
+| `AUTH` without reply | Back off 30 s, 2 min, 5 min, 10 min, 30 min, then up to 2 to 4 h |
+| Replies | `601` maintenance: wait at least 30 min. `506` invalid session: re-`AUTH` (also after an IP or port change). `504`: this client version is banned |
+| NOTIFY | At most once per 20 min |
+| Caching | Cache file, episode, anime and group data for extended periods; on rescans query only files AniDB did not know last time |
+
+**HTTP API.** Registered `client` and `clientver` on every request; at most one request per 2 s;
+requesting the same dataset more than once a day can lead to a ban, so cache heavily. Errors and
+bans arrive as XML bodies (`<error>Banned</error>`), not HTTP status codes. Replies are always
+gzip.
+
+**Title dump.** `anime-titles.xml.gz` is regenerated daily and must not be requested more than
+once per day. Send a client-identifying `User-Agent` (third-party reports, *unofficial*).
+
+**Images.** No rate limit or download rules are published. `AUTH ... imgserver=1` returns the
+image host, which should be used instead of a fixed one; pictures are bare file names
+(`picname`) under `https://<host>/images/main/`. Observed, not documented: the files are served
+as immutable for a year, and a foreign `Referer` gets 404. AniDB does not own the artwork and
+shows it under fair use, which grants a client no licence: cache covers locally for personal
+display, never redistribute or re-host them, fetch each file once on demand and never crawl in
+bulk; pace image requests like API requests *(not documented)*.
+
+**Whole MyList.** No API route returns a complete MyList. UDP `MYLIST` returns one entry or one
+anime, and walking the list with it is the bulk extraction the rules forbid. HTTP
+`mylistsummary` needs the main password and has no file-level data. The supported route is
+**MyList export**: UDP `MYLISTEXPORT template=<name>` (or the web export page) queues one export
+at a time (`217` queued, `318` already queued, `317` unknown template, `cancel=1` → `218`); it
+can take up to 24 h, completion is announced as an AniDB message, and the file is downloaded
+from the web export page (no documented API for fetching it). Request it only when the user asks,
+never on a schedule. `xml-plain-new` is the template meant for building a local database.
+
+**Where Animatic stands (code at `e71452c`).**
+
+| Rule | Status |
+|---|---|
+| 2 s / 4 s UDP spacing | Within one `UdpClient` only; each queue run builds a new client, so the burst allowance restarts every run |
+| No `AUTH`/`LOGOUT` per command | Per queue run, not per command; a session is not kept across runs |
+| Fixed local port | Uses `anidb.local_port` (default 29456), but **falls back to a random port** when binding fails, which risks port-churn bans |
+| `504` | Treated as a 30-minute ban; it should block until the client version changes |
+| `AUTH` no-reply backoff | A flat transient cooldown, not the escalating schedule |
+| HTTP one request per 2 s | Only `anime()` is paced, per client instance; title dump, images and `get_bytes` are not |
+| Same dataset once a day | Not enforced: no age check on `FetchAnime`; full updates re-query every known file |
+| Title dump once a day | Not enforced: `titles_dump_date` is written but never read |
+| `User-Agent` | Sent: `Animatic/VERSION` |
+| `nat=1`, `comp=1`, `imgserver=1` | Sent on `AUTH`; `PING` exists but is unused |
+
 ## UDP API
 
 Implementation: [`udp.rs`](../crates/animatic-anidb/src/udp.rs) and
@@ -365,7 +438,7 @@ headers and body) and user agent `Animatic/<version>`.
 | Anime body limit | 32 MiB; gzip is decoded transparently and `decode_maybe_gzip` handles bodies still compressed |
 | Title dump | `GET https://anidb.net/api/anime-titles.xml.gz` (`TITLES_DUMP`), TLS via `ureq`'s default rustls setup |
 | Images | `GET https://<image_server>/images/main/<picname>` (default `cdn.anidb.net`), 16 MiB limit. **No caller uses `HttpClient::image`** and the desktop shows no pictures; the `anidb.image_server` setting is stored only |
-| Daily-limit etiquette | AniDB asks clients not to refetch an anime more than once a day. The code does not enforce this (a full update queues one `FetchAnime` per anime id found among the identified hashed local files, but there is no age check) |
+| Daily-limit etiquette | AniDB asks clients not to request the same dataset more than once a day (see [AniDB server limits](#anidb-server-limits)). The code does not enforce this (a full update queues one `FetchAnime` per anime id found among the identified hashed local files, but there is no age check) |
 
 Error mapping (`transport_error`, `api_error`): HTTP 403 → `Banned`; 429 →
 `ServerUnavailable(30 min)`; other 5xx → `Http` (counted); other 4xx and redirect loops →

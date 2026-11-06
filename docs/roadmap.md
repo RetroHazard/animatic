@@ -68,7 +68,7 @@ flowchart LR
 | M1.5 | Legacy import target and leftovers | Planned |
 | M1.6 | Remove unused dependencies | Planned |
 | M1.7 | Linux runtime and production AniDB verification | Planned |
-| M1.8 | Honour AniDB server limits across runs and restarts | Research |
+| M1.8 | Honour AniDB server limits across runs and restarts | Planned |
 | M2.1 | Database backup | Planned |
 | M2.2 | Database restore | Planned |
 | M2.3 | Integrity check and maintenance | Planned |
@@ -79,7 +79,7 @@ flowchart LR
 | M3.5 | Keep and show MyList statistics | Planned |
 | M4.1 | Full update menu action | Planned |
 | M4.2 | Update known file information | Planned |
-| M4.3 | Full-account MyList bootstrap and reconciliation | Research |
+| M4.3 | Full-account MyList import through MyList export | Planned |
 | M5.1 | Scheduler for folder scans | Planned |
 | M5.2 | Settle delay for files being written | Planned |
 | M5.3 | `exclude_system` and `clear_empty_folders` | Planned |
@@ -89,7 +89,7 @@ flowchart LR
 | M6.1 | Rename apply on the worker, cross-volume moves | Planned |
 | M6.2 | Batch rename | Planned |
 | M6.3 | Opt-in automatic rename per managed folder | Planned |
-| M7.1 | Anime covers | Research |
+| M7.1 | Anime covers | Planned |
 | M7.2 | Saved window, columns and sorting | Planned |
 | M7.3 | Status row colours and system theme | Planned |
 | M7.4 | Player open and enqueue actions | Planned |
@@ -198,13 +198,16 @@ controls or exports suggest, or where it could exceed AniDB's limits.
   - Nothing enforces the "do not refetch an anime more than once a day" etiquette that
     [storage and network](storage-and-network.md#http-api) already records: `FetchAnime` has no
     age check, even though `anime.fetched` exists.
-- **Research first:** confirm the current rules for UDP flood protection, HTTP API flooding and
-  caching, the title dump download frequency and the image server from AniDB's own pages
-  (`UDP_API_Definition`, `HTTP_API_Definition`, `API` on wiki.anidb.net). Those pages refuse
-  automated readers (HTTP 403 from Cloudflare, observed while writing this roadmap), so a
-  maintainer reads them in a browser. Record each rule with its source and retrieval date in
-  storage and network. The values in the code today come from that document, not from a fresh
-  read.
+  - The bind falls back to a random local port when the configured one is busy, which risks
+    AniDB's port-churn ban.
+  - A `504` reply (client version banned) is handled as a 30-minute ban instead of blocking
+    until the client version changes, and an `AUTH` without reply gets a flat cooldown instead
+    of AniDB's escalating backoff.
+  - Full updates re-query every known file, although AniDB asks clients to cache file data for
+    extended periods.
+- **Rules:** recorded with sources on 2026-11-06 in
+  [AniDB server limits](storage-and-network.md#anidb-server-limits), which also lists where the
+  code stands.
 - **Change:**
   - One process-wide UDP limiter and one HTTP limiter, owned by the worker and shared by every
     client instance, persisting the last send time in `meta` so a restart cannot reset the
@@ -212,8 +215,14 @@ controls or exports suggest, or where it could exceed AniDB's limits.
   - The HTTP limiter covers every HTTP request, including the title dump and images.
   - A title-dump guard based on `titles_dump_date`: **Download anime titles** and full updates
     skip the dump inside the minimum interval and say when it is next allowed.
-  - A minimum age per anime based on `anime.fetched`. An explicit refresh from the detail window
-    is also refused inside that age and shows when it becomes available.
+  - A minimum age per anime based on `anime.fetched` (at least one day, per the HTTP API rule).
+    An explicit refresh from the detail window is also refused inside that age and shows when it
+    becomes available.
+  - A minimum age per file for `FetchFile` on files AniDB already knew. The length is a design
+    choice (AniDB only says "extended periods"); start conservative, for example seven days.
+  - No silent port fallback: a busy local port is an error that names the setting.
+  - `504` blocks the queue like an outdated client; `AUTH` without reply backs off 30 s, 2 min,
+    5 min, 10 min, 30 min, then 2 h, persisted like other cooldowns.
   - All limits are named constants with a link to the recorded rule.
 - **Acceptance:** loopback tests with a controllable clock: two consecutive queue runs keep
   the long-term spacing; a restart keeps it; a second title dump and a too-early anime fetch
@@ -309,27 +318,36 @@ items expose the commands in the desktop application.
 
 - **Change:** give `update_file_information` ("Update known file information") a meaning: when a
   file that is already identified is hashed again, queue a `FetchFile` to refresh its AniDB
-  record, subject to the M1.8 minimum ages. The maintainer confirmed this matches AOM's
-  behavior.
+  record. The maintainer confirmed this matches AOM's behavior. AniDB asks clients to query
+  only files it did not know last time, so the refresh is subject to the M1.8 per-file minimum
+  age and the option stays off by default.
 - **Acceptance:** with the option off, re-hashing a known file sends nothing; with it on, it
   queues one refresh, and none while a recent one exists.
 - **Depends:** M1.8 and M1.4.
 
-### M4.3 Full-account MyList bootstrap and reconciliation
+### M4.3 Full-account MyList import through MyList export
 
-- **Research first:** the transport has only per-entry `MYLIST`, plus `MYLISTADD`, `MYLISTDEL`
-  and `MYLISTSTATS`. Find out which *maintained* AniDB route returns a whole MyList, its usage
-  policy and its format, and how it authenticates. Candidates named in AniDB's API index are a
-  MyList export and an HTTP user MyList summary; their current rules are unverified. Record the
-  answer in [storage and network](storage-and-network.md) before writing code.
+- **Research result:** no API route returns a whole MyList (see
+  [AniDB server limits](storage-and-network.md#anidb-server-limits)). Walking it with `MYLIST`
+  is the bulk extraction AniDB forbids, and `mylistsummary` needs the main password and has no
+  file data. The supported route is MyList export, which AniDB prepares asynchronously and the
+  user downloads from the web export page.
+- **Change:**
+  - **Tools > Request MyList export**: a user-initiated UDP `MYLISTEXPORT template=xml-plain-new`
+    through the queue, never scheduled. `318` (already queued) is reported, not retried; the
+    dialog explains that AniDB may take up to 24 h and announces completion as an AniDB message.
+  - **File > Import MyList export...**: reads the downloaded file locally, streamed and bounded
+    like the title dump (rule 18), and merges it into the library.
+- **Before building:** check the `xml-plain-new` format against AniDB's published example and
+  write synthetic fixtures from it; confirm the download really has no API (it is documented
+  only as a web page).
 - **Design constraints:**
-  - Only a complete, validated listing may establish absence; a partial or malformed one never
+  - Only a complete, validated export may establish absence; a partial or malformed one never
     deletes local rows (rule 14).
-  - Pending local intent wins over the listing (rules 13 and 14).
-  - The import is streamed and bounded in the same way as the title dump (rule 18), and its
-    request frequency goes through M1.8.
-- **Acceptance:** after a bootstrap on an empty database, the local MyList matches a synthetic
-  listing, and a second run changes nothing.
+  - Pending local intent wins over the export (rules 13 and 14).
+  - Nothing walks the MyList entry by entry.
+- **Acceptance:** importing a synthetic export into an empty database reproduces its MyList, a
+  second import changes nothing, and a truncated file changes nothing.
 
 ## M5 Background automation
 
@@ -387,8 +405,10 @@ activity, and runs on the worker (rules 1, 2, 8 and 15).
 
 - **Problem:** `process_queue` builds a new `UdpClient` for each run, so every run logs in and
   out, and `UdpClient::ping` and `idle_logout_minutes` have nothing to act on.
-- **Change:** keep one session across queue runs while automatic runs are on. Use `PING` for
-  NAT keep-alive, honor `idle_logout_minutes`, and log out on exit.
+- **Change:** keep one session across queue runs while automatic runs are on. AniDB expires a
+  session after 35 idle minutes: send a command at least every 30 minutes to keep it, use `PING`
+  for NAT keep-alive only when the reported port differs and no more often than the router
+  timeout requires, honor `idle_logout_minutes`, and log out on exit.
 - **Constraints:** rule 8 (session recovery, encryption, spacing).
 - **Depends:** M1.8.
 
@@ -428,11 +448,15 @@ activity, and runs on the worker (rules 1, 2, 8 and 15).
 - **Decided:** retrieve covers, strictly within AniDB's usage conditions for its image servers.
 - **Builds on:** the `anime.picname` column, which is already stored, `HttpClient::image`, the
   image server that `AUTH` returns, and the `image_server` setting.
-- **Research first:** the image servers' usage conditions (allowed host, request rate, caching,
-  attribution, hotlinking). Record them under M1.8's source list.
-- **Change:** fetch a cover on demand when the detail window opens, through the M1.8 HTTP
-  limiter, into a bounded on-disk cache. A cached cover is never downloaded again. Decode off
-  the UI thread; skip fetching when offline or banned.
+- **Conditions** (see [AniDB server limits](storage-and-network.md#anidb-server-limits)): AniDB
+  does not own the artwork and grants no licence, so covers are cached locally for personal
+  display only and never redistributed or re-hosted. No image rate is published, so requests use
+  the API pacing, on demand only, never a bulk crawl. Use the host `AUTH` returns, and send no
+  `Referer`.
+- **Change:** fetch a cover only when the detail window opens, through the M1.8 HTTP limiter,
+  into an on-disk cache. Picture names are immutable, so a cached cover is never downloaded
+  again; a new `picname` means a new file. Decode off the UI thread; skip fetching when offline
+  or banned.
 - **Constraints:** rules 1, 8 and 16.
 - **Depends:** M1.8.
 
@@ -528,9 +552,9 @@ Each of these items is platform-specific and goes behind a cross-platform abstra
 | M8.1 credentials | Decided: operating-system keystore with a visible fallback |
 | M8.3 tray | Decided: best effort; disabled where the platform has no tray |
 | M7.5 media properties | Decided: opt-in through `ffprobe`, one-click install, disabled until available |
-| M1.8 server limits | Decided: a hard requirement for every request path |
-| M7.1 covers | Decided: retrieve them, within AniDB's image server usage conditions |
-| M4.3 full MyList download | Decided: research the maintained route first |
+| M1.8 server limits | Decided: a hard requirement for every request path; rules recorded 2026-11-06 |
+| M7.1 covers | Decided: retrieve on demand, cache permanently, personal display only, never re-hosted |
+| M4.3 full MyList download | Decided: user-requested MyList export plus a local file import; no entry-by-entry walk |
 | M1.4 inactive controls | Decided: disabled with "Not active yet" until implemented |
 | M8.2 shell integration | Decided: implement, behind a user toggle that is off by default |
 | M4.2 meaning | Decided: confirmed as re-querying AniDB when a known file is hashed again |
