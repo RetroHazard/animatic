@@ -407,6 +407,9 @@ const EXIT_RESTORE_WAIT: Duration = Duration::from_secs(60);
 
 /// Steps of **File > Restore library…**, from the validated backup to the swapped files.
 enum RestoreStage {
+    /// The worker is checking the chosen backup; a modal shows progress and blocks the rest of
+    /// the window. Cancel drops the result when it arrives.
+    Validating { source: PathBuf },
     /// The worker validated the backup; waiting for the user's decision.
     Confirm { source: PathBuf, info: BackupInfo },
     /// The worker and projection threads are stopped and the UI connection is closed while
@@ -1187,7 +1190,9 @@ impl AnimaticApp {
                     self.last_backup = Some(path);
                 }
                 Event::RestoreCandidate { source, info } => {
-                    if self.restore.is_none() {
+                    // Only the backup still being checked; a cancelled check is ignored.
+                    if matches!(&self.restore, Some(RestoreStage::Validating { source: s }) if *s == source)
+                    {
                         self.restore = Some(RestoreStage::Confirm { source, info });
                     }
                 }
@@ -1304,6 +1309,10 @@ impl AnimaticApp {
                 }
                 Event::HashQueueChanged => self.request_library_refresh(),
                 Event::Finished => {
+                    // A check that ended without a candidate was refused (the error is logged).
+                    if matches!(self.restore, Some(RestoreStage::Validating { .. })) {
+                        self.restore = None;
+                    }
                     self.activity.busy = false;
                     self.status = "Ready".into();
                     self.request_library_refresh();
@@ -4310,6 +4319,9 @@ impl AnimaticApp {
         else {
             return;
         };
+        self.restore = Some(RestoreStage::Validating {
+            source: source.clone(),
+        });
         self.worker.submit(Job::ValidateBackup { source });
     }
 
@@ -4470,6 +4482,26 @@ impl AnimaticApp {
         let mut finished = None;
         match &self.restore {
             None => return,
+            Some(RestoreStage::Validating { source }) => {
+                let response = egui::Modal::new(id).show(ctx, |ui| {
+                    ui.heading("Restore library");
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Checking {}…", source.display()));
+                    });
+                    ui.label(
+                        "The backup is read and its integrity checked before anything changes. \
+                         A large library can take a while.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Cancel").clicked() {
+                        cancelled = true;
+                    }
+                });
+                // Escape or a click outside does not dismiss the check by accident.
+                let _ = response;
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
             Some(RestoreStage::Confirm { source, info }) => {
                 let response = egui::Modal::new(id).show(ctx, |ui| {
                     ui.heading("Restore library");
