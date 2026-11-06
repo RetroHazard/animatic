@@ -116,9 +116,26 @@ pub struct EnqueueReport {
 }
 
 /// The absolute path to hash and the key that decides whether two paths are the same file.
+///
+/// A file that does not exist (yet) is keyed by its nearest existing ancestor, resolved, plus
+/// the rest of the path, so it gets the same key as when it later exists below a linked or
+/// short-named (`RUNNER~1`) folder.
 fn normalize(path: &Path) -> (PathBuf, String) {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let resolved = std::fs::canonicalize(&absolute).unwrap_or_else(|_| absolute.clone());
+    let mut rest = Vec::new();
+    let mut ancestor = absolute.as_path();
+    let resolved = loop {
+        if let Ok(resolved) = std::fs::canonicalize(ancestor) {
+            break rest.iter().rev().fold(resolved, |dir, name| dir.join(name));
+        }
+        match (ancestor.parent(), ancestor.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                ancestor = parent;
+            }
+            _ => break absolute.clone(),
+        }
+    };
     (absolute, strip_verbatim(&resolved.to_string_lossy()))
 }
 
@@ -505,6 +522,28 @@ mod tests {
         let (report, _) = drain_all(&db);
         assert_eq!(report.hashed, 1);
         assert_eq!(db.hash_queue_view().unwrap(), HashQueueView::default());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_file_below_a_linked_folder_keeps_its_key_once_it_exists() {
+        let dir = temp_dir();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let db = Db::memory().unwrap();
+        let missing = linked.join("later.mkv");
+        db.hash_queue_enqueue(std::slice::from_ref(&missing), HashSource::AddFiles)
+            .unwrap();
+
+        std::fs::write(real.join("later.mkv"), b"synthetic").unwrap();
+        let report = db
+            .hash_queue_enqueue(&[missing, real.join("later.mkv")], HashSource::AddFiles)
+            .unwrap();
+
+        assert_eq!((report.added, report.duplicates), (0, 2));
+        assert_eq!(db.hash_queue_pending().unwrap(), 1);
     }
 
     #[test]

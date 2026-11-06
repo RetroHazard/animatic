@@ -15,7 +15,8 @@
 //! [`ShellIntegration::register`] never change an entry without the marker, even when it has
 //! the same name, and report it as [`Status::Foreign`].
 //!
-//! The location is injectable ([`ShellIntegration::registry`], [`ShellIntegration::desktop_entry`])
+//! The location is injectable (`ShellIntegration::registry` on Windows,
+//! [`ShellIntegration::desktop_entry`])
 //! so the tests use a temporary registry subkey or directory, never the real shell
 //! configuration.
 
