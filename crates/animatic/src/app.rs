@@ -4100,6 +4100,7 @@ impl AnimaticApp {
         let placement = ui_state::placement_from_saved(self.settings.ui.window);
         let mut viewport = egui::ViewportBuilder::default()
             .with_title("Animatic — AniDB library manager")
+            .with_icon(std::sync::Arc::new(crate::icon::window_icon()))
             .with_inner_size(placement.size)
             .with_min_inner_size(ui_state::MIN_WINDOW_SIZE)
             .with_maximized(self.settings.ui.maximized);

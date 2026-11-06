@@ -130,54 +130,12 @@ fn is_queue_entry(entry: &MenuEntry) -> bool {
     matches!(entry.kind, MenuKind::Item(MenuAction::RunQueue))
 }
 
-/// Size of the generated tray icon, in pixels.
+/// Size of the tray icon, in pixels.
 pub const ICON_SIZE: u32 = 32;
 
-/// The tray icon as RGBA bytes: a blue rounded square with a white play triangle. Generated, so
-/// the repository carries no binary asset.
+/// The tray icon as RGBA bytes: the application icon at `size` pixels.
 pub fn icon_rgba(size: u32) -> Vec<u8> {
-    let s = size as f32;
-    let radius = s * 0.22;
-    let half = s / 2.0;
-    // Triangle corners in pixels, wound so that the inside is on the left of every edge.
-    let tri = [
-        (s * 0.38, s * 0.26),
-        (s * 0.38, s * 0.74),
-        (s * 0.76, s * 0.50),
-    ];
-    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            // Rounded-square signed distance: negative inside.
-            let (qx, qy) = (
-                (px - half).abs() - (half - radius),
-                (py - half).abs() - (half - radius),
-            );
-            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
-            let sd = outside + qx.max(qy).min(0.0) - radius;
-            let square = (0.5 - sd).clamp(0.0, 1.0);
-            // Smallest signed distance to the triangle's edges: positive inside.
-            let mut inside = f32::MAX;
-            for i in 0..3 {
-                let (ax, ay) = tri[i];
-                let (bx, by) = tri[(i + 1) % 3];
-                let (ex, ey) = (bx - ax, by - ay);
-                let len = (ex * ex + ey * ey).sqrt();
-                // The interior is to the right of each edge on screen (y points down).
-                inside = inside.min((ey * (px - ax) - ex * (py - ay)) / len);
-            }
-            let glyph = (inside + 0.5).clamp(0.0, 1.0);
-            let mix = |blue: f32| (blue * (1.0 - glyph) + 255.0 * glyph).round() as u8;
-            rgba.extend_from_slice(&[
-                mix(52.0),
-                mix(120.0),
-                mix(246.0),
-                (square * 255.0).round() as u8,
-            ]);
-        }
-    }
-    rgba
+    crate::icon::rgba(size)
 }
 
 /// Handle to a running (or starting) tray icon. Dropping it removes the icon.
@@ -963,26 +921,6 @@ mod tests {
         assert_eq!(
             unavailable_reason(&Availability::Unavailable("why".into())),
             Some("why")
-        );
-    }
-
-    #[test]
-    fn the_generated_icon_is_a_rounded_square_with_a_glyph() {
-        let size = ICON_SIZE as usize;
-        let rgba = icon_rgba(ICON_SIZE);
-        assert_eq!(rgba.len(), size * size * 4);
-        let pixel = |x: usize, y: usize| &rgba[(y * size + x) * 4..][..4];
-        assert_eq!(pixel(0, 0)[3], 0, "the corner is transparent");
-        assert_eq!(pixel(size / 2, 3)[3], 255, "the body is opaque");
-        assert_eq!(
-            pixel(size / 2, size / 2),
-            [255, 255, 255, 255],
-            "the glyph is white"
-        );
-        assert_eq!(
-            pixel(size - 5, size / 2 - 1)[..3],
-            [52, 120, 246],
-            "blue around it"
         );
     }
 }

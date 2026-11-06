@@ -6,6 +6,7 @@ mod app;
 mod auto_queue;
 mod console;
 mod hash_jobs;
+mod icon;
 mod media;
 mod scheduler;
 mod session;

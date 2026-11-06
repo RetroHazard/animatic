@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+build = "build.rs"
+
 [dependencies]
 animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb" }
 animatic-core = { version = "2026.11.0", path = "../animatic-core" }
@@ -39,3 +41,7 @@ zbus = "5.19.0"
 # Test fixtures only: a manual clock, an in-memory limit store and loopback servers.
 animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb", features = ["test-support"] }
 tempfile = "3.27.0"
+
+# Embeds assets/animatic.ico as the Windows executable icon (build.rs).
+[build-dependencies]
+winresource = "0.1"
