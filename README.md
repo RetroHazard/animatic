@@ -142,6 +142,10 @@ repository; use synthetic fixtures for development and redact support reports.
 Original AOM binaries, databanks and extraction artifacts are not part of this project.
 Update checks and downloads contact GitHub (`github.com`, `api.github.com`), not AniDB; see
 [Storage and network](docs/storage-and-network.md#github-update-transport) for exactly what is sent.
+Optional media properties use an external `ffprobe` (FFmpeg). It is **not** bundled with Animatic or
+its release archives; Options can download a pinned LGPL build from GitHub into the data folder
+after you confirm, and the feature stays off until you enable it. See
+[Storage and network](docs/storage-and-network.md#ffprobe-download-transport) for exactly what is sent.
 
 MIT; see [LICENSE](LICENSE). AniDB and AniDB O'Matic are independent projects.
 

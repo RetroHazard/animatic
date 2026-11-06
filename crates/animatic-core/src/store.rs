@@ -683,6 +683,8 @@ impl Db {
 
     pub fn remove_local_file(&self, id: i64) -> Result<()> {
         self.conn()
+            .execute("DELETE FROM media_info WHERE local_file_id = ?1", [id])?;
+        self.conn()
             .execute("DELETE FROM local_file WHERE id = ?1", [id])?;
         self.conn().execute(
             "DELETE FROM local_hash WHERE NOT EXISTS (SELECT 1 FROM local_file l WHERE l.hash_id = local_hash.id)",
@@ -692,8 +694,9 @@ impl Db {
     }
 
     pub fn clear_local_files(&self) -> Result<()> {
-        self.conn()
-            .execute_batch("DELETE FROM local_file; DELETE FROM local_hash;")?;
+        self.conn().execute_batch(
+            "DELETE FROM media_info; DELETE FROM local_file; DELETE FROM local_hash;",
+        )?;
         Ok(())
     }
 

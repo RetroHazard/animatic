@@ -133,6 +133,13 @@ pub enum Job {
         items: Vec<RenameItem>,
         managers: FileManagerSettings,
     },
+    /// Opt-in media properties: probe files with `ffprobe` after they were hashed and save the
+    /// figures (separate from hashing, never part of its read). Cancel stops before the next
+    /// file and kills the running `ffprobe`.
+    ReadMedia {
+        ffprobe: PathBuf,
+        scope: crate::media::MediaScope,
+    },
     /// Plan a batch rename on the projection thread (answered by `Event::RenamesPlanned`; no
     /// started/finished events, never queued behind a long main-worker job).
     PlanRenames {
@@ -631,6 +638,9 @@ fn run(
                 &pause,
             ),
             Job::ClearHashQueue => hash_jobs::run_clear(&db_path, &events),
+            Job::ReadMedia { ffprobe, scope } => {
+                crate::media::read_media(&db_path, &ffprobe, scope, &events, &cancel)
+            }
             Job::ProcessQueue(settings) => {
                 process_queue(&db_path, settings, &events, &cancel, &network)
             }

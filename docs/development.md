@@ -349,6 +349,83 @@ Reported by the implementing session; historical evidence, not a substitute for 
 - **Not exercised:** the Linux GUI and the Linux install path, and any update against real GitHub
   releases.
 
+## Media properties and the pinned FFmpeg build
+
+The optional media properties (roadmap M7.5) use the external `ffprobe` tool. Code:
+`crates/animatic-core/src/media/` (`tool`, `install`, `probe`, `store`), the tools thread and the
+`Job::ReadMedia` body in `crates/animatic/src/media.rs`, the Options section in
+`crates/animatic/src/app/media_options.rs`. Network contract and trust model:
+[ffprobe download transport](storage-and-network.md#ffprobe-download-transport). Animatic does
+not bundle FFmpeg: release archives contain no `ffprobe`, and the user installs it (or points to
+one) from Options.
+
+**Distributor choice (researched 2026-11-06).** The install needs a static build for Windows and
+Linux x86-64 under a license that can be downloaded at the user's request and shown to them.
+
+| Source | Platforms | License of its builds | Checksums and retention |
+|---|---|---|---|
+| [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (GitHub releases) | Windows, Linux (x86-64 and arm64) | **LGPL** and GPL variants, static or shared | `checksums.sha256` in every release plus GitHub's `digest` per asset; last 14 daily builds, the last build of each month for two years, a floating `latest` |
+| [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) | Windows only | all builds GPLv3 (stated on the page) | not evaluated further: no LGPL build |
+| [johnvansickle.com](https://johnvansickle.com/ffmpeg/) | Linux only | GPLv3 (stated in its readme) | not evaluated further: no LGPL build |
+
+BtbN is the only source with an LGPL build for both platforms and a checksum list that is part
+of the release, so it is the one pinned. A distribution package on Linux is preferred over the
+download when `ffprobe` is on `PATH`.
+
+**What is pinned.** A *month-end* autobuild, because the retention policy removes daily builds
+after 14 days and `latest` floats, so neither gives a stable URL. The release is
+`autobuild-2026-10-31-12-59` (FFmpeg 9.0 branch, `n9.0.2-39-g7adfbe40dc`), assets
+`...-win64-lgpl-9.0.zip` and `...-linux64-lgpl-9.0.tar.xz`. Version, URL, exact size and SHA-256 are
+the constants `WINDOWS_X64` and `LINUX_X64` in `media/install.rs`; the install refuses any
+download whose size or SHA-256 differs. The expected values were taken from the release's
+`checksums.sha256` and GitHub's `digest` field (they agree), and both assets were downloaded
+manually once (with `curl`, outside of any test) and hashed locally to confirm them and to read
+the archive layout (`<root>/bin/ffprobe[.exe]`, `<root>/LICENSE.txt`).
+
+**Updating the pin** (when a newer FFmpeg is wanted, or before the month-end build expires, which
+is two years after its date):
+
+1. Pick the newest month-end release on the
+   [releases page](https://github.com/BtbN/FFmpeg-Builds/releases): the last `autobuild-YYYY-MM-DD-HH-MM`
+   of a month (the next month's first build confirms it was the last). Prefer a release branch
+   (`n9.0.x`) over `master`.
+2. From that release take the two LGPL, **non-shared** assets (`win64-lgpl-<branch>.zip`,
+   `linux64-lgpl-<branch>.tar.xz`), their sizes, and their SHA-256 values from
+   `checksums.sha256`; compare them with the `digest` of each asset in
+   `https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/<tag>`.
+3. Download both once by hand and run `sha256sum` (or `Get-FileHash`) to confirm; check that the
+   archive still has `<root>/bin/ffprobe[.exe]` and `<root>/LICENSE.txt`, that `ffprobe -version`
+   shows `--enable-version3` without `--enable-gpl`, and that the license text is still the LGPL.
+4. Update `version`, `build`, `url`, `sha256`, `size`, `root` and `page` of both pins (and the
+   license text if it changed), the table in the transport section above and the sizes quoted in
+   `wiki/External-Tools.md` and `wiki/Data-Locations.md`. `the_pinned_constants_are_well_formed`
+   checks the shape (LGPL asset, HTTPS GitHub URL, 64 hex digits, size limit).
+5. Run the workspace checks, then a manual install on both platforms (Options → Media properties →
+   **Install ffprobe…**) and one probe of a synthetic media file; a Linux run is not verified by
+   the project until someone records one.
+
+**Tests.** All automated tests use loopback servers, synthetic zip and tar.xz archives (built with
+the `zip`, `tar` and `lzma-rs` crates), a stand-in `ffprobe` (a shell script on Unix, a batch file
+on Windows) and the test binary re-run as a child process for timeout and output-limit cases. They
+never contact GitHub or AniDB and never need a real FFmpeg. `lzma-rs` (MIT, pure Rust) was added
+for the Linux `tar.xz`; it brings `crc` and `crc-catalog`. All three declare MIT or MIT/Apache-2.0,
+which `about.toml` accepts (`cargo about` itself was not run locally).
+
+**Manual verification record (2026-11-06, Windows).** The pinned Windows archive was extracted by
+the production code (`extract_zip`), the resulting `ffprobe.exe` reported
+`ffprobe version n9.0.2-39-g7adfbe40dc-20261031`, and a synthetic two-second 8 kHz mono WAV
+written by a script gave `pcm_s16le`, 8000 Hz, 128 kbit/s, 2.0 s; a local `.m3u8` playlist pointing
+at an HTTP address was refused by `-protocol_whitelist file` ("Protocol 'http' not on whitelist").
+The pinned Linux archive was extracted by the production tar.xz path on Windows (about 15 s, correct
+sizes), but the Linux binary was not executed. In the native Windows window, with offline mode on,
+Options → **Install ffprobe…** showed the confirmation (size, license, source, folder; declining
+created nothing), then downloaded, verified and installed the real pinned archive in about three
+seconds and showed `ffprobe n9.0.2-39-g7adfbe40dc-20261031 (installed by Animatic)`; after
+enabling *Read media properties after hashing* and saving, a synthetic WAV given on the command
+line was hashed at startup, read in a separate job (`media_info`: 2.0 s, `pcm_s16le`, 8000 Hz,
+128 kbit/s), and **File → Export hashes…** wrote `len=2 a=pcm_s16le sr=8000 abr=128.00` with the
+video tokens at their constants. The Linux GUI path was not exercised.
+
 ## Continuous integration
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) is the one CI workflow. It checks

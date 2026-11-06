@@ -102,6 +102,7 @@ time).
 | `mylist` | The user's MyList entries | PK `lid` (AniDB's list id) | `fid`; `aid`; `eid` | API replies (with pending edits overlaid), optimistic local edits, legacy | `viewed` is derived (`viewdate != 0`) for API data; `state`: 0 unknown, 1 HDD, 2 CD, 3 deleted, 4 remote. No unique `fid`: lookups by `fid` take the lowest `lid` |
 | `local_hash` | Hashes of local content | PK `id`; **UNIQUE `(ed2k, size)`** | | `add_local_file` (upsert); legacy | Hashing fills only `ed2k, size, crc32, md5, sha1`; the media columns (`fps`, `video_*`, `audio_*`) are populated only by legacy import |
 | `local_file` | Paths of hashed files | PK `id`; **UNIQUE index on `path`** (exact text) | `hash_id` | `add_local_file` (upsert by path), `move_local_file`, legacy | `hash_id` softly references `local_hash.id`. `mtime` = modification time read after hashing. `remove_local_file` also deletes `local_hash` rows left without any path. Scan comparisons use a normalized key (slashes, and lower case on Windows) while the index is exact text |
+| `media_info` | Media properties read through `ffprobe` (opt-in), one row per probed local file | PK `local_file_id` (soft reference to `local_file.id`; no foreign key, so the integrity check cannot trip over an orphan) | | `Db::set_media_info` (from `media::read_files`); `remove_local_file` and `clear_local_files` delete rows with their file | `hash_id` records the content that was probed; every read joins `local_file` on `id` **and** `hash_id`, so a re-hash to other content hides the old figures until the file is probed again. `length` seconds, `video_bitrate`/`audio_bitrate` kbit/s. A row with all value columns `NULL` records a probe `ffprobe` refused, so it is not repeated; failures that say nothing about the file (missing file, timeout, `ffprobe` not startable) save nothing. Created with `CREATE TABLE IF NOT EXISTS`; the legacy media columns of `local_hash` stay as imported and are not written |
 | `command_queue` | Persistent outbox of AniDB commands | PK `id` **AUTOINCREMENT** | `(blocked, priority, id)`; `lid`; `payload` | `sync.rs` queue operations, migration | See below |
 | `request_attempt` | When a request for one record was last **sent** to AniDB, successful or not | PK `(kind, id)`; `kind` is `anime` (`id` = `aid`, HTTP record), `file` (`id` = `fid`, UDP `FILE`), `cover` (`id` = `aid`, the cover download) or `export` (`id` = `0`, UDP `MYLISTEXPORT`); `attempted` = epoch seconds | | `sync::execute` and `covers::download_cover` through `Db::record_request_attempt`, before the request | Created by the idempotent schema script, so existing databases gain it on the next open and lose nothing. See [Request guards](#request-guards) |
 | `hash_queue` | Files waiting to be hashed, so a quit or crash loses none (roadmap M5.4) | PK `id` **AUTOINCREMENT**; **UNIQUE `key`** (canonical path: resolved, `\\?\` prefix removed) | `(state, id)` | `Db::hash_queue_enqueue` (Add files, command line, handoff, scan), `hash_queue_remove` after the result is stored, `hash_queue_fail`, `hash_queue_retry_failed`, `hash_queue_clear` | `path` is the absolute path as given and is what is hashed and recorded in `local_file`; `source` is `add-files`, `command-line`, `scan` or `handoff`; `state` is `queued` or `failed` (with `reason`). Drained oldest `id` first; a failed row is skipped until retried, re-queued by adding the file again, or cleared. Created by the idempotent schema script, so existing databases gain it on the next open. See the [persistent hash queue](architecture.md#persistent-hash-queue) |
@@ -122,6 +123,7 @@ erDiagram
     file ||--o{ file_episode : fid
     file ||--o{ mylist : fid
     local_hash ||--o{ local_file : hash_id
+    local_file ||--o| media_info : local_file_id
     local_hash }o--o| file : "ed2k + size"
     mylist ||--o{ command_queue : lid
 ```
@@ -936,6 +938,76 @@ owns the install, so a quit waits for it (see [Architecture](architecture.md#upd
 AniDB, and the real `self-replace` is exercised only through a throwaway helper child process, never by
 replacing the test harness executable.
 
+## ffprobe download transport
+
+Implementation: [`media/install.rs`](../crates/animatic-core/src/media/install.rs) in `animatic-core`;
+detection and probing in `media/tool.rs`, `media/probe.rs` and `media/store.rs`. Product flow:
+[External tools](https://github.com/RetroHazard/animatic/wiki/External-Tools#media-properties-ffprobe).
+Like the update transport it is **separate from AniDB**: its own `Installer` and `MediaError`, no
+AniDB spacing, session or cooldown, and no effect on the command queue. It runs on its own thread
+of the desktop (`MediaTools`, `crates/animatic/src/media.rs`), only after the user confirmed the
+dialog that shows the build, the size, the license and the source.
+
+**What is downloaded.** One pinned asset per platform, by exact URL, from the BtbN
+[FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) project on GitHub: the **LGPL**, static
+build of the FFmpeg 9.0 branch (`n9.0.2-39-g7adfbe40dc`) from the release
+`autobuild-2026-10-31-12-59`. The project keeps the last build of each month for two years
+(its retention policy: daily builds for 14 days, month-end builds for two years), which is why a
+month-end build is pinned and a daily or the floating `latest` build is not. The LGPL variant
+contains no GPL-only libraries (no x264/x265); the license shipped in the archive is the GNU LGPL
+version 3, and `ffprobe -version` reports `--enable-version3` without `--enable-gpl`.
+
+| | Windows x86-64 | Linux x86-64 |
+|---|---|---|
+| Asset | `ffmpeg-n9.0.2-39-g7adfbe40dc-win64-lgpl-9.0.zip` | `ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-lgpl-9.0.tar.xz` |
+| Size | 168,715,328 bytes | 136,027,168 bytes |
+| SHA-256 | `9d37c564e0d01c18cde184a079fa6ef04d7d2783ada41da81d04165cc8f1a650` | `6046d6731b26f58887e953561551d254a6eec9fbca4100dfeab56e19af8328d5` |
+| Entries kept | `<root>/bin/ffprobe.exe`, `<root>/LICENSE.txt` | `<root>/bin/ffprobe`, `<root>/LICENSE.txt` |
+
+The size and SHA-256 are the constants `WINDOWS_X64` and `LINUX_X64` in `media/install.rs`. They
+were read from the release's `checksums.sha256` asset and cross-checked against GitHub's own
+`digest` field of each asset, and both assets were downloaded once by hand and hashed (the
+checksums matched). The checksums come from the same publisher as the files, so they prove the
+download is the pinned file, not who built it; the archive is not signed.
+
+**Transport.** Only HTTPS, only to `github.com` (the asset URL), with redirects followed manually
+(at most 5) and only to the exact hosts `github.com`, `release-assets.githubusercontent.com` and
+`objects.githubusercontent.com` on the default port. Requests are anonymous `GET`s: no token,
+cookie, credential or library data; the server sees the IP address and `Animatic/VERSION`.
+Time limits: 15 s resolve and connect, 30 s per read, 30 minutes for the whole download. Size
+limits: the pinned size must not exceed 256 MiB, a declared length different from the pinned size
+is refused before any byte is read, and a body longer or shorter than the pinned size is refused.
+The offline setting (`anidb.offline`) does not apply: this is an explicit action, not AniDB traffic.
+
+**Verify, extract, install.** The archive is streamed into a private staging folder
+(`tools/.ffprobe-install-*`, same volume as the destination) and hashed on the way. The SHA-256
+must match before it is opened (`MediaError::Checksum` discards the file). Extraction looks only
+for the two exact entry names, requires regular files (no links), bounds them (256 MiB for
+`ffprobe`, 1 MiB for the license; 1 GiB of decompressed xz data and 20,000 entries are read at
+most), skips every other entry without writing it, and checks that the executable starts with the
+platform's magic bytes (`MZ` or `\x7fELF`). Linux builds are `tar.xz`; the xz stream is decoded by
+the pure-Rust `lzma-rs` crate on a helper thread (about 15 s for the real archive). The two files
+then replace the ones in `<data folder>/tools/ffprobe/` by rename (`ffprobe[.exe]`,
+`LICENSE-ffmpeg.txt`); an existing install is not touched on any earlier failure. Nothing is
+executed before that, and nothing needs elevation. The worker finally runs `ffprobe -version` on
+the installed file and reports the install only if that works.
+
+**Probing.** `ffprobe` is started directly, without a shell, as
+`ffprobe -v error -protocol_whitelist file -print_format json -show_format -show_streams -i <absolute path>`
+with no standard input, at most 4 MiB of output, 60 seconds per file, and the job's cancel flag
+killing the process. The protocol whitelist keeps a playlist file from making `ffprobe` open
+network locations. The file is read by `ffprobe` for its container headers and index, not in a
+second full pass (rule 5), and never during the hash read.
+
+**Detection order.** The *ffprobe path* of `media.ffprobe_path`, then Animatic's own copy and
+`PATH` (own copy first on Windows; `PATH` first on Linux so a distribution package wins). A
+candidate must answer `-version` with `ffprobe version …` within 15 seconds. Relative `PATH`
+entries are ignored.
+
+**Tests.** Loopback servers and synthetic zip and tar.xz archives only; a stand-in `ffprobe`
+(a shell script, or a batch file on Windows) and the test binary itself as a child process for
+timeouts and output limits. No test contacts GitHub or AniDB and none needs a real `ffprobe`.
+
 ## Transport security
 
 - **UDP is not TLS.** With no `anidb.api_key`, the `AUTH` datagram, including username and
@@ -962,6 +1034,9 @@ replacing the test harness executable.
   in `settings.json`; the database holds viewing history and local paths. The database and the
   settings file are not otherwise encrypted. The credential flow is described in
   [Architecture](architecture.md#credentials-and-the-system-keystore).
+- **The ffprobe download uses HTTPS only**, with the same rustls defaults and no pinning, is
+  anonymous, and is integrity-checked against a pinned SHA-256 and size; it is not signed (see
+  [ffprobe download transport](#ffprobe-download-transport)).
 - Automated tests use local fixtures only. Never contact AniDB with fabricated or unregistered
   client credentials.
 
@@ -993,6 +1068,7 @@ durable contracts.
 | `library` (hash export) | `Db::local_hashes_export_text(&str, bool) -> Result<(String, usize)>`, `Db::export_local_hashes(&Path, &str, bool) -> Result<usize>` (atomic replace) |
 | `maintenance` | `backup_to(&Db, &Path) -> Result<u64>`, `validate_backup(&Path) -> Result<BackupInfo>`, `check_restore_source(&Path, &Path)`, `restore_database(&Path, &Path) -> Result<RestoreOutcome>`, `check_file(&Path) -> Result<IntegrityReport>`, `compact(&Db) -> Result<CompactReport>` |
 | `external` | `launch_player(&Player, PlayerAction, &Path) -> Result<Child>`, `launch_avdump(&AvdumpSettings, &Path, &str, u16) -> Result<Child>`, `PlayerAction::{Open, Play, Enqueue}` |
+| `media` | `MediaInfo`, `MediaError`, `probe_file(&Path, &Path, &AtomicBool) -> Result<MediaInfo>`, `probe_file_with(.., ProbeLimits)`, `read_files(&Db, &Path, &[MediaTarget], &AtomicBool, &mut dyn FnMut(ReadEvent)) -> ReadReport`, `tool::{detect(&str, &Path, &AtomicBool) -> Detection, detect_with(..), candidates(..), install_dir(&Path), Ffprobe, Detection, ToolSource, Order, FILE_NAME}`, `probe::ffprobe_version`, `install::{Installer::{new(), install(&Pin, &Path, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<Installed>}, Pin, WINDOWS_X64, LINUX_X64, current_pin()}`; on `Db`: `set_media_info(i64, i64, &MediaInfo)`, `media_info(i64)`, `media_info_by_file()`, `media_targets_missing()`, `local_file_hash_id(i64)`; `settings::MediaSettings { read_properties, ffprobe_path }`; `Hashes::export_with_media(&Path, &str, bool, Option<&MediaInfo>)` |
 | `update` | `Platform::{Windows, Linux, current() -> Option<Platform>}`, `UpdateClient::{new() -> Result<Self>, check(&self, &str, Platform, &AtomicBool) -> Result<Option<ReleaseInfo>>, download(&self, &ReleaseInfo, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<VerifiedUpdate>}`, `ReleaseInfo { version, tag, page_url, archive_size }`, `InstallationTarget::capture() -> Result<Self>`, `VerifiedUpdate::{version(), sha256(), install(self, &InstallationTarget) -> Result<String>}`, `UpdateError` (with `install_attempted()`), `Result<T, E = UpdateError>` (its own error type, independent of `Error`) |
 | `format`, `error` | Formatting helpers (`now()`, `size_short`, `date`, ...); `Error`, `Result<T, E = Error>` (re-exported at the crate root) |
 

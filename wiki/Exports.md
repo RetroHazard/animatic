@@ -46,11 +46,18 @@ Tokens are replaced sequentially in this order; unknown text is left as is:
 | `%ed2k%`, `%md5%`, `%sha1%`, `%crc32%` | Hash (ED2K lower-case; MD5/SHA-1/CRC32 upper-case; CRC32 zero-padded to 8) |
 | `%size%` | **Human-readable** size such as `1.00 MB`, not a byte count |
 | `%fulled2k%` | `ed2k://\|file\|<name>\|<bytes>\|<ed2k>\|/` |
-| `%fps%`, `%height%`, `%width%`, `%vbitrate%`, `%asample%`, `%abitrate%` | Constant placeholders `0.00`/`0` |
-| `%vcodec%`, `%acodec%` | Always empty |
-| `%length%` | Empty, or `0` when *Export %length% in minutes* is on |
+| `%fps%` | Frames per second of the video stream, two decimals (`23.98`); constant `0.00` without data |
+| `%length%` | Duration in whole seconds, or whole minutes (rounded) when *Export %length% in minutes* is on; empty (seconds) or `0` (minutes) without data |
+| `%height%`, `%width%` | Video resolution in pixels; constant `0` without data |
+| `%vcodec%`, `%acodec%` | `ffprobe` codec name (`h264`, `hevc`, `aac`, `flac`…); empty without data |
+| `%vbitrate%`, `%abitrate%` | Bitrate in kbit/s, two decimals; constant `0.00` without data |
+| `%asample%` | Audio sample rate in Hz; constant `0` without data |
 
-Media tokens are not read from the files, so only the first group is meaningful. See also the
+The media tokens are filled only for files whose [media properties](External-Tools.md#media-properties-ffprobe)
+were read with the optional `ffprobe` tool (Options → Media properties, off by default). Each
+token falls back to its constant when the file was never read, has no such stream or `ffprobe`
+reported no value (an audio-only file has no `%width%`). Figures read before a file was hashed
+again to different content are ignored. See also the
 [settings reference](Settings-Reference.md#hash-export-template-tokens).
 
 ## Safe replacement

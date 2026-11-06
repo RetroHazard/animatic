@@ -624,6 +624,19 @@ impl Default for UpdateSettings {
     }
 }
 
+/// Media properties read through the external `ffprobe` tool (see [`crate::media`]). Opt-in: the
+/// default reads nothing and starts no process.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaSettings {
+    /// Read duration, resolution, codecs and bitrates of a file after it was hashed. Only
+    /// effective while `ffprobe` is available; Options keeps the control disabled otherwise.
+    pub read_properties: bool,
+    /// Path of the `ffprobe` executable (or of the folder that holds it). Empty: Animatic's own
+    /// copy (installed from Options) and `PATH`, in the order of [`crate::media::tool`].
+    pub ffprobe_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -640,6 +653,8 @@ pub struct Settings {
     /// True until the first-run assistant has been completed.
     pub first_launch: bool,
     pub updates: UpdateSettings,
+    /// Opt-in media properties through the external `ffprobe` tool.
+    pub media: MediaSettings,
     /// Set by [`Settings::save`] when the credential fields (see [`crate::secrets::FIELDS`]) were
     /// moved to the system keystore and are stored empty here. Loading then reads the empty
     /// fields back from the keystore. Never decides anything else; do not set it by hand.
@@ -660,6 +675,7 @@ impl Default for Settings {
             ed2k_space_replacement: None,
             first_launch: true,
             updates: UpdateSettings::default(),
+            media: MediaSettings::default(),
             secrets_in_keystore: false,
         }
     }
@@ -751,6 +767,7 @@ impl Settings {
     /// applying an imported settings review keeps the user's current choices.
     pub fn keep_preferences_unknown_to_legacy(&mut self, current: &Settings) {
         self.updates = current.updates.clone();
+        self.media = current.media.clone();
     }
 
     /// Location of the backup written by [`Settings::save`] next to the primary file.
@@ -1812,5 +1829,40 @@ x</renamingPattern>
             Some((ColorSlot::LocalFileDuplicate, false))
         );
         assert_eq!(ColorSlot::from_tag(29), None);
+    }
+
+    #[test]
+    fn media_properties_are_off_by_default_and_old_files_load_without_them() {
+        let defaults = Settings::default();
+        assert!(!defaults.media.read_properties);
+        assert!(defaults.media.ffprobe_path.is_empty());
+
+        let mut document = serde_json::to_value(Settings::default()).unwrap();
+        document.as_object_mut().unwrap().remove("media");
+        let loaded: Settings = serde_json::from_value(document).unwrap();
+        assert_eq!(loaded.media, MediaSettings::default());
+        let partial: Settings =
+            serde_json::from_str(r#"{"media":{"ffprobe_path":"/opt/ffprobe"}}"#).unwrap();
+        assert!(!partial.media.read_properties);
+        assert_eq!(partial.media.ffprobe_path, "/opt/ffprobe");
+    }
+
+    #[test]
+    fn the_media_choice_survives_a_save_and_an_aom_settings_import() {
+        let dir = TestDir::new("media-choice");
+        let mut settings = Settings::default();
+        settings.media.read_properties = true;
+        settings.media.ffprobe_path = "/opt/ffprobe".into();
+        settings.save(&dir.primary(), &no_keystore()).unwrap();
+        let again = Settings::load_with_recovery(&dir.primary())
+            .unwrap()
+            .settings;
+        assert_eq!(again.media, settings.media);
+
+        let mut imported = Settings::default();
+        imported.anidb.username = "legacy-user".into();
+        imported.keep_preferences_unknown_to_legacy(&settings);
+        assert_eq!(imported.media, settings.media);
+        assert_eq!(imported.anidb.username, "legacy-user");
     }
 }

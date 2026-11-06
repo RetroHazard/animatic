@@ -1,5 +1,6 @@
 Open with **Tools → Options…**. It is one scrolling window; sections in order: AniDB account,
-Appearance, System tray, Hashing, Managed folders, Statistics export, External player, AVDump, Renaming pattern,
+Appearance, System tray, Hashing, Managed folders, Statistics export, External player, AVDump, Media properties,
+Renaming pattern,
 Updates, and a read-only list of MyList state names. **Save options** at the bottom writes the file, applies
 theme and scale and closes the window.
 
@@ -32,6 +33,7 @@ written with the settings.
 | Statistics export | Enable, Format, Output file | Active |
 | External player | Per player: Name, Executable, Open/Play/Enqueue arguments, Default player, Remove player; Add player | Active; see [External tools](External-Tools.md) |
 | AVDump | Enable, Executable, Arguments, API key | Active |
+| Media properties | The detected `ffprobe` (version, where it came from, path), *ffprobe path* + **Detect**, *Read media properties after hashing* (disabled until `ffprobe` is found), **Install ffprobe…** (confirmation with size, license and source), **Read missing properties now** | Active, off by default; see [External tools](External-Tools.md#media-properties-ffprobe) |
 | Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
 

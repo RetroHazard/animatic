@@ -60,6 +60,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `stats` | Library aggregation (one read transaction) and XML/INI rendering |
 | `maintenance` | Online backup, restore validation and file swap, integrity/foreign-key check, `VACUUM`; blocking file work for the worker and the restore thread |
 | `external` | Argument-vector parsing, external player/AVDump launching (no shell), and the player selection rules (`PlayerAction::is_available`, `default_player`, `chosen_player`, `set_default_player`) |
+| `media` | Opt-in media properties through the external `ffprobe`: `tool` (detection order, `-version`), `install` (pinned, SHA-256 verified one-click install of an LGPL build, only `ffprobe` and its license kept), `probe` (argument-vector run with timeout and bounded output, JSON parsing into `MediaInfo`) and `store` (`media_info` table, `read_files` batch); own `MediaError`, no AniDB code, spacing or cooldowns |
 | `format` | Size, date, duration and count formatting |
 | `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
 | `instance` | Single-instance handoff: loopback listener, token and lock file next to the database; `start` decides forward, claim or standalone (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)) |
@@ -80,6 +81,8 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
 projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `hash_jobs.rs` (worker side of the persistent hash queue).
 The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash queue panel is `app/hash_queue_panel.rs`.
+`media.rs` (the media tools thread for `ffprobe` detection and install, and the body of `Job::ReadMedia`),
+`app/media_options.rs` (the Options section, the install confirmation and the read after hashing).
 
 ## Runtime model
 
@@ -94,6 +97,7 @@ The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
 | `animatic-instance` and per-connection threads | none | Accept forwarded media paths from other launches and queue them for the UI (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)); only exists while this process owns the lock |
 | `animatic-shell` | none | One-shot per Options open or save: reads, registers or removes the file-menu entry |
+| `animatic-media-tools` | none | `ffprobe` search (`ffprobe -version` is a process) and the confirmed one-click install download; cancelled on drop; never opens the library database and never touches the AniDB limiter |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
 
 The UI sends `Job`s over an unbounded crossbeam channel and drains `Event`s every frame.
@@ -200,6 +204,8 @@ file deletion is the source of a verified cross-volume rename; the one folder de
 `clear_empty_folders` after a rename (see [Rename](#rename)). A scan never removes a folder.
 `exclude_system` makes `plan_scan` skip entries with the Windows system attribute (behind
 `has_system_attribute`; always false on Linux, where it is a documented no-op).
+
+**Media properties (opt-in).** When *Read media properties* is on and `ffprobe` was found, the UI notes the files of each `Event::Hashed`, and when that job's `Event::Finished` arrives it submits a separate `Job::ReadMedia` for them (the worker queues it behind whatever else is pending). The job probes each file with `ffprobe` (a process with timeout and bounded output, never part of the hash read, so rule 5 holds) and saves the figures in `media_info`, keyed by `local_file.id` with the `hash_id` that was probed. A file that is missing, a timeout or an `ffprobe` that cannot start is reported and not recorded; a file `ffprobe` refuses is recorded once. The hash export joins `media_info` to fill its media tokens. `Job::ReadMedia { scope: Missing }` (Options → **Read missing properties now**) probes every hashed file without figures for its current content.
 
 ### AniDB synchronization
 
@@ -781,6 +787,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs`; `app/player_actions.rs`: `file_menu`, `player_toolbar`, `run_file_action`; `app.rs`: `play_selected` |
 | System tray | `crates/animatic/src/tray.rs`: `TrayController::update`, `icon_wanted`, `should_hide`, `MENU`, `platform` backends; `app/tray_ui.rs`: `tray_frame`, `tray_options_ui`; `app.rs`: `queue_run_allowed` |
+| Media properties | `crates/animatic-core/src/media/{tool,install,probe,store}.rs`; `crates/animatic/src/media.rs` (`MediaTools`, `read_media`); `app/media_options.rs`; `app.rs`: `Event::Hashed`/`Event::Finished` hooks; `hash.rs`: `Hashes::export_with_media`; `db/schema.sql`: `media_info` |
 | Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
 | Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |

@@ -54,6 +54,7 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 | `first_launch` | boolean | `true` | [Top-level keys](#top-level-keys) |
 | `secrets_in_keystore` | boolean | `false` | [Top-level keys](#top-level-keys) |
 | `updates` | object | `{ "auto_check": true }` | [Updates](#updates) |
+| `media` | object | `{ "read_properties": false, "ffprobe_path": "" }` | [Media properties](#media-properties-media) |
 
 ## AniDB account
 
@@ -127,7 +128,7 @@ the desktop application; the remaining keys mirror AOM's interface options and a
 | `zoom` | number (f32) | `1.0` | "UI scale" slider 0.75-2.0 | **Active.** Applied (clamped to 0.75-2.0) at startup and at the same moments as `theme`. Load-time fixup resets values `<= 0.3` to `1.0`; other out-of-range values are kept in the file and clamped when applied. |
 | `last_directory` | string | `""` | none | **Active.** Start folder for the Add files picker and the AOM settings XML picker; updated to the folder of the files you last added. |
 | `colored_rows` | boolean | `true` | "Use status colors" | **Active.** Tints table rows by status with the [row colors](#row-colors-uicolors) below; `false` draws every row plainly. Every status is also written in the row, so the color is never the only signal. Takes effect immediately, no save needed. |
-| `copy_length_as_minutes` | boolean | `false` | "Export %length% in minutes" | **Active but nearly empty.** Read by hash export, but `%length%` has no real data behind it; see [token table](#hash-export-template-tokens). |
+| `copy_length_as_minutes` | boolean | `false` | "Export %length% in minutes" | **Active.** Read by hash export: `%length%` is the duration in whole minutes instead of seconds. Without [media data](#media-properties-media) it stays at its constant (`0`). See [token table](#hash-export-template-tokens). |
 | `show_tray_icon` | boolean | `true` | "Show tray icon" | **Active.** Puts an icon in the Windows notification area or the Linux StatusNotifierItem tray (menu: Show Animatic, Run command queue, Quit; a left click shows the window). Takes effect as you click, not only on Save. Disabled, with the reason, where the system has no tray; the stored value is then kept and never acted on. See [System tray](Main-Window.md#system-tray). |
 | `minimize_to_tray` | boolean | `true` | "Minimize to tray" | **Active.** Minimizing the window hides it to the tray instead of the taskbar. Needs `show_tray_icon` and a tray icon that is actually up; otherwise a minimize is an ordinary minimize. Closing the window still quits. |
 
@@ -366,6 +367,20 @@ Object `avdump`.
 
 Animatic only starts the program for the selected file and does not read its output or wait for it.
 
+## Media properties (`media`)
+
+Object `media`. Optional, off by default; see [External tools](External-Tools.md#media-properties-ffprobe)
+for the workflow and the install.
+
+| Key | Type | Default | Options control | Status and effect |
+|---|---|---|---|---|
+| `read_properties` | boolean | `false` | "Read media properties after hashing" | **Active.** When true and `ffprobe` is available, a separate background step after each hashing job reads duration, resolution, codecs and bitrates of the files that job hashed and stores them for the [hash export](#hash-export-template-tokens). The control is disabled until `ffprobe` is found; the stored value is kept but nothing is read while it is missing. |
+| `ffprobe_path` | string | `""` | "ffprobe path" | **Active.** An `ffprobe` executable, or the folder that holds it. Empty: Animatic's own copy in `tools/ffprobe/` of the [data folder](Data-Locations.md) and `ffprobe` on `PATH` (own copy first on Windows, `PATH` first on Linux). A path that is not usable is reported in Options and the search goes on. |
+
+A file without a `media` object (every earlier version's file) loads with both values at their
+defaults. Applying an AOM settings import keeps your current `media` object because AOM has no
+such preference. An older Animatic build ignores and drops the unknown `media` key on its next save.
+
 ## Top-level keys
 
 | Key | Type | Default | Options control | Status and effect |
@@ -413,18 +428,20 @@ escaped, so a file name that itself contains a later token would be expanded too
 | `%crc32%` | yes | CRC32, uppercase, 8 digits (empty if not stored) |
 | `%size%` | yes | Human-readable binary size such as `1.23 GB` or `512 bytes` (not a byte count) |
 | `%fulled2k%` | yes | ED2K link, see below |
-| `%fps%` | **placeholder** | always `0.00` |
-| `%length%` | **placeholder** | `0` when "Export %length% in minutes" is on, otherwise empty |
-| `%height%` | **placeholder** | always `0` |
-| `%width%` | **placeholder** | always `0` |
-| `%vcodec%` | **placeholder** | always empty |
-| `%vbitrate%` | **placeholder** | always `0.00` |
-| `%acodec%` | **placeholder** | always empty |
-| `%asample%` | **placeholder** | always `0` |
-| `%abitrate%` | **placeholder** | always `0.00` |
+| `%fps%` | optional | Video frames per second with two decimals; `0.00` without media data |
+| `%length%` | optional | Duration in whole seconds, or whole minutes when "Export %length% in minutes" is on; without media data empty (seconds) or `0` (minutes) |
+| `%height%` | optional | Video height in pixels; `0` without media data |
+| `%width%` | optional | Video width in pixels; `0` without media data |
+| `%vcodec%` | optional | Video codec name from `ffprobe`; empty without media data |
+| `%vbitrate%` | optional | Video bitrate in kbit/s with two decimals; `0.00` without media data |
+| `%acodec%` | optional | Audio codec name from `ffprobe`; empty without media data |
+| `%asample%` | optional | Audio sample rate in Hz; `0` without media data |
+| `%abitrate%` | optional | Audio bitrate in kbit/s with two decimals; `0.00` without media data |
 
-The media tokens are accepted so AOM templates still expand, but Animatic stores no media
-information; do not use them for real data. The ED2K link has this shape (the size is in bytes):
+"Optional" tokens carry real data only for files whose media properties were read with the
+optional `ffprobe` tool ([Media properties](#media-properties-media)); every other file, and every
+value `ffprobe` did not report, keeps the constant shown, so AOM templates still expand. The ED2K
+link has this shape (the size is in bytes):
 
 ```text
 ed2k://|file|<file name>|<size in bytes>|<ed2k hash>|/

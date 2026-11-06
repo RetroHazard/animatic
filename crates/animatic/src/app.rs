@@ -29,6 +29,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 
 mod covers;
 mod hash_queue_panel;
+mod media_options;
 mod mylist_editor;
 mod mylist_export;
 mod player_actions;
@@ -572,6 +573,8 @@ pub struct AnimaticApp {
     /// Player the file actions use, as an index into `settings.players`; `None` means the
     /// default player (see `animatic_core::external::chosen_player`).
     selected_player: Option<usize>,
+    /// Opt-in media properties through `ffprobe`: detection, install and the read after hashing.
+    media_ui: media_options::MediaUi,
 }
 
 impl AnimaticApp {
@@ -602,6 +605,10 @@ impl AnimaticApp {
         let settings = loaded.settings;
         let worker = Worker::spawn(db_path.clone());
         let updater = Updater::spawn(installation.clone());
+        let media_ui = media_options::MediaUi::new(
+            db_path.parent().map(Path::to_path_buf).unwrap_or_default(),
+            &settings.media.ffprobe_path,
+        );
         let mut app = Self {
             db,
             db_path,
@@ -677,6 +684,7 @@ impl AnimaticApp {
             compact_confirm: false,
             full_update: refresh::FullUpdateStage::default(),
             last_backup: None,
+            media_ui,
         };
         app.request_library_refresh();
         // Off the UI thread: look for decrypted copies an interrupted import left behind.
@@ -1140,6 +1148,7 @@ impl AnimaticApp {
                     size,
                     ed2k,
                 } => {
+                    self.media_note_hashed(local_id, &path);
                     self.log(format!(
                         "Hashed {} (local #{local_id}, {ed2k})",
                         path.display()
@@ -1289,6 +1298,7 @@ impl AnimaticApp {
                     self.activity.busy = false;
                     self.status = "Ready".into();
                     self.request_library_refresh();
+                    self.media_after_job();
                 }
                 Event::LibraryLoaded {
                     generation,
@@ -3744,6 +3754,9 @@ impl AnimaticApp {
                     field(ui, "Arguments", &mut self.settings.avdump.arguments);
                     field(ui, "AVDump API key", &mut self.settings.avdump.key);
                     ui.separator();
+                    ui.heading("Media properties");
+                    self.media_options_ui(ui);
+                    ui.separator();
                     ui.heading("Renaming pattern");
                     self.pattern_editor_ui(ui);
                     ui.separator();
@@ -3778,6 +3791,7 @@ impl AnimaticApp {
         if save {
             self.save_settings();
             self.apply_visuals(ctx);
+            self.media_settings_saved();
             self.settings_open = false;
             self.apply_shell_integration(exe.as_deref());
         }
@@ -4516,6 +4530,7 @@ impl eframe::App for AnimaticApp {
         self.process_events(&ctx);
         self.process_update_events(&ctx);
         self.poll_shell(&ctx);
+        self.process_media_events(&ctx);
         self.retry_deferred();
         self.sync_scan_schedule();
         self.pump_library(&ctx);
@@ -4545,6 +4560,7 @@ impl eframe::App for AnimaticApp {
         self.full_update_window(&ctx);
         self.mylist_export_window(&ctx);
         self.batch_rename_window(&ctx);
+        self.media_install_window(&ctx);
         if self.about_open {
             let mut open = true;
             egui::Window::new("About Animatic")
@@ -4599,6 +4615,7 @@ impl eframe::App for AnimaticApp {
             || self.loader.dirty
             || !self.deferred.is_empty()
             || self.update.stage.is_active()
+            || self.media_ui.working()
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         } else if self.active_cooldown().is_some() {

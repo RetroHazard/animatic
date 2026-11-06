@@ -35,6 +35,8 @@ Companion files you will meet:
 | `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
 | `animatic.sqlite3.instance` | While Animatic runs | The single-instance lock, next to the database (the canonical database path plus `.instance`). Holds a loopback port and a random token; removed when the window closes. A file left by a crash is detected and replaced; it is safe to delete with Animatic closed. See [Shell entries and the lock file](#shell-entries-and-the-lock-file). |
 | `covers/` | When an anime detail window downloads a cover | Same folder as the database. One file per cover, see [Cover pictures](#cover-pictures). Not part of library backups. |
+| `tools/ffprobe/` (`ffprobe` or `ffprobe.exe`, `LICENSE-ffmpeg.txt`) | After **Install ffprobe…** in Options → Media properties | Inside the database's folder (`tools` next to `animatic.sqlite3`, so `--database` or `ANIMATIC_DB` moves it too). Only these two files are kept (about 130 MB). Delete the folder to remove the tool; not included in backups or the library file. See [External tools](External-Tools.md#media-properties-ffprobe). |
+| `tools/.ffprobe-install-*/` | Briefly during that install | A private staging folder on the same drive, removed when the install ends; an interrupted one can be left behind and is safe to delete with Animatic closed. |
 
 Credentials are not in these files while the system keystore works: the AniDB password, API key and
 AVDump key live in the **Windows Credential Manager** or the Linux **Secret Service** under the

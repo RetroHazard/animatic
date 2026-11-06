@@ -1053,6 +1053,7 @@ impl Db {
         copy_length_as_minutes: bool,
     ) -> Result<(String, usize)> {
         let files = self.local_files()?;
+        let media = self.media_info_by_file()?;
         let mut text = String::new();
         for f in &files {
             let hashes = crate::hash::Hashes {
@@ -1062,10 +1063,11 @@ impl Db {
                 md5: f.md5.clone().unwrap_or_default(),
                 sha1: f.sha1.clone().unwrap_or_default(),
             };
-            text.push_str(&hashes.export(
+            text.push_str(&hashes.export_with_media(
                 std::path::Path::new(&f.path),
                 template,
                 copy_length_as_minutes,
+                media.get(&f.id),
             ));
             text.push_str("\r\n");
         }

@@ -263,6 +263,25 @@ CREATE TABLE IF NOT EXISTS local_file (
 CREATE UNIQUE INDEX IF NOT EXISTS local_file_path ON local_file(path);
 CREATE INDEX IF NOT EXISTS local_file_hash ON local_file(hash_id);
 
+-- Media properties read through ffprobe (opt-in, see the media module). One row per local file that was
+-- probed; hash_id records the content that was probed, so a row left behind by a re-hash to
+-- different content is ignored. All value columns are NULL when ffprobe ran but found nothing
+-- usable (the row then only records the attempt). Lengths in seconds, bitrates in kbit/s.
+CREATE TABLE IF NOT EXISTS media_info (
+    local_file_id    INTEGER PRIMARY KEY,         -- local_file.id; removed with the file (store.rs)
+    hash_id          INTEGER NOT NULL,
+    length           REAL,
+    fps              REAL,
+    video_width      INTEGER,
+    video_height     INTEGER,
+    video_codec      TEXT,
+    video_bitrate    REAL,
+    audio_codec      TEXT,
+    audio_samplerate INTEGER,
+    audio_bitrate    REAL,
+    probed           INTEGER NOT NULL DEFAULT 0   -- unix time of the probe
+);
+
 -- Pending AniDB commands (mylist edits etc.), persisted so offline work survives restarts.
 -- AUTOINCREMENT: ids are never reused, so an acknowledgement for a command that was
 -- superseded (or cleared) while in flight can never delete a newer command.

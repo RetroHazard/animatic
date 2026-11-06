@@ -43,6 +43,9 @@
 //!   fallback used by [`settings::Settings::save`].
 //! * [`stats`] — library statistics and XML/INI rendering.
 //! * [`external`] — launching external players and AVDump without a shell.
+//! * [`media`] — opt-in media properties through the external `ffprobe`: detection, the pinned
+//!   one-click install, bounded probing and the `media_info` table behind the hash export's
+//!   media tokens.
 //! * [`update`] — GitHub release check, verified download and in-place installation of a newer
 //!   stable release (separate [`update::UpdateError`]; never touches the AniDB cooldown).
 //! * [`instance`] — single-instance handoff: a launch with media files forwards them to the
@@ -95,6 +98,7 @@ pub mod legacy;
 pub mod library;
 pub mod limits;
 pub mod maintenance;
+pub mod media;
 pub mod mylist_export;
 pub mod rename;
 pub mod secrets;

@@ -1,5 +1,6 @@
 mod app;
 mod hash_jobs;
+mod media;
 mod scheduler;
 mod table;
 mod tray;
