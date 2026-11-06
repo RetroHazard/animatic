@@ -88,7 +88,7 @@ flowchart LR
 | M5.6 | Long-lived session: keep-alive and idle logout | Planned |
 | M6.1 | Rename apply on the worker, cross-volume moves | Done |
 | M6.2 | Batch rename | Done |
-| M6.3 | Opt-in automatic rename per managed folder | Planned |
+| M6.3 | Opt-in automatic rename per managed folder | Done |
 | M7.1 | Anime covers | Done |
 | M7.2 | Saved window, columns and sorting | Done |
 | M7.3 | Status row colours and system theme | Done |

@@ -153,6 +153,12 @@ the generated line for that pull request's squash commit.
   downloads a pinned LGPL build after you confirm its size, license and source, verifies its
   SHA-256 and keeps only `ffprobe` and its license next to the database; nothing is bundled in the
   release archives.
+- Opt-in automatic rename per managed folder: **Auto rename** is Off (default), Dry run (logs
+  what would be renamed) or On. Files in folders set to On are renamed with the current pattern,
+  once identified, through the same verified worker job as a manual rename; nothing is
+  overwritten. Switching to On first shows a read-only preview and needs confirmation. Blocked
+  plans and collisions are skipped and logged once per file. An existing or AOM-imported
+  `auto_rename: true` loads as Dry run, never On.
 
 ### Changed
 
