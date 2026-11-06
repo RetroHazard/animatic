@@ -21,6 +21,7 @@ use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use crossbeam_channel::{Receiver, TryRecvError};
 
 mod mylist_editor;
+mod shell_menu;
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
 const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
@@ -381,6 +382,9 @@ pub struct Startup {
     pub restart: Arc<AtomicBool>,
     /// Keystore for the AniDB password and API keys; tests pass an in-memory one.
     pub credentials: Credentials,
+    /// Files other launches forward while this window runs; `None` when the single-instance
+    /// lock could not be claimed (or is held by another instance).
+    pub incoming: Option<animatic_core::instance::Incoming>,
 }
 
 /// Longest the window waits for a running library restore when it closes.
@@ -535,6 +539,13 @@ pub struct AnimaticApp {
     credentials: Credentials,
     /// Where the credentials are kept, as of the last load or save; shown in Options.
     credential_storage: CredentialStorage,
+    /// File-menu entry state shown in Options.
+    shell: shell_menu::ShellUi,
+    incoming: Option<animatic_core::instance::Incoming>,
+    /// The repaint hook was handed to `incoming` (it needs the egui context).
+    incoming_wired: bool,
+    /// Files forwarded by another launch, waiting for the worker to accept hashing.
+    pending_handoff: Vec<PathBuf>,
 }
 
 impl AnimaticApp {
@@ -547,6 +558,7 @@ impl AnimaticApp {
             installation,
             restart,
             credentials,
+            incoming,
         } = startup;
         let db = Db::open(&db_path)?;
         // The worker may hold the write lock for long stretches; small UI writes must fail
@@ -600,6 +612,10 @@ impl AnimaticApp {
             settings_notice,
             credentials,
             credential_storage,
+            shell: shell_menu::ShellUi::system(),
+            incoming,
+            incoming_wired: false,
+            pending_handoff: Vec::new(),
             settings_open: false,
             about_open: false,
             import_source: String::new(),
@@ -1942,6 +1958,55 @@ impl AnimaticApp {
         }
     }
 
+    /// An Options save applies the file-menu toggle; nothing else ever registers the entry
+    /// (an AOM settings import only stores the flag).
+    fn apply_shell_integration(&mut self, exe: Option<&Path>) {
+        let enabled = self.settings.hashing.integrate_into_shell;
+        self.shell.apply(enabled, exe);
+    }
+
+    fn poll_shell(&mut self, ctx: &egui::Context) {
+        if let Some(finished) = self.shell.poll() {
+            match finished.change {
+                Some(Ok(message)) => self.log(message),
+                Some(Err(e)) => self.error(format!("File-menu entry: {e}")),
+                None => {}
+            }
+        }
+        if self.shell.is_pending() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    /// Hashes files another launch forwarded, like the files given on the command line, and
+    /// brings the window forward. Held back while an import review blocks the worker.
+    fn process_handoff(&mut self, ctx: &egui::Context) {
+        if let Some(incoming) = &self.incoming {
+            if !self.incoming_wired {
+                let ctx = ctx.clone();
+                incoming.set_waker(move || ctx.request_repaint());
+                self.incoming_wired = true;
+            }
+            let mut arrived = false;
+            while let Some(files) = incoming.try_recv() {
+                self.pending_handoff.extend(files);
+                arrived = true;
+            }
+            if arrived {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
+        if !self.pending_handoff.is_empty() && !self.import_pending {
+            let files = std::mem::take(&mut self.pending_handoff);
+            self.log(format!(
+                "Hashing {} file(s) from another launch",
+                files.len()
+            ));
+            self.worker.submit(Job::Hash(files));
+        }
+    }
+
     /// Store settings after a change the user did not ask to save (for example dismissing the
     /// first-run card). Recovered settings keep the unreadable original untouched, so the change
     /// then stays in memory until Options "Save" or an applied import; no save state changes.
@@ -3121,6 +3186,8 @@ impl AnimaticApp {
             return;
         }
         let mut open = true;
+        let exe = self.executable_path().map(Path::to_path_buf);
+        self.shell.ensure_probed(exe.as_deref());
         let mut save = false;
         egui::Window::new("Options")
             .open(&mut open)
@@ -3190,6 +3257,11 @@ impl AnimaticApp {
                     ui.checkbox(
                         &mut self.settings.hashing.identify_after_hashing,
                         "Identify files with AniDB after hashing",
+                    );
+                    self.shell.options_ui(
+                        ui,
+                        &mut self.settings.hashing.integrate_into_shell,
+                        exe.as_deref(),
                     );
                     ui.checkbox(
                         &mut self.settings.hashing.use_extensions,
@@ -3368,9 +3440,13 @@ impl AnimaticApp {
             self.save_settings();
             self.apply_visuals(ctx);
             self.settings_open = false;
+            self.apply_shell_integration(exe.as_deref());
         }
         if !open {
             self.settings_open = false;
+        }
+        if !self.settings_open {
+            self.shell.options_closed();
         }
     }
 
@@ -3981,10 +4057,17 @@ impl AnimaticApp {
 }
 
 impl eframe::App for AnimaticApp {
+    /// Also runs while the window is minimized (the UI does not), so files forwarded by another
+    /// launch are hashed, and the window restored, without waiting for the user.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.process_handoff(ctx);
+    }
+
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.process_events(&ctx);
         self.process_update_events(&ctx);
+        self.poll_shell(&ctx);
         self.retry_deferred();
         self.pump_library(&ctx);
         self.top_bar(root);

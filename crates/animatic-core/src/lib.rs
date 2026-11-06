@@ -38,6 +38,10 @@
 //! * [`external`] — launching external players and AVDump without a shell.
 //! * [`update`] — GitHub release check, verified download and in-place installation of a newer
 //!   stable release (separate [`update::UpdateError`]; never touches the AniDB cooldown).
+//! * [`instance`] — single-instance handoff: a launch with media files forwards them to the
+//!   running instance that has the same database open (loopback socket and lock file).
+//! * [`shell_integration`] — the optional per-user "Hash with Animatic" file-menu entry
+//!   (Windows registry or Linux desktop file) that only an Options save creates.
 //! * [`mod@format`] — shared size/date/duration formatting.
 //!
 //! # Guarantees worth knowing
@@ -72,6 +76,7 @@ pub mod external;
 pub mod file_manager;
 pub mod format;
 pub mod hash;
+pub mod instance;
 pub mod legacy;
 pub mod library;
 pub mod limits;
@@ -79,6 +84,7 @@ pub mod maintenance;
 pub mod rename;
 pub mod secrets;
 pub mod settings;
+pub mod shell_integration;
 pub mod stats;
 pub mod store;
 pub mod sync;

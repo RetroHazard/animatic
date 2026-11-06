@@ -47,6 +47,7 @@ animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb", features =
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 windows-native-keyring-store = { version = "1.1.0", default-features = false }
+winreg = "0.56.0"
 
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
 zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }

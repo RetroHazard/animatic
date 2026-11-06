@@ -52,7 +52,7 @@ case-sensitive.
 | `--help`, `-h`, `/?` | Print `Animatic [--database FILE] [--full-update] [MEDIA FILES...]` and exit. Does not create directories, files or a window. |
 | `/utf8`, `/ucs2` | Accepted and ignored (legacy compatibility). |
 | any other argument starting with `-` | Error: `unknown option: <argument>`. Includes `--version`, `-v`, `--database=FILE` (there is no `=` form) and `--settings`. |
-| anything else | A media file path. It is hashed in the background right after startup, as if added with **File → Add files…** |
+| anything else | A media file path. It is hashed in the background right after startup, as if added with **File → Add files…** If Animatic is already running with the same database, the paths go to that window instead; see [One window per database](#one-window-per-database). |
 
 Details that follow from the code:
 
@@ -65,8 +65,9 @@ Details that follow from the code:
 - **No `--` separator.** A media file whose name begins with `-` cannot be passed
   directly. Prefix it with a directory (`./-clip.mkv`, `.\-clip.mkv`) so it no longer starts
   with `-`.
-- **Media paths** are stored exactly as given, relative paths included, and are resolved
-  against the process working directory. Use absolute paths. Directories are not expanded;
+- **Media paths** given to the first window are stored exactly as given, relative paths
+  included, and are resolved against the process working directory. Paths forwarded to a
+  running window are made absolute first. Use absolute paths. Directories are not expanded;
   list files explicitly. `--database`/`--full-update` and file arguments can be combined;
   the full update is queued first, then the files are hashed.
 - **Settings have no flag.** The settings file can only be redirected with the
@@ -74,6 +75,30 @@ Details that follow from the code:
 - **Failure output.** Parse errors are returned from `main`, so Rust prints
   `Error: <message>` to standard error and exits with status 1 [standard behavior of a
   `main` that returns `Err`].
+
+### One window per database
+
+Starting Animatic with media files while another Animatic already has **the same database**
+open does not open a second window. The new process gives the files to the running one and
+exits; the running window comes to the front and hashes them exactly as if they had been given
+on its own command line (identification and MyList rules included). This is what makes the
+optional **Hash with Animatic** file-menu entry (see [Options window](Options-Window.md#file-menu-entry))
+usable when you select several files.
+
+- **Same database** means the same file after resolving the directory and links, so
+  `--database ./a.sqlite3` and `--database /full/path/a.sqlite3` match. A different
+  `--database` (or `ANIMATIC_DB`) starts a separate window as before.
+- **No files, or `--full-update`:** nothing is forwarded. A second launch without files
+  opens another window as before.
+- **Mechanism.** The running window listens on `127.0.0.1` only, on a random port, and records
+  the port and a random token in `<database file>.instance` next to the database (see
+  [Data locations](Data-Locations.md#shell-entries-and-the-lock-file)). The new process needs that token to be
+  accepted. The file is removed when the window closes. A file left behind by a crash is
+  detected (nobody answers) and replaced.
+- **If forwarding fails** for any reason (the lock directory is not writable, the window does
+  not answer, a path is not valid Unicode) the new process starts normally.
+- **Bringing the window forward** is best effort. Windows and some Linux window managers may
+  only flash the taskbar entry instead of taking focus.
 
 ### Precedence
 

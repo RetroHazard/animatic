@@ -33,6 +33,7 @@ Companion files you will meet:
 | `animatic-legacy-import-*/` | During a databank import | Created in the system temporary folder (not the database's folder), with a marker file `.animatic-legacy-import`. Holds one decrypted (plaintext) collection file such as `animes.sqlite` at a time and is removed when the import ends. After a crash the next start offers to remove marked folders that no running import uses; only those are removed. An older version's `import-temp/` folder beside the database is not offered. See [Migration](Migrating-from-AOM.md#migrate-an-aom-databank). |
 | `animatic.sqlite3.before-restore-YYYYMMDD-HHMMSS` | After **File → Restore library…** | The library that was replaced, kept on purpose and never deleted by Animatic. Delete it yourself once the restored library is confirmed. |
 | `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
+| `animatic.sqlite3.instance` | While Animatic runs | The single-instance lock, next to the database (the canonical database path plus `.instance`). Holds a loopback port and a random token; removed when the window closes. A file left by a crash is detected and replaced; it is safe to delete with Animatic closed. See [Shell entries and the lock file](#shell-entries-and-the-lock-file). |
 
 Credentials are not in these files while the system keystore works: the AniDB password, API key and
 AVDump key live in the **Windows Credential Manager** or the Linux **Secret Service** under the
@@ -46,6 +47,27 @@ control, shared backups and support requests
 Do not run two Animatic processes on the same settings
 file; they share temporary file names and are unsupported. Window size and position are not
 remembered between launches.
+
+## Shell entries and the lock file
+
+Two things live outside the database and settings folders, and only when you use the matching
+feature:
+
+- **Lock file.** `<database file>.instance` next to the database, created when Animatic starts and
+  removed when it closes. A launch with media files that finds a live lock for the same database
+  hands the files over and exits ([One window per database](Running-Animatic.md#one-window-per-database)).
+  It contains the port of a `127.0.0.1` listener, a random token, the process id and the database
+  path, and no library data. On Linux the file is readable only by you. `--help` creates nothing.
+- **File-menu entry** (only after you save the option on, see [File-menu entry](Options-Window.md#file-menu-entry)):
+  - Windows: the key `HKEY_CURRENT_USER\Software\Classes\*\shell\Animatic.Hash` with a `command`
+    subkey. View it with `reg query "HKCU\Software\Classes\*\shell\Animatic.Hash" /s`.
+  - Linux: `animatic-hash.desktop` in `$XDG_DATA_HOME/applications` (default
+    `~/.local/share/applications`).
+
+  Saving the option off removes exactly these, and only when they carry Animatic's ownership
+  mark (registry value `AnimaticManaged`, desktop-file line `X-Animatic-Managed=true`). Deleting the
+  program does not remove the entry; turn the option off first. If you did not, delete the key or
+  file by hand.
 
 ## Portable and rehearsal setups
 

@@ -59,6 +59,8 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
 | `format` | Size, date, duration and count formatting |
 | `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
+| `instance` | Single-instance handoff: loopback listener, token and lock file next to the database; `start` decides forward, claim or standalone (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)) |
+| `shell_integration` | Per-user "Hash with Animatic" entry: `ShellIntegration` over the Windows registry (`HKCU`, via `winreg`) or a Linux desktop file, ownership marker, injectable location for tests |
 | `error` | Crate-wide `Error`/`Result` (the update module has its own) |
 
 ### `animatic-anidb`
@@ -74,6 +76,7 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
 projection bookkeeping, the Software updates window), `worker.rs` (jobs, events, queue runs, projection thread, updater thread).
+The Options row for the file-menu entry is `app/shell_menu.rs`.
 
 ## Runtime model
 
@@ -84,6 +87,8 @@ projection bookkeeping, the Software updates window), `worker.rs` (jobs, events,
 | `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
 | `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
+| `animatic-instance` and per-connection threads | none | Accept forwarded media paths from other launches and queue them for the UI (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)); only exists while this process owns the lock |
+| `animatic-shell` | none | One-shot per Options open or save: reads, registers or removes the file-menu entry |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
 
 The UI sends `Job`s over an unbounded crossbeam channel and drains `Event`s every frame.
@@ -464,6 +469,34 @@ Rules the code relies on:
   never enter the command queue. Only the startup check consults AniDB *settings* (offline,
   recovery) to decide whether to contact GitHub automatically.
 
+### Single instance and the file-menu entry
+
+**Handoff** (`instance.rs`, started from `main.rs` after the arguments and the database path are
+known, so `--help` creates nothing). `instance::start(db, files)` canonicalizes the database path
+and uses `<database>.instance` as the lock. A live lock for the same database with files to give
+means *forward*: the files (made absolute, because this process has another working directory)
+are sent to `127.0.0.1:<port>` as one JSON line with the lock's random token, the primary queues
+them and answers `ok`, and `main` returns. A lock whose port refuses connections, or that cannot be
+parsed, is stale and is replaced. Otherwise the process binds a random loopback port, creates the
+lock with `create_new` (the loser of a simultaneous start re-reads the winner's lock and
+forwards) and keeps the `Primary` alive; dropping it stops the listener and deletes the lock if it
+still carries its token. Any failure degrades to a normal start (`Launch::Standalone`); a launch
+without files, or with `--full-update`, never forwards. The UI receives batches through
+`Incoming`, requests a repaint from the listener thread, hashes them with `Job::Hash` exactly
+like command-line files (held back while an AOM settings review blocks the worker) and asks the
+window to restore and focus itself. `main.rs` drops the `Primary` before relaunching after an
+update, or the new process would forward to the old one.
+
+**File-menu entry** (`shell_integration.rs`). The `integrate_into_shell` setting is only the
+user's choice; the system is changed by the Options **Save options** path alone
+(`apply_shell_integration` on a `animatic-shell` thread), never by loading settings, the exit
+save or an AOM import. Options shows the entry's real state from a read on opening. Every entry
+is marked (registry value `AnimaticManaged`, desktop line `X-Animatic-Managed=true`); register and
+unregister refuse to touch an unmarked entry of the same name. Platform code sits behind
+`ShellIntegration` (rule 10): the registry side is `cfg(windows)` and the desktop-file side is
+plain filesystem code that the tests drive in a temporary directory on both platforms, while the
+registry tests use a temporary `HKCU` subkey.
+
 ### Rename
 
 `rename::plan::plan` compiles and evaluates the pattern against database-backed objects and
@@ -617,3 +650,4 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
 | Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |
+| Single instance, file-menu entry | `crates/animatic-core/src/instance.rs`: `start`, `Primary`, `Incoming`; `shell_integration.rs`: `ShellIntegration`, `Status`; `crates/animatic/src/app/shell_menu.rs`; `app.rs`: `process_handoff`, `apply_shell_integration`; `main.rs`: `instance::start` |

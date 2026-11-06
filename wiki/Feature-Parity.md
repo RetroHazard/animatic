@@ -41,7 +41,7 @@ which is a research log and not a specification.
 | Players/AVDump | Partial | A configured default player launches with its *play* arguments; AVDump launches when enabled; both start the executable directly (no shell) | The player `open` and `enqueue` templates (`PlayerAction::Open`/`Enqueue`) are **Core only**: the Options window edits the executable and play arguments (the `name` control is never read), and the **Open** button uses the operating-system default handler instead. Templates are split into arguments first and placeholders substituted inside each argument, so a path, user name or key always stays one argument. Omitting `{path}`/`%file%` from a player `play` template appends the path as its own argument. Launched programs are not sandboxed |
 | Settings | Partial | JSON settings with backup recovery; the AniDB password, API key and AVDump key kept in the operating-system keystore (Windows Credential Manager, Linux Secret Service) with a visible settings-file fallback; native UTF-16 AOM settings import with non-secret review and offline apply | Imported settings replace the current ones, with unmentioned values at their defaults. Without a keystore the credentials stay in the settings file in plain text. Many fields are persisted without effect ([next section](#settings-persisted-without-runtime-effect)); see the [settings reference](Settings-Reference.md) and [credentials](Settings-Files.md#credentials-and-the-system-keystore) |
 | Add anime/episode/file/change request | Replaced | **Tools > Edit AniDB data** opens AniDB's maintained web editors | AOM's retired TCP `ADDANIMEDATA`/`ADDEP` route is not implemented |
-| Command line / shell handoff | Desktop | Media paths (hashed at startup), `--database`/`-d`, `--full-update`, `--help`; legacy `/database`, `/fullupdate`; `/utf8` and `/ucs2` accepted and ignored | No shell-extension integration. Unknown `-` options are rejected |
+| Command line / shell handoff | Desktop | Media paths (hashed at startup); `--database`/`-d`, `--full-update`, `--help`; legacy `/database`, `/fullupdate`; `/utf8` and `/ucs2` accepted and ignored. A launch with media paths for a database that is already open hands them to the running window instead of opening a second one ([One window per database](Running-Animatic.md#one-window-per-database)). Optional per-user **Hash with Animatic** file-menu entry, off by default: a registry key under `HKEY_CURRENT_USER` on Windows, a `.desktop` file on Linux ([File-menu entry](Options-Window.md#file-menu-entry)) | The file-menu entry covers files, not folders, and installs no shell-extension DLL. Bringing the running window forward is best effort. The Linux desktop-file path is unit-tested but has not been run on Linux. Unknown `-` options are rejected |
 | Status, progress, log | Desktop | Progress with pause/cancel, activity log, Queue page with Pending/N retries/Blocked, cooldown banner, "N commands NOT saved yet" | |
 | Local cache recovery tooling | Partial | **File > Back up library...** (online backup, atomic file), **File > Restore library...** (validated, confirmed, keeps a timestamped copy of the replaced library), **Tools > Check library** (`integrity_check` and `foreign_key_check`) and **Tools > Compact library...** (`VACUUM`), all in the background; settings backup recovery | No repair, no automatic or rolling backups, no scheduled checks; a backup holds the database only (not `settings.json`); restore and compaction wait for an idle worker |
 | Full-account MyList bootstrap | Not implemented | Entries arrive through legacy import, FILE replies for hashed local files, queued adds/edits | Local state is not equivalent to a complete account download; there is no reconciliation of the whole MyList |
@@ -69,7 +69,7 @@ A saved setting is not proof of behavior. The [settings reference](Settings-Refe
 the complete per-field table.
 
 - AniDB: `image_server`, `update_file_information` (disabled checkbox), `idle_logout_minutes`.
-- Hashing: `autostart` (disabled checkbox), `priority`, `integrate_into_shell`, `ed2k_space_replacement`.
+- Hashing: `autostart` (disabled checkbox), `priority`, `ed2k_space_replacement`.
 - File managers: `action_delay_ms`, `sleep_time_ms`; per folder `auto_rename` (disabled checkbox),
   `clear_empty_folders`, `exclude_system`.
 - UI: `colored_rows` ("Use status colors", disabled checkbox) and `colors`, `columns`, `window`,
@@ -119,7 +119,7 @@ Verified absent from the application (some exist in `animatic-core` or are store
 - Images and covers (the HTTP image function is unused; no image UI); system tray and
   minimize-to-tray; row coloring; saved columns, sorting and window state.
 - A menu item for full update (use `--full-update`); queue or player *open/enqueue* actions;
-  resumable downloads; shell integration.
+  resumable downloads; hashing a folder from the shell file menu.
 - Linux runtime and production AniDB verification (the Linux Secret Service keystore path is
   compiled but has not been run); encryption of the database and of backups.
 - Unattended or scheduled updates, update channels (prereleases), release signatures, rollback,

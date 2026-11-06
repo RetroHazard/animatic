@@ -57,6 +57,15 @@ fn main() -> anyhow::Result<()> {
         None => default_dirs()?.data_dir().join("animatic.sqlite3"),
     };
     let db_path = std::path::absolute(&db_path).unwrap_or(db_path);
+    // Media files go to the Animatic that already has this database open. Without files (or
+    // with `--full-update`, which a handoff cannot carry) nothing is forwarded; this process
+    // then owns the lock, or starts without one if another instance holds it.
+    let handoff: &[PathBuf] = if full_update { &[] } else { &files };
+    let primary = match animatic_core::instance::start(&db_path, handoff) {
+        animatic_core::instance::Launch::Forwarded => return Ok(()),
+        animatic_core::instance::Launch::Primary(primary) => Some(primary),
+        animatic_core::instance::Launch::Standalone => None,
+    };
     let relaunch_settings = settings_override.clone();
     let settings_path = match settings_override {
         Some(path) => path,
@@ -71,6 +80,7 @@ fn main() -> anyhow::Result<()> {
         installation: installation.clone(),
         restart: restart.clone(),
         credentials: animatic_core::secrets::Credentials::system(),
+        incoming: primary.as_ref().map(|primary| primary.incoming()),
     })
     .with_context(|| {
         format!(
@@ -96,6 +106,8 @@ fn main() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("the window system failed: {e}"))?;
+    // Release the lock before the updated version starts, or it would hand its files to us.
+    drop(primary);
     if restart.load(Ordering::SeqCst) {
         let target = installation.context("the executable was not identified at startup")?;
         relaunch(target.path(), &db_path, relaunch_settings.as_deref()).context(
