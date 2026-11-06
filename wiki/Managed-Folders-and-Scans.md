@@ -1,7 +1,7 @@
 A **managed folder rule** (Options → Managed folders) combines a folder, scan behavior and
 MyList policy. Scans start from **Tools → Scan managed folders**, optionally also
-[when Animatic starts and on a schedule](#scheduled-scans); there is no tray icon or filesystem
-watcher. The scan itself never deletes media files, never renames files and never writes
+[when Animatic starts and on a schedule](#scheduled-scans); there is no filesystem
+watcher, and the [tray icon](Main-Window.md#system-tray) starts nothing by itself. The scan itself never deletes media files, never renames files and never writes
 MyList; it can hash files and forget missing local records. Hashing is not the end of it, though:
 every file the scan hashes raises the same event as any other hashing, so with *Identify files with
 AniDB after hashing* on and the folder rule's **Add to mylist** on, an Identify command with an add

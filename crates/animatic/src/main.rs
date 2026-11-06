@@ -1,6 +1,7 @@
 mod app;
 mod scheduler;
 mod table;
+mod tray;
 mod worker;
 
 use std::path::{Path, PathBuf};

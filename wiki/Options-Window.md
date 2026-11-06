@@ -1,5 +1,5 @@
 Open with **Tools → Options…**. It is one scrolling window; sections in order: AniDB account,
-Appearance, Hashing, Managed folders, Statistics export, External player, AVDump, Renaming pattern,
+Appearance, System tray, Hashing, Managed folders, Statistics export, External player, AVDump, Renaming pattern,
 Updates, and a read-only list of MyList state names. **Save options** at the bottom writes the file, applies
 theme and scale and closes the window.
 
@@ -21,6 +21,7 @@ written with the settings.
 | | Update known file information | Active: re-hashing an identified file queues a refresh of its AniDB record (at most every 7 days per file); off by default |
 | Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Active; applied at launch and on Save |
 | | Use status colors | Active: tints table rows by status (CRC mismatch, unidentified, watched, in MyList); each status is also written in the row. Applies immediately. See [Main window](Main-Window.md#sorting-columns-and-row-colors) |
+| System tray | Show tray icon, Minimize to tray | Active. Both are disabled, with a yellow explanation, where the system has no tray (see [System tray](Main-Window.md#system-tray)) |
 | Hashing | Start hashing automatically | Shown disabled ("Not active yet"); value kept |
 | | Identify files with AniDB after hashing | Active |
 | | Add "Hash with Animatic" to the file menu | Active, off by default; applied by **Save options**, see [File-menu entry](#file-menu-entry) |
@@ -29,13 +30,13 @@ written with the settings.
 | Managed folders | Per-rule fields (including *Skip system files* and *Remove emptied folders*), Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Skip system files* applies on Windows only; *Remove emptied folders* acts after a [rename](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied); *Auto rename* is shown disabled ("Not active yet") |
 | | Folder scanning: scan at start, scan on a schedule every N minutes (5–10080), hash a file once unchanged for N ms, pause between hashed files | Active; see [scheduled scans](Managed-Folders-and-Scans.md#scheduled-scans) and [settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing). Scan settings reach the background timer when Options is closed, not while you edit |
 | Statistics export | Enable, Format, Output file | Active |
-| External player | Executable, Play arguments, Default (*Name* is shown disabled, "Not active yet") | Active; open/enqueue have no UI |
+| External player | Per player: Name, Executable, Open/Play/Enqueue arguments, Default player, Remove player; Add player | Active; see [External tools](External-Tools.md) |
 | AVDump | Enable, Executable, Arguments, API key | Active |
 | Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
 Not in Options (JSON only): UDP server, local port, image server (the fallback host for covers), idle logout,
-tray, row colors, `ed2k_space_replacement`.
+row colors, `ed2k_space_replacement`.
 The full list with active/stored-only status is the [settings reference](Settings-Reference.md).
 The password, API key and AVDump key are saved to the system keystore (Windows Credential Manager,
 Linux Secret Service) when one is available, and then are not in `settings.json` or its backup. When

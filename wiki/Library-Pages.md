@@ -104,7 +104,7 @@ invisible file; **Add to MyList…** and **Rename N selected…** likewise only 
 are listed. There is one selection on this page: the files you select this way are the ones
 both of those buttons use.
 
-Buttons (Rename…, Open, Play and AVDump need a selected file; **Add to MyList…** and **Rename N
+Buttons (Rename…, Open, Play, Open in player, Enqueue and AVDump need a selected file; **Add to MyList…** and **Rename N
 selected…** take one or several):
 
 | Button | Does |
@@ -114,7 +114,9 @@ selected…** take one or several):
 | Rename N selected… | Plans the selected files in the background and opens the [Batch rename](Renaming-Files.md#several-files-batch-rename) preview |
 | Select all shown / Clear selection | Selects every listed file / clears the selection |
 | Open | Opens the file with the OS default program (not your configured player) |
-| Play | Starts the default [external player](External-Tools.md) with its *Play* arguments |
+| Play | Starts the chosen [external player](External-Tools.md) (the default one unless you pick another) with its *Play* arguments |
+| Player chooser | Appears next to Play only when several players are configured; lists their names |
+| Open in player, Enqueue | Appear only when the chosen player has *Open* or *Enqueue arguments* set; start it with those. Right-clicking a file name offers the same actions |
 | AVDump | Enabled only when AVDump integration is on; starts [AVDump](External-Tools.md) |
 | Add to MyList… | Opens a dialog for the selected files: state, watched, view date, storage, source and other (tick a field to set it; unticked fields keep AniDB's defaults). **Queue add** queues one `Add to mylist` per file: an identified file by its file id, an unidentified one by size and ED2K hash, which AniDB resolves first (a file AniDB does not know is skipped when the queue runs). Files already in MyList, files with an add already waiting and further copies of the same content are left out; the dialog says how many. The Mylist column shows `Add queued` at once and `lid N` after AniDB confirmed. |
 

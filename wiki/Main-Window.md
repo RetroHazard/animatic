@@ -175,3 +175,30 @@ There is no menu item for downloading images (a
 [cover](Library-Pages.md#cover) is downloaded when an anime detail window opens). MyList
 adds, removals and refreshes are buttons on the [Hashed files](Library-Pages.md#hashed-files) and
 [My list](Library-Pages.md#my-list) pages.
+
+## System tray
+
+Options → **System tray** has two controls: **Show tray icon** and **Minimize to tray** (both on by
+default; the second needs the first). Both act as you click, not only on **Save options**.
+
+- **Windows:** the icon sits in the notification area (it may be in the overflow flyout, depending
+  on your taskbar settings).
+- **Linux:** the icon uses the StatusNotifierItem protocol over the session D-Bus, so it needs a
+  desktop with a tray host: KDE Plasma, Xfce, Cinnamon, MATE and others have one; GNOME needs the
+  AppIndicator extension. Animatic needs no extra system package for it.
+- **No tray available** (no host running, no session bus, or a platform without support): both
+  controls are disabled and a yellow line says why. Nothing is ever hidden without an icon to bring
+  the window back. If the tray host disappears while Animatic runs (for example the desktop panel
+  restarts), the icon is dropped, a hidden window is shown again and the tray stays off until you
+  restart Animatic.
+
+**Minimize hides, close quits.** With *Minimize to tray* on, minimizing the window hides it and
+leaves the icon. A left click on the icon, or **Show Animatic** in its menu, restores and focuses
+the window. Closing the window (the title-bar button, **File → Quit**, or **Quit** in the tray menu)
+still quits Animatic. On Linux, a compositor that does not report a minimized window to the
+application (some Wayland sessions) never triggers the hide; the window then just minimizes.
+
+**Tray menu:** *Show Animatic*, *Run command queue* and *Quit*. *Run command queue* does what
+**Tools → Run command queue** does and is disabled under the same conditions (an AOM settings
+import waiting for review, or a sync cooldown in force). It runs with the window hidden too; with
+*Work offline* on it reports that it is offline and does not contact AniDB.

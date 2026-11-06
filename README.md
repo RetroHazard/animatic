@@ -18,7 +18,8 @@ and imports user-supplied AOM databanks without modifying the originals.
 - Anime covers in the detail window: downloaded once on demand, kept on disk for your own
   display and never downloaded again (switch off with `anidb.download_covers`).
 - Compatible rename expressions with diagnostics, preview and explicit confirmation.
-- Configurable players, AVDump integration and XML/INI statistics exports.
+- Configurable players with Open, Play and Enqueue actions and a chooser, a best-effort system
+  tray with minimize-to-tray, AVDump integration and XML/INI statistics exports.
 - Safe settings-backup recovery that starts offline and preserves the original files.
 - Library backup, validated restore, integrity check and compaction from the File and Tools
   menus.

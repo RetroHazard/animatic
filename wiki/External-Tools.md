@@ -1,9 +1,23 @@
-**Players** (Options → External player): *Name*, *Executable*, *Play arguments*, *Default player*.
-**Play** uses the player marked default, else the first. *Add player* appears only while the list
-is empty; imported settings may supply more players. The stored *open* and *enqueue* templates
-have no screen and are never used. **Open** on the Hashed files page and a double-click on a path
-use the OS default program, not a configured player. An empty executable gives `Could not start
-player: player executable is not configured`.
+**Players** (Options → External player): per player *Name*, *Executable*, *Open arguments*, *Play
+arguments*, *Enqueue arguments* and *Default player*; **Add player** and **Remove player** manage the
+list. On the Hashed files page, with a file selected:
+
+- **Play** starts the chosen player with its *Play arguments* (always offered).
+- **Open in player** and **Enqueue** start it with its *Open* or *Enqueue arguments*. They appear
+  only for a player whose template for that action is not blank, so a player that only plays shows
+  just **Play**.
+- With **several players** configured, a chooser next to **Play** picks the player for all three
+  actions (the *Name* of each player; an unnamed one is "Player N"). It starts on the player marked
+  default, else the first, and goes back to that when the chosen player is removed. The choice
+  lasts for the session and is not saved.
+- Right-clicking a file name opens a menu with the same actions (**Open**, **Play with …**, **Open
+  in …**, **Enqueue in …**) for the chosen player; a right click on a file outside the selection
+  selects it first.
+
+**Open** (the plain button and the menu entry of that name) and a double-click on a path use the OS
+default program, not a configured player. An empty executable gives `Could not start player: player
+executable is not configured`; an action whose template is blank gives `this player has no open
+arguments configured`.
 
 **AVDump** (Options → AVDump): *Enable AVDump integration*, *Executable*, *Arguments*, *AVDump API
 key*. The **AVDump** button needs the integration enabled and a selected file. The default

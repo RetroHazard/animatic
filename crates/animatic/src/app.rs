@@ -28,8 +28,10 @@ use crossbeam_channel::{Receiver, TryRecvError};
 
 mod covers;
 mod mylist_editor;
+mod player_actions;
 mod refresh;
 mod shell_menu;
+mod tray_ui;
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
 const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
@@ -560,6 +562,12 @@ pub struct AnimaticApp {
     incoming_wired: bool,
     /// Files forwarded by another launch, waiting for the worker to accept hashing.
     pending_handoff: Vec<PathBuf>,
+    /// System tray icon and hidden-to-tray state; created on the first frame, when an egui
+    /// context exists.
+    tray: Option<crate::tray::TrayController>,
+    /// Player the file actions use, as an index into `settings.players`; `None` means the
+    /// default player (see `animatic_core::external::chosen_player`).
+    selected_player: Option<usize>,
 }
 
 impl AnimaticApp {
@@ -633,6 +641,8 @@ impl AnimaticApp {
             incoming,
             incoming_wired: false,
             pending_handoff: Vec::new(),
+            tray: None,
+            selected_player: None,
             settings_open: false,
             about_open: false,
             import_source: String::new(),
@@ -759,6 +769,12 @@ impl AnimaticApp {
     fn active_cooldown(&self) -> Option<(i64, &str)> {
         let (until, reason) = self.cooldown.as_ref()?;
         (*until > chrono::Utc::now().timestamp()).then_some((*until, reason.as_str()))
+    }
+
+    /// Whether the command queue may be started now. The Tools menu, the Queue page and the
+    /// tray menu all use this one rule.
+    fn queue_run_allowed(&self) -> bool {
+        !self.import_pending && self.active_cooldown().is_none()
     }
 
     fn cooldown_text(until: i64, reason: &str) -> String {
@@ -1903,16 +1919,13 @@ impl AnimaticApp {
         else {
             return;
         };
-        let Some(player) = self
-            .settings
-            .players
-            .iter()
-            .find(|p| p.default)
-            .or_else(|| self.settings.players.first())
+        let Some(index) =
+            animatic_core::external::chosen_player(&self.settings.players, self.selected_player)
         else {
             self.error("No external player is configured");
             return;
         };
+        let player = &self.settings.players[index];
         if let Err(e) =
             animatic_core::external::launch_player(player, action, Path::new(&file.path))
         {
@@ -2027,8 +2040,7 @@ impl AnimaticApp {
                 arrived = true;
             }
             if arrived {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.restore_main_window(ctx);
             }
         }
         if !self.pending_handoff.is_empty() && !self.import_pending {
@@ -2207,7 +2219,7 @@ impl AnimaticApp {
                     });
                     let run = ui
                         .add_enabled(
-                            !self.import_pending && cooling.is_none(),
+                            self.queue_run_allowed(),
                             egui::Button::new("Run command queue"),
                         )
                         .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
@@ -2840,6 +2852,7 @@ impl AnimaticApp {
             {
                 self.play_selected(animatic_core::external::PlayerAction::Play);
             }
+            self.player_toolbar(ui);
             if ui
                 .add_enabled(
                     self.selected_local.is_some() && self.settings.avdump.enabled,
@@ -2867,6 +2880,8 @@ impl AnimaticApp {
                 format!("{shown} of {total} files")
             });
         });
+        let file_menu = self.file_menu();
+        let mut file_action = None;
         {
             let Self {
                 projection,
@@ -2899,18 +2914,28 @@ impl AnimaticApp {
                     row.col(|ui| {
                         let chosen = mylist_ui.marked_locals.contains(&f.id)
                             || *selected_local == Some(f.id);
-                        if ui.selectable_label(chosen, f.file_name()).clicked() {
-                            let (toggle, extend) =
-                                ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+                        let response = ui.selectable_label(chosen, f.file_name());
+                        let (toggle, extend) =
+                            ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+                        // A right click on a row outside the selection selects that row alone,
+                        // so the menu never acts on a file the user cannot see highlighted.
+                        let clicked = response.clicked();
+                        let context_select = response.secondary_clicked() && !chosen;
+                        if clicked || context_select {
                             mylist_editor::click_selection(
                                 selected_local,
                                 &mut mylist_ui.marked_locals,
                                 f.id,
-                                toggle,
-                                extend,
+                                toggle && clicked,
+                                extend && clicked,
                                 || rows.iter().map(|&i| projection.local[i].id).collect(),
                             );
                         }
+                        response.context_menu(|ui| {
+                            if let Some(action) = player_actions::file_menu_ui(ui, &file_menu) {
+                                file_action = Some(action);
+                            }
+                        });
                     });
                     row.col(|ui| {
                         ui.label(format::size_short(f.size));
@@ -2947,6 +2972,9 @@ impl AnimaticApp {
                     });
                 });
             });
+        }
+        if let Some(action) = file_action {
+            self.run_file_action(action);
         }
     }
 
@@ -3096,7 +3124,7 @@ impl AnimaticApp {
             }
             let run = ui
                 .add_enabled(
-                    !self.import_pending && cooling.is_none(),
+                    self.queue_run_allowed(),
                     egui::Button::new("Synchronize now"),
                 )
                 .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
@@ -3403,6 +3431,8 @@ impl AnimaticApp {
                              Each status is also written in the row, so the color is never the only cue.",
                         );
                     ui.separator();
+                    self.tray_options_ui(ui);
+                    ui.separator();
                     ui.heading("Hashing");
                     not_active_yet(
                         ui,
@@ -3609,21 +3639,61 @@ impl AnimaticApp {
                     field(ui, "Output file", &mut self.settings.stat_whore.file);
                     ui.separator();
                     ui.heading("External player");
-                    if self.settings.players.is_empty() && ui.button("Add player").clicked() {
+                    let mut remove_player = None;
+                    let mut default_change = None;
+                    let default_index = animatic_core::external::default_player(&self.settings.players);
+                    for (index, player) in self.settings.players.iter_mut().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        field_hint(
+                            ui,
+                            "Name",
+                            &mut player.name,
+                            "Shown in the player chooser on Hashed files when several players are configured.",
+                        );
+                        field(ui, "Executable", &mut player.path);
+                        field_hint(
+                            ui,
+                            "Open arguments",
+                            &mut player.open,
+                            "Arguments for Open in player. Leave empty to hide that action for this player.",
+                        );
+                        field_hint(
+                            ui,
+                            "Play arguments",
+                            &mut player.play,
+                            "Arguments for Play. Without {path} or %file% the file is appended.",
+                        );
+                        field_hint(
+                            ui,
+                            "Enqueue arguments",
+                            &mut player.enqueue,
+                            "Arguments for Enqueue. Leave empty to hide that action for this player.",
+                        );
+                        let mut is_default = default_index == Some(index);
+                        if ui.checkbox(&mut is_default, "Default player").changed() {
+                            default_change = Some((index, is_default));
+                        }
+                        if ui.button("Remove player").clicked() {
+                            remove_player = Some(index);
+                        }
+                    }
+                    if let Some((index, on)) = default_change {
+                        animatic_core::external::set_default_player(
+                            &mut self.settings.players,
+                            index,
+                            on,
+                        );
+                    }
+                    if let Some(index) = remove_player {
+                        self.settings.players.remove(index);
+                        self.selected_player = None;
+                    }
+                    if ui.button("Add player").clicked() {
                         self.settings
                             .players
                             .push(animatic_core::settings::Player::default());
-                    }
-                    for player in &mut self.settings.players {
-                        ui.horizontal(|ui| {
-                            ui.label("Name");
-                            not_active_yet(ui, "the name will be shown in a player chooser.", |ui| {
-                                ui.text_edit_singleline(&mut player.name)
-                            });
-                        });
-                        field(ui, "Executable", &mut player.path);
-                        field(ui, "Play arguments", &mut player.play);
-                        ui.checkbox(&mut player.default, "Default player");
                     }
                     ui.separator();
                     ui.heading("AVDump");
@@ -4392,9 +4462,12 @@ impl AnimaticApp {
 }
 
 impl eframe::App for AnimaticApp {
-    /// Also runs while the window is minimized (the UI does not), so files forwarded by another
-    /// launch are hashed, and the window restored, without waiting for the user.
+    /// Also runs while the window is minimized or hidden to the tray, when eframe runs no UI
+    /// pass at all. Files forwarded by another launch are hashed (and the window restored)
+    /// without waiting for the user, and the tray keeps working: it is what brings the window
+    /// back.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.tray_frame(ctx);
         self.process_handoff(ctx);
     }
 
@@ -4723,6 +4796,14 @@ fn client_version_field(
             Some(message)
         }
     }
+}
+
+/// A text field with a hover explanation.
+fn field_hint(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.text_edit_singleline(value).on_hover_text(hint);
+    });
 }
 
 /// Warnings and errors of a rename plan; warnings block applying it just like errors do.

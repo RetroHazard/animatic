@@ -66,6 +66,11 @@ equivalent development packages. A build failure that mentions a missing GTK, xk
 Wayland or OpenSSL library or a `pkg-config` lookup almost always means one of those
 packages is absent.
 
+The system tray adds no package to that list: on Linux it speaks the StatusNotifierItem protocol
+over D-Bus through the `zbus` crate (no GTK or libappindicator), on Windows it uses `tray-icon`.
+A desktop needs a tray host (or the GNOME AppIndicator extension) to show the icon; without one
+the tray options are disabled, so a CI or container run is unaffected.
+
 Linux is a supported build target (CI compiles and tests it), but a native Linux run of the
 desktop application has not been recorded; treat Linux UI behavior as unverified until you
 have exercised it yourself.

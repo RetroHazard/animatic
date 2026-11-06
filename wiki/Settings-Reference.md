@@ -32,7 +32,7 @@ consumers named in each table.
 | **Import only** | Stored only, and additionally filled in by the AOM settings importer. |
 | **Core only** | The core library supports it, but no desktop action calls that code. |
 
-Options is **Tools → Options…**. Its sections, in order: AniDB account, Appearance, Hashing,
+Options is **Tools → Options…**. Its sections, in order: AniDB account, Appearance, System tray, Hashing,
 Managed folders, Statistics export, External player, AVDump, Renaming pattern, Updates,
 Mylist states (read-only label).
 
@@ -128,6 +128,8 @@ the desktop application; the remaining keys mirror AOM's interface options and a
 | `last_directory` | string | `""` | none | **Active.** Start folder for the Add files picker and the AOM settings XML picker; updated to the folder of the files you last added. |
 | `colored_rows` | boolean | `true` | "Use status colors" | **Active.** Tints table rows by status with the [row colors](#row-colors-uicolors) below; `false` draws every row plainly. Every status is also written in the row, so the color is never the only signal. Takes effect immediately, no save needed. |
 | `copy_length_as_minutes` | boolean | `false` | "Export %length% in minutes" | **Active but nearly empty.** Read by hash export, but `%length%` has no real data behind it; see [token table](#hash-export-template-tokens). |
+| `show_tray_icon` | boolean | `true` | "Show tray icon" | **Active.** Puts an icon in the Windows notification area or the Linux StatusNotifierItem tray (menu: Show Animatic, Run command queue, Quit; a left click shows the window). Takes effect as you click, not only on Save. Disabled, with the reason, where the system has no tray; the stored value is then kept and never acted on. See [System tray](Main-Window.md#system-tray). |
+| `minimize_to_tray` | boolean | `true` | "Minimize to tray" | **Active.** Minimizing the window hides it to the tray instead of the taskbar. Needs `show_tray_icon` and a tray icon that is actually up; otherwise a minimize is an ordinary minimize. Closing the window still quits. |
 
 ### Window and layout state
 
@@ -140,8 +142,6 @@ the desktop application; the remaining keys mirror AOM's interface options and a
 | `tree_auto_collapse` | boolean | `false` | **Import only.** No consumer. |
 | `show_local_folder_size` | boolean | `true` | **Import only.** No consumer. |
 | `hide_root_folder` | boolean | `false` | **Import only.** No consumer. |
-| `show_tray_icon` | boolean | `true` | **Import only.** No tray icon exists. |
-| `minimize_to_tray` | boolean | `true` | **Import only.** No tray icon exists. |
 
 The window geometry and column layouts are kept in memory while Animatic runs and reach the
 file with the normal settings save: **Save options** and a normal exit (not when settings were
@@ -324,18 +324,18 @@ Options, but a rule you flagged `default` with `can_edit_path: true` can be, so 
 
 ## External players (`players`)
 
-Array of objects, default `[]`. Options shows a single "Add player" button only while the list is
-empty; each existing entry shows Name, Executable, Play arguments and "Default player". Further
-entries can only come from the JSON file or an AOM import. Each object accepts any subset of keys.
+Array of objects, default `[]`. Options lists every player with Name, Executable, Open arguments,
+Play arguments, Enqueue arguments and "Default player" plus a "Remove player" button, and an "Add
+player" button below the list. Each object accepts any subset of keys.
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `name` | string | `""` | Name | **Inert control.** Shown disabled ("Not active yet": planned player chooser); the stored value is kept and never read: Play picks the player without looking at the name. |
-| `path` | string | `""` | Executable | **Active.** Program started by Hashed files → Play. Empty is rejected with "player executable is not configured". |
-| `play` | string | `""` | Play arguments | **Active.** Argument template for Play. |
-| `open` | string | `""` | none | **Core only.** Used by `launch_player` for the Open action, but the Open button uses the operating system's default handler (`open::that`), not this template. |
-| `enqueue` | string | `""` | none | **Core only.** Used by `launch_player` for the Enqueue action; no UI calls it. |
-| `default` | boolean | `false` | "Default player" | **Active.** The player used for Play is the first with `default: true`, otherwise the first in the array. |
+| `name` | string | `""` | Name | **Active.** Shown in the player chooser on Hashed files when more than one player is configured; an empty name appears as "Player N" (its position in the list). |
+| `path` | string | `""` | Executable | **Active.** Program started by every player action. Empty is rejected with "player executable is not configured". |
+| `play` | string | `""` | Play arguments | **Active.** Argument template for Play. Always offered; an empty template just passes the file. |
+| `open` | string | `""` | Open arguments | **Active.** Argument template for **Open in player** (`PlayerAction::Open`). The action is offered only while this is not blank. |
+| `enqueue` | string | `""` | Enqueue arguments | **Active.** Argument template for **Enqueue** (`PlayerAction::Enqueue`). The action is offered only while this is not blank. |
+| `default` | boolean | `false` | "Default player" | **Active.** The player Play uses until you pick another in the chooser is the first with `default: true`, otherwise the first in the array. Ticking the control makes that player the only default. |
 
 Argument templates are described under [External command templates](#external-command-templates).
 
@@ -462,9 +462,9 @@ Practical notes that follow from this order:
 ## Options controls and keys at a glance
 
 Controls that do nothing: **Start hashing automatically**,
-**Auto rename** (per folder), and the player **Name** field. Keys that work but have no control:
+**Auto rename** (per folder). Keys that work but have no control:
 `anidb.udp_server`, `local_port`, per-folder `exclude_hidden`, `can_edit_path`
-and `default`, extra `players` entries, `players[].open`/`enqueue` (core only), the window and
+and `default`, extra `players` entries, the window and
 column state (`ui.window`, `ui.maximized`, `ui.columns`, changed by using the window) and the row
 colors (`ui.colors`). Keys that exist only for AOM compatibility and are never read: everything
 marked **Stored only** or **Import only** above.

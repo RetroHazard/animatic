@@ -58,7 +58,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `covers` | Cover cache folder next to the database, `plan_cover` (the decision: cached, switched off, offline, banned, retried too soon) and `download_cover` (attempt saved first, one request through the shared limiter, atomic cache write); no decoder, no UI |
 | `stats` | Library aggregation (one read transaction) and XML/INI rendering |
 | `maintenance` | Online backup, restore validation and file swap, integrity/foreign-key check, `VACUUM`; blocking file work for the worker and the restore thread |
-| `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
+| `external` | Argument-vector parsing, external player/AVDump launching (no shell), and the player selection rules (`PlayerAction::is_available`, `default_player`, `chosen_player`, `set_default_player`) |
 | `format` | Size, date, duration and count formatting |
 | `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
 | `instance` | Single-instance handoff: loopback listener, token and lock file next to the database; `start` decides forward, claim or standalone (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)) |
@@ -77,7 +77,7 @@ clock behind the `test-support` feature). Both AniDB APIs require a registered c
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans).
+projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans).
 The Options row for the file-menu entry is `app/shell_menu.rs`.
 
 ## Runtime model
@@ -574,6 +574,32 @@ metadata).
 
 Language reference: [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language).
 
+### System tray
+
+Best effort, behind one surface in `crates/animatic/src/tray.rs` (rule 10). The `platform`
+modules are the only platform-specific code: **Windows** uses the `tray-icon` crate (a
+notification-area icon whose callbacks run on the UI thread, inside the event loop eframe already
+pumps); **Linux** implements the StatusNotifierItem and `com.canonical.dbusmenu` interfaces
+directly on `zbus` (a crate already in the graph for the Secret Service) on a thread of its own,
+which needs no system package and so no CI install change (`tray-icon`'s Linux backends need GTK
+with libappindicator, or the `ksni` crate, whose Unlicense is not in `about.toml`); other platforms
+report the tray as unavailable.
+
+- `TrayController` lives in `AnimaticApp::tray`, created on the first frame (it needs the egui
+  context) and driven once per frame by `tray_frame`. A probe thread decides `Availability`
+  (Windows: always; Linux: a session bus whose `org.kde.StatusNotifierWatcher` has an owner).
+- **No tray, no hiding.** The window is hidden only through `should_hide`, which requires that the
+  icon is actually up (`TrayEvent::Ready` received). A failed start or a vanished host
+  (`TrayEvent::Failed`; the Linux thread re-checks the watcher every 5 s) drops the icon, shows a
+  hidden window and marks the tray unavailable, which disables both Options controls with the
+  reason.
+- **Minimize hides, close quits.** `ViewportInfo::minimized` triggers `Visible(false)`; Show,
+  a left click or Quit use viewport commands, so closing still goes through the normal exit path
+  (`on_exit`). A restore suppresses hiding until the window system reports "not minimized".
+- **Queue gating.** The menu's *Run command queue* is only a request: the tray enables the item
+  from `AnimaticApp::queue_run_allowed` (the rule Tools and the Queue page use) and the app checks
+  the rule again before submitting `Job::ProcessQueue`. The tray never talks to AniDB itself.
+
 ## What the code guarantees, and what it does not
 
 | Area | Guaranteed | Not guaranteed |
@@ -705,7 +731,8 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `has_system_attribute`, `move_file`, `clear_emptied_folders`; `settings.rs`: `FileManagerSettings::matching_manager_for`; `worker.rs`: `run_renames`, `clear_vacated_folders` |
 | Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames}`, `run_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
-| External tools | `crates/animatic-core/src/external.rs` |
+| External tools | `crates/animatic-core/src/external.rs`; `app/player_actions.rs`: `file_menu`, `player_toolbar`, `run_file_action`; `app.rs`: `play_selected` |
+| System tray | `crates/animatic/src/tray.rs`: `TrayController::update`, `icon_wanted`, `should_hide`, `MENU`, `platform` backends; `app/tray_ui.rs`: `tray_frame`, `tray_options_ui`; `app.rs`: `queue_run_allowed` |
 | Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
 | Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |
