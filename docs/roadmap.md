@@ -72,11 +72,11 @@ flowchart LR
 | M2.1 | Database backup | Done |
 | M2.2 | Database restore | Done |
 | M2.3 | Integrity check and maintenance | Done |
-| M3.1 | Edit storage, source, other and view date | Planned |
-| M3.2 | Add files to MyList | Planned |
-| M3.3 | Delete MyList entries | Planned |
-| M3.4 | Refresh an entry, episode or group | Planned |
-| M3.5 | Keep and show MyList statistics | Planned |
+| M3.1 | Edit storage, source, other and view date | Done |
+| M3.2 | Add files to MyList | Done |
+| M3.3 | Delete MyList entries | Done |
+| M3.4 | Refresh an entry, episode or group | Done |
+| M3.5 | Keep and show MyList statistics | Done |
 | M4.1 | Full update menu action | Planned |
 | M4.2 | Update known file information | Planned |
 | M4.3 | Full-account MyList import through MyList export | Planned |
@@ -294,8 +294,9 @@ items expose the commands in the desktop application.
 
 - **Change:** add **Remove from MyList** with confirmation. It queues `MylistDelete`, removes the
   local row only after AniDB acknowledges, and never deletes media files.
-- **Acceptance:** an edit queued after the delete wins in queue order; a failed delete stays
-  blocked and visible (rule 15).
+- **Acceptance:** while a delete is queued, new edits of that entry are refused with an
+  explanation; an edit queued after the delete has left the queue keeps the row. A failed delete
+  stays blocked and visible (rule 15).
 
 ### M3.4 Refresh an entry, episode or group
 

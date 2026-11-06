@@ -63,6 +63,13 @@ the generated line for that pull request's squash commit.
   `<database>.before-restore-YYYYMMDD-HHMMSS` and reloads; **Tools → Check library** runs
   `integrity_check` and `foreign_key_check` without repairing; **Tools → Compact library…** runs
   `VACUUM`. All run in the background while no other work is active.
+- MyList management: **My list** has an entry editor for state, watched, view date, storage,
+  source and other (a ticked empty field clears the value), **Remove from MyList…** with
+  confirmation and **Refresh entry**; **Hashed files** has **Add to MyList…** for several
+  selected files with an `Add queued` marker; **Groups** and the anime detail episode list have
+  **Refresh**. **Fetch mylist statistics** stores its result and shows it on the Overview as AniDB
+  account figures next to the local ones. Every change is queued first and survives restarts, and
+  a removal deletes the local row only after AniDB acknowledges it.
 
 ### Changed
 
