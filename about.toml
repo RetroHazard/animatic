@@ -304,11 +304,3 @@ license = "MIT"
 path = "LICENSE.txt"
 checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7"
 license = "MIT"
-
-[exr.clarify]
-license = "BSD-3-Clause"
-
-[[exr.clarify.files]]
-path = "LICENSE.md"
-checksum = "97e4d3aa7a9e8ac31979c16ca8bb2b628a9cb72c3362185ad2bf4ad77f43551f"
-license = "BSD-3-Clause"
