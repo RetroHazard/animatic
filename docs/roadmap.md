@@ -86,8 +86,8 @@ flowchart LR
 | M5.4 | Persistent hash queue and autostart | Planned |
 | M5.5 | Opt-in automatic queue run | Planned |
 | M5.6 | Long-lived session: keep-alive and idle logout | Planned |
-| M6.1 | Rename apply on the worker, cross-volume moves | Planned |
-| M6.2 | Batch rename | Planned |
+| M6.1 | Rename apply on the worker, cross-volume moves | Done |
+| M6.2 | Batch rename | Done |
 | M6.3 | Opt-in automatic rename per managed folder | Planned |
 | M7.1 | Anime covers | Planned |
 | M7.2 | Saved window, columns and sorting | Planned |

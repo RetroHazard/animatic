@@ -83,6 +83,12 @@ the generated line for that pull request's squash commit.
   full update say when the next request is allowed. A busy `anidb.local_port` is an error instead
   of a silent switch to another port, a banned client version (reply 504) blocks the queue until
   corrected, and a login without a reply backs off from 30 s up to 2 hours across restarts.
+- Renames run on the background worker with progress and cancel. A file whose new name is on
+  another drive is copied beside the destination, verified against its stored ED2K, moved into
+  place and recorded before the original is removed; any failure or cancel leaves the original and
+  the library untouched, and an existing destination is never replaced. **Hashed files** can
+  rename several selected files at once: a background-planned preview lists each file's new name
+  or problem, and one confirmation renames only the valid rows. Renaming is never automatic.
 
 ### Changed
 
