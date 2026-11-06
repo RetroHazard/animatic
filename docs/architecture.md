@@ -75,7 +75,11 @@ UDP requests and strict reply decoding), `http` (anime XML, title dump streaming
 download), `limits` (the process-wide `Limits`: UDP and HTTP spacing shared by every client,
 send times saved before each request, `AUTH` backoff; plus the `Clock` and `LimitStore` seams),
 `error` (`AnidbError` and its retry classification), `testing` (loopback fixtures and a manual
-clock behind the `test-support` feature). Both AniDB APIs require a registered client name.
+clock behind the `test-support` feature). Both AniDB APIs require a registered client: Animatic's
+own are the constants `UDP_CLIENT`/`UDP_CLIENT_VERSION` (`animatic`, 1) and
+`HTTP_CLIENT`/`HTTP_CLIENT_VERSION` (`animatichttp`, 1) in `animatic-anidb`. They are not settings
+and a release version bump never changes them; the worker's `udp_config`, the queue run and the
+cover thread pass them to `UdpConfig`/`HttpClient::new`.
 
 ### `animatic`
 
@@ -183,14 +187,14 @@ schedule, watches the queue itself (commands are queued from the UI, the worker 
 updates, so it is not told) and starts a run only through `worker::submit_if_idle`, with a
 blocker checked right before submitting: the UI's (`AnimaticApp::sync_queue_schedule` publishes
 the AniDB settings and the same `scan_blocker` as for scans through `QueueControl`), Work offline,
-an unset account or client name, an active persisted cooldown (read from the database) and a busy
+an unset account, an active persisted cooldown (read from the database) and a busy
 worker. A run is `Job::AutoProcessQueue`, which differs from `ProcessQueue` only by its scope:
 `QueueScope::Automatic` (`Db::queue_peek_in`) never takes a `MylistDelete`, so removals stay
 queued for the user's run, and it returns silently when there is nothing to send.
 
 `session.rs` keeps the worker's one `UdpClient` between runs while `auto_run_queue` is on
 (`Network::session`, a `SessionSlot` that only the worker thread uses): `run_queue` takes the kept
-client (`set_config` drops its session when the account, key, client name, version, server or
+client (`set_config` drops its session when the account, key, server or
 port changed) and `finish` stores it back, or logs out and drops it when automatic runs are off,
 the client is banned or there is no session. Before the worker waits for a job (and when the wait
 ran out) it calls `SessionSlot::maintain`, which does what `UdpClient::upkeep` says is due and
@@ -840,7 +844,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
 | MyList editor, add, remove, refresh, account figures | `crates/animatic/src/app/mylist_editor.rs`: `MylistForm::build`, `mylist_toolbar`, `entry_editor_window`, `open_add_dialog`/`add_window`, `remove_window`, `click_selection`, `account_figures`; `library.rs`: `pending_by_lid`, `mark_pending_adds`; `store.rs`: `store_mylist_stats`, `mylist_stats_snapshot` |
 | Full update menu action, update known file information | `crates/animatic/src/app/refresh.rs`: `after_hash` (what hashing queues: identify, refresh a known file inside the 7-day window, nothing), `start_full_update_preview`/`full_update_window`; `worker.rs`: `plan_full_update` (shared by `preview_full_update` and `queue_full_update`, so the preview counts equal what is queued) |
-| Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals`, `client_version_field` |
+| Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals` |
 | Search filters | `app.rs`: `filter_anime`, `filter_search`, `matches_anime`, `aid_query`; `library.rs`: `SearchKeys`, `LibraryProjection::assemble` |
 | Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan`; `hash_jobs.rs`; `animatic-core/src/hash_queue.rs`: `drain` |
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |

@@ -20,6 +20,9 @@ for where data is kept and [First launch](First-Launch.md) for safe first-run se
   [Synchronization](AniDB-Synchronization.md#synchronization)). The default settings still have
   *Work offline* **off**, so the first thing to do in a fresh profile is turn it on
   ([first launch](First-Launch.md#first-launch)).
+  Animatic sends its own registered AniDB clients (`animatic` for UDP, `animatichttp` for
+  HTTP), so you need only your AniDB username and password; there is no client to register or
+  enter ([AniDB client registration](First-Launch.md#anidb-client-registration)).
 - Separately, a startup **update check** (`updates.auto_check`, on by default) asks GitHub for
   a newer stable release unless *Work offline* is on or the settings were recovered from a
   backup. It only looks for a version: nothing is downloaded or installed until you choose

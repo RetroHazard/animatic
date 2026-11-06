@@ -67,7 +67,7 @@ impl SessionSlot {
     }
 
     /// The client for a queue run: the kept one, told about the current settings (a changed
-    /// account, client name or version drops its session; see [`UdpClient::set_config`]), or
+    /// account or server drops its session; see [`UdpClient::set_config`]), or
     /// a new one.
     pub(crate) fn take(&self, config: UdpConfig, limits: &Arc<Limits>) -> UdpClient {
         // A run is about to start and may log in: an exit during it is worth waiting for.

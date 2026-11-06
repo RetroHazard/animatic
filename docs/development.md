@@ -258,7 +258,7 @@ into an issue, a commit or documentation.
   embed record dumps, ciphertext, header samples or hex copied from a real databank, even
   encoded. They are private artifacts, not format constants.
 - **Use fictitious identities.** User name `animatic-test-user`, a client name that cannot
-  be mistaken for a registered one, and paths under a clearly fictitious root (a temporary
+  be mistaken for Animatic's registered ones, and paths under a clearly fictitious root (a temporary
   directory such as `<TEMP>/animatic-test-root`).
 - **Isolate the filesystem.** Create per-test directories under `std::env::temp_dir()` named
   with the process id and a counter, and delete them in a `Drop` guard (the worker tests'
@@ -297,11 +297,16 @@ client credentials against it. The existing tests show the pattern:
   `sync::execute` with loopback clients (see `animatic-core/src/limits.rs`). The fixtures are
   behind the `test-support` cargo feature of `animatic-anidb`, which only the
   `[dev-dependencies]` of `animatic-core` and `animatic` enable.
-- **No registered production client exists in this repository.** Do not invent one, and do not
-  put real credentials, API keys or session keys in tests, fixtures, logs or documentation.
+- **The only registered client identifiers are Animatic's own.** They are the constants
+  `UDP_CLIENT`/`UDP_CLIENT_VERSION` (`animatic`, 1) and `HTTP_CLIENT`/`HTTP_CLIENT_VERSION`
+  (`animatichttp`, 1) in `animatic-anidb`, hardcoded: no setting, no override. A release version
+  bump never changes them; raise a version only when a new client version is registered with
+  AniDB. Production code passes them to `UdpConfig` and `HttpClient::new`, which keep taking a
+  name and version so that tests can pass synthetic ones. Do not invent other identifiers, and do
+  not put real credentials, API keys or session keys in tests, fixtures, logs or documentation.
 - Deliberate production contact is a manual, maintainer-run activity with that person's own
-  account and registered client identifier; it is not part of any test or CI job, and nothing
-  in this repository records it as done.
+  account; it is not part of any test or CI job, and nothing in this repository records it as
+  done.
 
 ### Update tests and smoke rehearsals
 

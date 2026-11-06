@@ -29,7 +29,11 @@ After a successful parse (also after an AOM import) these corrections apply in m
 | `file_managers.sleep_time_ms` > 10000 (a value stored when the key meant a pause between scans) | set to 0 |
 | `file_managers.scan_interval_minutes` < 5 or > 10080 | set to 5 or 10080 |
 | `ui.zoom` <= 0.3 | set to 1.0 |
-| `anidb.client_version` = 0 | set to 1 |
+
+Keys that no longer exist are ignored on load and are not written back, so the next save drops
+them. This applies to `anidb.client_name`, `anidb.client_version`, `anidb.http_client_name` and
+`anidb.http_client_version` from older versions: Animatic always uses its own registered AniDB
+clients and never reads a client from the settings file.
 
 No other value is validated. In particular Animatic adds no new validation of paths, ports,
 templates or credentials on load or save.
@@ -196,8 +200,7 @@ Animatic.
 Read against the model, this loads as follows (not executed as part of writing this page):
 
 - All other `anidb` keys keep their defaults (UDP server `api.anidb.net:9000`, port 29456,
-  empty password and client name); with `offline: true` and no client name, no network traffic is
-  possible.
+  empty password); with `offline: true` and no password, no network traffic is possible.
 - The single listed folder rule gets the omitted-key defaults (`include_subdirs` true,
   `exclude_hidden` true, `mylist_state_check` true with state 1). Because no rule is flagged
   `default`, the built-in "Default" rule is inserted first, and the network entry is absent.
@@ -216,7 +219,7 @@ defaults, shows a review window and, on **Apply imported settings**, saves it im
 forces `offline: true` and applies the theme and scale. Cancel changes nothing. XML containing no
 recognized setting is rejected instead of resetting your configuration. The import starts from the
 defaults of a fresh file, not from your current settings: **every value the XML does not mention
-(including your current client name, API key, UDP server and port, theme and scale) is replaced
+(including your current API key, UDP server and port, theme and scale) is replaced
 by its default**, and the importer's own fallbacks for absent XML values (shown below) can differ
 from those defaults. The one exception is `updates.auto_check`: the apply step copies your current
 `updates` object into the imported settings before saving, because AOM has no such preference.
@@ -241,10 +244,11 @@ The previous settings otherwise survive only in the backup file. Migration workf
 | `filemanager/sleepTime` (AOM's pause between scans) | `file_managers.scan_interval_minutes` in whole minutes (with the fixup); `scheduled_scan` stays off |
 | `manager` records (`name` required) | `file_managers.managers[]` (all rule keys; absent booleans become false except `includesubdirs` and `caneditpath`, which become true; absent `myliststate` becomes 0) |
 
-Not touched by the import (they keep fresh-file defaults): `anidb.client_name`, `client_version`,
-`api_key`, `udp_server`, `local_port`, `idle_logout_minutes`, `auto_run_queue` (so an import never
+Not touched by the import (they keep fresh-file defaults): `anidb.api_key`,
+`udp_server`, `local_port`, `idle_logout_minutes`, `auto_run_queue` (so an import never
 turns automatic queue runs on), `hashing.identify_after_hashing`,
 `avdump.executable`, `avdump.arguments`, `ui.theme`, `ui.zoom`, `ui.columns`,
 `ui.colored_rows`, and `ed2k_space_replacement`. After an import you therefore still have to
-enter a registered client name and review every managed folder before going online or scanning.
+review every managed folder before going online or scanning. The AniDB client identifiers are not
+settings, so an import neither sets nor needs them.
 Carriage returns are normalized in imported templates and patterns.

@@ -59,7 +59,7 @@ replies follow the source code, not a recorded run.
 | "AniDB sync paused until …" | [Cooldowns and bans](Network-and-Sync-Problems.md#cooldowns-and-bans) |
 | Red **N blocked** counter, **Blocked** rows, **Retry failed** | [Queue states](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved) |
 | "NOT saved yet", "database is busy" | [Database busy and unsaved commands](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands) |
-| "login failed", "client version outdated", "no AniDB client name configured" | [Credentials and client registration](Network-and-Sync-Problems.md#credentials-and-client-registration) |
+| "login failed", "client version outdated", "AniDB refuses Animatic's built-in client registration" | [Credentials and client registration](Network-and-Sync-Problems.md#credentials-and-client-registration) |
 | Timeouts, "cannot resolve", "no IPv4 address" | [Network and firewall](Network-and-Sync-Problems.md#network-and-firewall) |
 | Files not hashed or scan hashes nothing | [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders) |
 | Records disappeared after a scan; a drive was unplugged | [Offline drives and automatic removal](File-and-Import-Problems.md#offline-drives-and-automatic-removal) |

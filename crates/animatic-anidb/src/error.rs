@@ -10,12 +10,14 @@ pub enum AnidbError {
     Auth(String),
     #[error("client banned by AniDB: {0}")]
     Banned(String),
-    #[error("client version outdated - check the AniDB client registration")]
+    #[error(
+        "client version outdated - update Animatic, or report this if it is already the latest version"
+    )]
     ClientOutdated,
     /// Reply 504: AniDB refuses this client name and version for good. Like
     /// [`AnidbError::ClientOutdated`] it needs a correction, never a retry.
     #[error(
-        "this AniDB client version is banned (reply 504): correct the client name and version in the settings, or update Animatic"
+        "AniDB refuses Animatic's built-in client registration (reply 504): update Animatic, or report this if it is already the latest version"
     )]
     ClientBanned,
     /// An `AUTH` (or the `ENCRYPT` before it) got no reply. The duration is the escalating,
@@ -148,7 +150,7 @@ mod tests {
         ] {
             assert!(e.is_fatal() && !e.is_transient() && e.retry_after().is_none());
         }
-        assert!(AnidbError::ClientBanned.to_string().contains("banned"));
+        assert!(AnidbError::ClientBanned.to_string().contains("refuses"));
         let unanswered = AnidbError::AuthTimeout(Duration::from_secs(300));
         assert!(unanswered.is_transient() && !unanswered.is_fatal());
         assert_eq!(unanswered.retry_after(), Some(Duration::from_secs(300)));

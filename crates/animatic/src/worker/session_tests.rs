@@ -47,7 +47,6 @@ fn settings(server: SocketAddr, automatic: bool) -> AnidbSettings {
     AnidbSettings {
         username: "synthetic-user".into(),
         password: "synthetic-password".into(),
-        client_name: "syntheticclient".into(),
         udp_server: server.to_string(),
         local_port: 0,
         auto_run_queue: automatic,

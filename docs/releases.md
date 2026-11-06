@@ -165,7 +165,7 @@ been run against a real GitHub release or on Linux by the project.
   inherited by all three crates. The internal dependency requirements between the crates and
   the local package entries in `Cargo.lock` carry the same version and are updated together by
   `prepare`; the tool does not rewrite runtime code. A release version does **not** change the
-  registered AniDB client version (`anidb.client_version`) or the database schema version; those
+  registered AniDB client versions (`UDP_CLIENT_VERSION`, `HTTP_CLIENT_VERSION` in `animatic-anidb`) or the database schema version; those
   are separate contracts that change only for their own reasons. Versions shown in this page
   (`2026.11.0`, `2026.11.1`, `2026.12.0-rc.1`) are illustrative examples; the repository's
   `Cargo.toml` is authoritative, and automated bumps make any number quoted in prose stale.

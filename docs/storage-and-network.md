@@ -349,8 +349,8 @@ Cooldown mechanics:
   kept between runs (the end of the run drops it), so the latch ends with the run and cannot
   outlive its cooldown; the persistent cooldown is what applies to the next run, and survives a
   restart.
-- `504` is not a timed ban: the client name and version are banned, so it blocks every runnable
-  row like an outdated client (`503`) until they are corrected, and sets no cooldown.
+- `504` is not a timed ban: AniDB refuses the built-in client name and version, so it blocks every runnable
+  row like an outdated client (`503`) until Animatic is updated, and sets no cooldown.
 - An `AUTH` without a reply escalates instead of using the flat 60 s: the `AuthTimeout`
   duration comes from `meta.auth_backoff_step`, so the next try is allowed 30 s, 2 min, 5 min,
   10 min, 30 min and from then on 2 h after the unanswered `AUTH`. It is stored as an ordinary
@@ -361,8 +361,8 @@ Cooldown mechanics:
   attempt and no cooldown.
 - A fresh cooldown does not take the maximum with an existing one; runs do not start while one
   is active, so none exists to compare.
-- Recovery: wait out the cooldown; correct credentials/client name/version in the Options
-  window or settings file; use **Retry failed**; discard hopeless rows with **Clear queue**.
+- Recovery: wait out the cooldown; correct the credentials in the Options window or settings
+  file (the client is built in; a `504`/`503` needs an Animatic update); use **Retry failed**; discard hopeless rows with **Clear queue**.
   See [Troubleshooting](https://github.com/RetroHazard/animatic/wiki/Troubleshooting).
 
 ## AniDB server limits
@@ -391,11 +391,11 @@ and must not flood it. The export tool must not be abused.
 | Local port | One fixed port above 1024, reused; many different source ports from one IP within about an hour causes an IP ban |
 | Rate | At most one packet per 2 s, enforced after the first 5; at most one per 4 s over an extended period. Dropped over-limit packets still count, and continuing leads to a permanent ban |
 | Bans | Usually about 30 min; triggered by rate, port churn, repeated `AUTH` failures or too many connections |
-| Registration | `client` lowercase letters, 4 to 16 characters; `clientver` an integer starting at 1, raised per client release; `protover=3` |
+| Registration | `client` lowercase letters, 4 to 16 characters; `clientver` an integer starting at 1, raised per client release; `protover=3`. Animatic's own registrations are the constants `animatic_anidb::{UDP_CLIENT, UDP_CLIENT_VERSION}` (`animatic`, 1) for UDP and `{HTTP_CLIENT, HTTP_CLIENT_VERSION}` (`animatichttp`, 1) for HTTP; they are hardcoded, not settings, and a release version bump never changes them (raise one only when a new client version is registered with AniDB) |
 | Session | Expires after 35 min idle; send a command at least every 30 min to keep it, and `LOGOUT` when idling longer. Do not `AUTH`/`LOGOUT` around every command |
 | NAT | `AUTH ... nat=1`; when the reported port differs from the local one, `PING` within the router timeout (5 to 15 min), no more often than needed |
 | `AUTH` without reply | Back off 30 s, 2 min, 5 min, 10 min, 30 min, then up to 2 to 4 h |
-| Replies | `601` maintenance: wait at least 30 min. `506` invalid session: re-`AUTH` (also after an IP or port change). `504`: this client version is banned |
+| Replies | `601` maintenance: wait at least 30 min. `506` invalid session: re-`AUTH` (also after an IP or port change). `504`: this client name and version is banned |
 | NOTIFY | At most once per 20 min |
 | Caching | Cache file, episode, anime and group data for extended periods; on rescans query only files AniDB did not know last time |
 
@@ -434,7 +434,7 @@ Animatic implements both halves (see [MyList export import](#mylist-export-impor
 | Session expiry (35 min), keep-alive (30 min), `LOGOUT` when idle | Only for a kept session: it is logged out after `anidb.idle_logout_minutes` (1 to 30) without a command, kept by a `UPTIME` command at least every 30 min while an automatic run has commands waiting, and forgotten without a packet once 35 min passed. Nothing is sent while Work offline is on or a cooldown is active. One `LOGOUT` on exit, bounded wait |
 | `PING` for NAT | Only for a kept session whose `AUTH` reply reports a source port different from the local one: `PING nat=1` after 4 min without any packet, never more often; no pings when the ports agree |
 | Fixed local port | Uses `anidb.local_port` (default 29456) and **never another port**: a port that cannot be bound is an error that names the setting, and nothing is sent. Port `0` (a new OS-chosen port for every client) exists for tests only |
-| `504` | Fatal like an outdated client: every runnable row is blocked with "this AniDB client version is banned" until the client name and version are corrected; no timed ban |
+| `504` | Fatal like an outdated client: every runnable row is blocked with "AniDB refuses Animatic's built-in client registration" until Animatic is updated to a release with a newly registered client version; no timed ban |
 | `AUTH` no-reply backoff | Escalating and persisted: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 h; a successful login resets it |
 | HTTP one request per 2 s | **Process-wide** for every HTTP request (anime records, title dump, images, `get_bytes`); the send time is saved in `meta.http_last_send_ms` before sending |
 | Same dataset once a day | Enforced by a saved attempt time per anime (24 h) and per known file (7 days, a design choice); see [Request guards](#request-guards) |
@@ -586,10 +586,11 @@ The server may have processed a packet whose reply was lost, so an outbox comman
 twice; replay is designed to be harmless (see the transition notes above).
 
 **Authentication.** `AUTH user, pass, protover=3, client, clientver, nat=1, comp=1, enc=UTF8,
-imgserver=1`. Requires a non-empty client name, username and password, otherwise an `Auth` error
+imgserver=1`. In production `client`/`clientver` are `UDP_CLIENT`/`UDP_CLIENT_VERSION`.
+Requires a non-empty client name, username and password, otherwise an `Auth` error
 is returned locally without any packet. 200/201 return the session key (first word of the
 message; empty is a `Protocol` error) and the image server (first data line); 201 sets
-`new_version_available`. 500 is wrong credentials, 505 illegal input or unregistered client
+`new_version_available`. 500 is wrong credentials, 505 illegal input or an unregistered client
 (both `Auth`); anything else is `Unexpected`. `LOGOUT` is sent at the end of a queue run, unless
 the session is kept for the next run ([Session upkeep](#session-upkeep)), or when the session idles.
 An `AUTH` (or the `ENCRYPT` before it) that gets no reply is not retried inside the run: it
@@ -602,8 +603,8 @@ by the next successful `AUTH`.
 retries once. 502 becomes `Auth("access denied")`, 505 `IllegalInput`.
 
 **Global reply classes.** 510, 555 → `Banned` (510 is deliberately treated as a ban: no
-automatic retry); 503 → `ClientOutdated`; 504 → `ClientBanned` (the client name and version are
-banned: a fatal error that needs a correction, never a timed ban); 598 → `UnknownCommand`;
+automatic retry); 503 → `ClientOutdated`; 504 → `ClientBanned` (AniDB refuses the built-in client
+name and version: a fatal error that needs an Animatic update, never a timed ban); 598 → `UnknownCommand`;
 600, 601, 602, 604 → `ServerError` plus backoff (above).
 
 **Compression.** `comp=1` is requested. A reply whose first two bytes are `00 00` is inflated
@@ -628,7 +629,8 @@ be read as absence.
 | `UPTIME s=<session>` | 208 | | The keep-alive command of the session upkeep; 501/506 means AniDB no longer has the session |
 
 `set_config` closes the socket when the server or port changes and drops the session (and
-clears a ban latch) when credentials, key, client name or version change.
+clears a ban latch) when credentials, key, server or port change; the client name and version
+of a synthetic `Config` count too, though production always passes the constants.
 
 ### Session upkeep
 
@@ -676,7 +678,7 @@ headers and body) and user agent `Animatic/<version>`; `limits` is the process-w
 | Item | Value |
 |---|---|
 | Anime documents | `GET http://api.anidb.net:9001/httpapi?request=anime&client=<name>&clientver=<n>&protover=1&aid=<id>` (`HTTP_API`; **plain HTTP**, not TLS) |
-| Credentials | None are sent; only the client name and version. The name is inserted into the URL without percent-encoding, so use a plain ASCII identifier |
+| Credentials | None are sent; only the client name and version (the registered `HTTP_CLIENT` and `HTTP_CLIENT_VERSION`, never user settings). The name is inserted into the URL without percent-encoding, so it must stay a plain ASCII identifier |
 | Pacing | **Every** request (`anime()`, `titles_dump`, `image`, `get_bytes`) first takes a send slot from the shared `Limits`: at least 2 s after the previous HTTP request of the process, whichever client sent it. The send time is saved in `meta.http_last_send_ms` before sending, so a restart cannot shorten the gap, and a send time that cannot be saved stops the request |
 | Anime body limit | 32 MiB; gzip is decoded transparently and `decode_maybe_gzip` handles bodies still compressed |
 | Title dump | `GET https://anidb.net/api/anime-titles.xml.gz` (`TITLES_DUMP`), TLS via `ureq`'s default rustls setup |
@@ -1067,8 +1069,8 @@ timeouts and output limits. No test contacts GitHub or AniDB and none needs a re
   and no server authentication; a reply is accepted if its source IP matches the server's (the
   port is not checked), and an untagged reply is accepted too, so spoofing is not excluded. Treat the
   UDP channel as confidential only against passive observers.
-- **The HTTP anime API is plain HTTP.** It carries the client name/version and returns public
-  metadata, no credentials.
+- **The HTTP anime API is plain HTTP.** It carries the built-in client name/version
+  (`animatichttp`, version 1) and returns public metadata, no credentials.
 - **GitHub update traffic uses HTTPS only**, with the same rustls defaults and no pinning, and is
   anonymous (no credentials of any kind); it integrity-checks the archive with `SHA256SUMS` but is not
   signed (see [GitHub update transport](#github-update-transport)).
@@ -1110,7 +1112,7 @@ durable contracts.
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>` (skips entries with the Windows system attribute when `exclude_system`; no effect elsewhere), `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path, MoveControl) -> Result<MoveOutcome>` (same-volume rename, or copy → verify against the stored ED2K → swap → record → remove the source when the rename fails with `CrossesDevices`), `move_file_with(.., &dyn Fn(&Path, &Path) -> io::Result<()>)` (injected rename step), `MoveControl { cancel, pause, progress: &mut dyn FnMut(u64, u64) }`, `MoveMethod::{Renamed, Copied}`, `MoveOutcome { method, source_left }`, `clear_emptied_folders(&FileManagerSettings, &Path) -> ClearedFolders { removed, errors }` (`clear_empty_folders`: removes the folders an Animatic move emptied, strictly below the matching manager root, only while completely empty), `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path`; `Db::local_file_record(i64) -> Result<Option<(String, Hashes)>>` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
 | `rename` | `Pattern::compile(&str)`, `evaluate(&Pattern, &Bindings, &dyn DataSource) -> Result<Evaluation, EvalError>`, `target_path(&Path, &str, &str)`, `plan::{plan, plan_local_file(&Db, &str, i64, &Path, &str) -> Plan, plan_batch(&Db, &str, &[Candidate]) -> Vec<BatchRow>, Candidate, BatchRow, classify, check_pattern, Plan, PatternKind}`, `objects::{bindings_for_file(&Db, i64, &str, &str), DbSource, ...}`, `eval::{Evaluator, Object, DataSource}`, `value::Value`, `parser` |
-| `settings` | `Settings::{load_with_recovery(&Path) -> Result<SettingsLoad>, save(&self, &Path), backup_path(&Path), keep_preferences_unknown_to_legacy(&mut self, &Settings)}`, `import_legacy_settings(&Path) -> Result<Settings>`, `parse_client_version(&str) -> Result<u32, &'static str>` (a whole number of 1 or more), `AnidbSettings`, `FileManager(Settings)`, `HashingSettings`, `Player`, `AvdumpSettings`, `StatWhoreSettings`, `UiSettings`, `ColumnState`, `SortDirection`, `ColorSlot`, `SlotColor`, `UpdateSettings { auto_check }`, `DEFAULT_RENAME_PATTERN` |
+| `settings` | `Settings::{load_with_recovery(&Path) -> Result<SettingsLoad>, save(&self, &Path), backup_path(&Path), keep_preferences_unknown_to_legacy(&mut self, &Settings)}`, `import_legacy_settings(&Path) -> Result<Settings>`, `AnidbSettings` (no client name or version: those are the constants `animatic_anidb::{UDP_CLIENT, UDP_CLIENT_VERSION, HTTP_CLIENT, HTTP_CLIENT_VERSION}`; old keys in a file are ignored and dropped on save), `FileManager(Settings)`, `HashingSettings`, `Player`, `AvdumpSettings`, `StatWhoreSettings`, `UiSettings`, `ColumnState`, `SortDirection`, `ColorSlot`, `SlotColor`, `UpdateSettings { auto_check }`, `DEFAULT_RENAME_PATTERN` |
 | `ui_state` | `placement_from_saved(Option<[f32; 4]>) -> WindowPlacement`, `window_to_save(position, size) -> Option<[f32; 4]>`, `column_id`, `merge_columns`, `ensure_layout`, `sort_of`, `cycle_sort`, `set_column_visible`, `row_colors(colored_rows, &colors, ColorSlot) -> Option<RowColors>`, `readable_text`, `contrast_ratio`, `local_file_slot`, `anime_slot`, `mylist_slot`, `MIN_WINDOW_SIZE`, `DEFAULT_WINDOW_SIZE`, `MIN_COLUMN_WIDTH` |
 | `atomic` | `write_atomic(&Path, &[u8]) -> io::Result<()>`, `write_atomic_with(&Path, FnOnce(&mut File) -> io::Result<()>)`: temporary file in the target folder, flush, rename over the target, remove the temporary file on failure (the parent folder must exist) |
 | `stats` | `Db::library_stats() -> Result<LibraryStats>` (one read transaction; a failed query is an error, never 0), `LibraryStats::{render(&self, &str, StatFormat) -> String, write(&self, &Path, &str, StatFormat)}` (atomic replace; creates missing parent folders) |
@@ -1241,10 +1243,11 @@ session). `process_auto_queue` is the same run for an automatic queue run (scope
 2. `Db::open`, then `Db::sync_cooldown()`. An active cooldown (or a database error reading it)
    ends the run before any network client exists.
 3. Take the `UdpClient`: the one kept from an earlier run (told the current settings through
-   `set_config`, which drops its session if the account, key, client name or version changed) or
-   a new one from `animatic_anidb::udp::Config` (server, local port, client name and version,
-   username, password, optional API key, timeout); and `HttpClient::new(client, version, limits)`
-   from the settings. Both take their send slots from the shared `Limits` (`network.limits`), so
+   `set_config`, which drops its session if the account, key, server or port changed) or
+   a new one from `animatic_anidb::udp::Config` (server, local port, the built-in
+   `UDP_CLIENT`/`UDP_CLIENT_VERSION`,
+   username, password, optional API key, timeout); and `HttpClient::new(HTTP_CLIENT, HTTP_CLIENT_VERSION, limits)`
+   (the constants; no setting is involved). Both take their send slots from the shared `Limits` (`network.limits`), so
    a new pair per run cannot restart the spacing.
 4. Loop until cancelled: `Db::queue_peek_in(scope)` yields `(id, Command, tries)`, lowest priority
    then oldest first; none left ends the run.

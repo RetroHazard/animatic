@@ -1,5 +1,5 @@
 The first start of a fresh profile, what to set before anything talks to AniDB, and the AniDB
-client registration that online work needs.
+clients Animatic uses for online work.
 
 ## First launch
 
@@ -21,8 +21,7 @@ check, see [status](Installation.md#status-and-limits)):
 4. **Open Tools → Options…** and, before anything else:
    - tick **Work offline (keep commands queued)** and press **Save options**. The factory
      default is *not* offline;
-   - leave **Username/Password/API key/Client name** empty until you have a registered
-     client;
+   - leave **Username/Password/API key** empty until you have your AniDB account at hand;
    - decide whether the managed-folder rule **Default** (which adds identified files to
      MyList as "On HDD", unwatched) is what you want. See
      [managed folders](Managed-Folders-and-Scans.md).
@@ -30,35 +29,36 @@ check, see [status](Installation.md#status-and-limits)):
    [user guide pages](Home.md#use-animatic).
 
 Defaults worth knowing (`settings.rs`, confirmed in source): theme dark, UI scale 1.0,
-UDP server `api.anidb.net:9000`, local UDP port 29456, `client_version` 1, *Identify files
+UDP server `api.anidb.net:9000`, local UDP port 29456, *Identify files
 with AniDB after hashing* on, file-extension restriction off, hash export template
 `%fulled2k%`, statistics export off.
 
 ## AniDB client registration
 
-AniDB refuses unregistered API clients on both the UDP and HTTP APIs. The settings source
-points registration at <https://anidb.net/software/add>. Rules that follow from the code:
+AniDB refuses unregistered API clients, and AniDB registers a client **per API**. Animatic has
+its own registered clients, built into the program: `animatic` version 1 for the UDP API (login,
+file identification, MyList) and `animatichttp` version 1 for the HTTP API (full anime records).
+You do not register, enter or change anything: Options shows them read-only under the account
+fields ("AniDB client: …"), and there is no setting for them. Updating Animatic never changes
+them; they change only in a release that ships a newly registered client version. Rules that
+follow from the code:
 
-- Options has **Client name** and **Client version** side by side. The version is the number
-  you registered together with the name (`anidb.client_version`, default `1`, a whole number
-  of 1 or more). It identifies your registered client, not the Animatic release, so updating
-  Animatic never changes it; set it once to what your registration says
-  ([settings reference](Settings-Reference.md)).
-- The local UDP port (`anidb.local_port`, default 29456) and UDP server are likewise
-  JSON-only. If the port cannot be bound, the run stops with an error that names the setting;
-  Animatic never switches to another port by itself (AniDB bans many different source ports).
-- AniDB registers a client **per API**. Animatic uses the UDP API for nearly everything and the
-  HTTP API for full anime records (detail window **Refresh**, anime refreshes of a full update).
-  If your client name is registered for UDP only, register a second client for the HTTP API and
-  enter it as **HTTP client name** and **HTTP client version**; left empty, the UDP client is sent
-  to both APIs.
-- The **API key** (set in your AniDB profile) is optional and turns on encrypted UDP sessions.
-- An empty client name, user name or password makes the queue stop at the first command
-  with an authentication error and blocks *every* pending command until you correct it and
-  use **Retry failed** ([queue failure handling](AniDB-Synchronization.md#failure-handling)).
-- Imported AOM settings do not contain a client name; set it again after applying an import.
-- Never use another person's identifier or a made-up one, and never run automated
-  tests against AniDB with fabricated credentials.
+- You only need your AniDB **Username** and **Password** (an AniDB account; sign up at
+  <https://anidb.net>). The **API key** (set in your AniDB profile) is optional and turns on
+  encrypted UDP sessions.
+- The local UDP port (`anidb.local_port`, default 29456) and UDP server are JSON-only. If the
+  port cannot be bound, the run stops with an error that names the setting; Animatic never
+  switches to another port by itself (AniDB bans many different source ports).
+- An empty user name or password makes the queue stop at the first command with an
+  authentication error and blocks *every* pending command until you correct it and use
+  **Retry failed** ([queue failure handling](AniDB-Synchronization.md#failure-handling)).
+- Settings files from older versions may still hold `client_name`, `client_version`,
+  `http_client_name` and `http_client_version`. They are ignored and dropped the next time the
+  settings are saved.
+- If AniDB refuses the built-in client (reply 503 or 504, or an HTTP client rejection), the
+  commands are blocked with that reason; update Animatic, and report it if you already run the
+  latest release ([Network and sync problems](Network-and-Sync-Problems.md#credentials-and-client-registration)).
+- Never run automated tests against AniDB with fabricated credentials.
 
 The HTTP API endpoint is plain `http://api.anidb.net:9001/httpapi`; the title list comes
 from `https://anidb.net/api/anime-titles.xml.gz`; UDP uses `api.anidb.net:9000` by default.

@@ -38,7 +38,7 @@ UDP API cannot use an HTTP proxy.
 | `AniDB unavailable, retry in N min` | The server asked you to wait (or the HTTP API returned status 429, treated as a 30-minute wait) |
 | `no reply to the AniDB login (AUTH); the next try is allowed in …` | The login got no answer. Animatic waits longer after every further unanswered login: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 hours, and starts over after a successful login. The step survives restarts. Check the server name, the local port and your firewall |
 | `cannot save the AniDB request state, nothing was sent: …` | The database could not record the time of the request, so Animatic did not send it (disk full or database locked). Retried after 60 s |
-| `Automatic command queue run postponed (…); it starts when that is over` | Only with the automatic option on. The reason is Work offline, an AniDB cooldown, an unset user name, password or client name, another task, an open import, settings review or restore, or unsaved changes. Nothing is wrong: the run starts by itself when the reason is gone, and nothing was sent meanwhile |
+| `Automatic command queue run postponed (…); it starts when that is over` | Only with the automatic option on. The reason is Work offline, an AniDB cooldown, an unset user name or password, another task, an open import, settings review or restore, or unsaved changes. Nothing is wrong: the run starts by itself when the reason is gone, and nothing was sent meanwhile |
 | `AniDB session upkeep failed: …` | The keep-alive command or the `PING` that looks after a kept login got no answer or an error (shown after the usual cause text). The login is forgotten, the usual cooldown starts for network errors and bans, and the next run logs in again |
 | `Logged out of AniDB: the session was idle` / `… automatic queue runs are off` | Routine: the kept login ended after `idle_logout_minutes` without commands, or because you switched the automatic option off |
 
@@ -47,12 +47,14 @@ pauses for 60 seconds (see [Cooldowns and bans](#cooldowns-and-bans)).
 
 ## Credentials and client registration
 
-Both AniDB APIs require a registered **client name**; the project ships none and its tests use
-only synthetic local fixtures. Credentials, the client name and the client version live in
-**Tools → Options… → AniDB account**. The client version is the number you registered with the
-name (a whole number of 1 or more, default `1`); Animatic updates never change it, and AOM
-settings import does not set it (see the [Settings reference](Settings-Reference.md)). For
-registration rules see [AniDB client registration](First-Launch.md#anidb-client-registration).
+Animatic sends its own registered AniDB clients (`animatic` version 1 on UDP, `animatichttp`
+version 1 on HTTP), so there is nothing to register or enter: the account (**Tools → Options… →
+AniDB account**) needs only a user name and password, and optionally an API key. The client
+identifiers are built in, are not settings, and never change with an Animatic update; a
+settings file that still holds the old client keys has them ignored (see the
+[Settings reference](Settings-Reference.md)). Client errors below mean AniDB refused that
+built-in registration. For the details see
+[AniDB client registration](First-Launch.md#anidb-client-registration).
 
 The queue runs on its own only if you switch on **Run the command queue automatically**
 (off by default; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)).
@@ -64,15 +66,14 @@ queued`, and leave the queue alone; an automatic run is postponed instead.
 
 | Message (in the **Last error** column, the **Log** or the status bar) | Meaning | Effect | Action |
 |---|---|---|---|
-| `authentication: no AniDB client name configured` | The client name is empty | Fatal: **every** non-blocked command is blocked | Enter the registered client name, then **Retry failed** |
 | `authentication: username and password required` | Missing user name or password | Fatal, as above | Enter them, then **Retry failed** |
 | `authentication: login failed: wrong username or password` | Login code 500 | Fatal, as above | Correct the credentials, then **Retry failed** |
-| `authentication: illegal input or access denied (is the client registered?)` | Login code 505 | Fatal, as above | Verify the client registration |
+| `authentication: illegal input or access denied (is the client registered?)` | Login code 505 | Fatal, as above | Check the user name, password and API key; if they are right, AniDB may be refusing the built-in client, so update Animatic or report it |
 | `authentication: API key not defined in your AniDB profile` / `no such user` | Encrypted-session setup failed (codes 309, 394) | Fatal, as above | Fix or clear the API key; check the user name |
 | `authentication: access denied` | A later command was refused (code 502) | Fatal, as above | Check the account |
-| `client version outdated - check the AniDB client registration` | Code 503 | Fatal, as above | Correct the client name or version registration |
-| `this AniDB client version is banned (reply 504): …` | Code 504: AniDB bans this client name and version | Fatal, as above, **no timed cooldown** | Register or use another client name or version (the client version is a settings-file value), or update Animatic; then **Retry failed** |
-| `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused the client name/version it was sent. AniDB registers a client per API, so a client registered only for UDP is refused here | Only the HTTP commands (anime records) are blocked; UDP commands keep running | Register a client for the HTTP API, enter it as **HTTP client name** / **HTTP client version** in Options, then **Retry failed** |
+| `client version outdated - update Animatic, or report this if it is already the latest version` | Code 503: AniDB refuses the client version Animatic's built-in registration sends | Fatal, as above | Update Animatic; if it is already the latest release, report it ([Reporting problems](Reporting-Problems.md)); then **Retry failed** |
+| `AniDB refuses Animatic's built-in client registration (reply 504): …` | Code 504: AniDB bans the built-in client name and version | Fatal, as above, **no timed cooldown** | Update Animatic (a release carries a newly registered client version); if it is already the latest release, report it; then **Retry failed** |
+| `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused Animatic's built-in HTTP client (`animatichttp`) | Only the HTTP commands (anime records) are blocked; UDP commands keep running | Update Animatic; if it is already the latest release, report it; then **Retry failed** |
 
 After a fatal credential or client error the status bar shows **N blocked** and the Log shows
 `Command blocked: N queued commands blocked: <message>`. Correct the cause, optionally **Save

@@ -4,13 +4,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use animatic_anidb::{HTTP_CLIENT, HTTP_CLIENT_VERSION, UDP_CLIENT, UDP_CLIENT_VERSION};
 use animatic_core::db::Db;
 use animatic_core::format;
 use animatic_core::hash_queue::HashSource;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
 use animatic_core::secrets::{CredentialStorage, Credentials};
-use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme, parse_client_version};
+use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
 use animatic_core::ui_state::{
     self, anime_slot, local_file_slot, mylist_slot, row_colors, window_to_save,
 };
@@ -499,8 +500,6 @@ pub struct AnimaticApp {
     projection: LibraryProjection,
     loader: ProjectionLoader,
     views: TableViews,
-    /// Text of the Options "Client version" field while Options is open.
-    client_version_text: Option<String>,
     /// Zoom factor the last tracked window geometry was measured with.
     window_zoom: f32,
     detail: Option<DetailCache>,
@@ -630,7 +629,6 @@ impl AnimaticApp {
                 version: 0,
             },
             views: TableViews::default(),
-            client_version_text: None,
             window_zoom: 1.0,
             detail: None,
             covers: covers::CoverUi::default(),
@@ -3455,7 +3453,6 @@ impl AnimaticApp {
         let exe = self.executable_path().map(Path::to_path_buf);
         self.shell.ensure_probed(exe.as_deref());
         let mut save = false;
-        let mut client_version_error = None;
         egui::Window::new("Options")
             .open(&mut open)
             .resizable(true)
@@ -3472,35 +3469,20 @@ impl AnimaticApp {
                         );
                     });
                     field(ui, "API key", &mut self.settings.anidb.api_key);
-                    field(ui, "Client name", &mut self.settings.anidb.client_name);
                     if let Some(notice) = self.credential_storage.notice() {
                         ui.colored_label(Color32::YELLOW, notice);
                     }
-                    client_version_error = client_version_field(
-                        ui,
-                        self.client_version_text
-                            .get_or_insert_with(|| self.settings.anidb.client_version.to_string()),
-                        &mut self.settings.anidb.client_version,
+                    ui.label(
+                        RichText::new(format!(
+                            "AniDB client: {UDP_CLIENT} v{UDP_CLIENT_VERSION} (UDP), \
+                             {HTTP_CLIENT} v{HTTP_CLIENT_VERSION} (HTTP)"
+                        ))
+                        .weak(),
+                    )
+                    .on_hover_text(
+                        "Animatic's own registered AniDB clients. They are built in and fixed: \
+                         you only need your AniDB username and password.",
                     );
-                    field_hint(
-                        ui,
-                        "HTTP client name",
-                        &mut self.settings.anidb.http_client_name,
-                        "AniDB registers a client per API. If your client name is registered \
-                         for the UDP API only, register one for the HTTP API too and enter it \
-                         here; it is used for anime records. Empty uses the client name above.",
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("HTTP client version");
-                        ui.add(
-                            egui::DragValue::new(&mut self.settings.anidb.http_client_version)
-                                .speed(0.1),
-                        )
-                        .on_hover_text(
-                            "The version registered with the HTTP client name. 0 uses the \
-                             client version above.",
-                        );
-                    });
                     ui.checkbox(
                         &mut self.settings.anidb.offline,
                         "Work offline (keep commands queued)",
@@ -3861,14 +3843,7 @@ impl AnimaticApp {
                     ui.heading("Mylist states");
                     ui.label(MYLIST_STATES.join(" · "));
                     ui.add_space(12.0);
-                    if ui
-                        .add_enabled(
-                            client_version_error.is_none(),
-                            egui::Button::new("Save options"),
-                        )
-                        .on_disabled_hover_text("Correct the client version first")
-                        .clicked()
-                    {
+                    if ui.button("Save options").clicked() {
                         save = true;
                     }
                 });
@@ -3885,7 +3860,6 @@ impl AnimaticApp {
         }
         if !self.settings_open {
             self.shell.options_closed();
-            self.client_version_text = None;
         }
     }
 
@@ -4935,39 +4909,6 @@ fn batch_rename_line(
         }
         show_plan(ui, &row.plan);
     });
-}
-
-/// The "Client version" control. The setting always holds the last valid number; text that is
-/// not a whole number of 1 or more is reported (and returned) until it is corrected or the
-/// field loses focus, which restores the last valid number.
-fn client_version_field(
-    ui: &mut egui::Ui,
-    text: &mut String,
-    version: &mut u32,
-) -> Option<&'static str> {
-    let id = ui.make_persistent_id("options-client-version");
-    if !ui.memory(|memory| memory.has_focus(id)) && parse_client_version(text) != Ok(*version) {
-        *text = version.to_string();
-    }
-    ui.horizontal(|ui| {
-        ui.label("Client version");
-        ui.add(egui::TextEdit::singleline(text).id(id).desired_width(80.0))
-            .on_hover_text(
-                "The version registered with AniDB together with the client name: a whole \
-                 number of 1 or more. It identifies your registered client, not this program \
-                 release, so Animatic updates never change it. Keep the number you registered.",
-            );
-    });
-    match parse_client_version(text) {
-        Ok(number) => {
-            *version = number;
-            None
-        }
-        Err(message) => {
-            ui.colored_label(Color32::LIGHT_RED, message);
-            Some(message)
-        }
-    }
 }
 
 /// A text field with a hover explanation.

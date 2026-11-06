@@ -97,7 +97,7 @@ flowchart LR
 | M8.1 | Credentials in the operating-system keystore | Done |
 | M8.2 | Shell integration (user toggle) and single-instance handoff | Done |
 | M8.3 | System tray, best effort | Done |
-| M8.4 | Client version field | Done |
+| M8.4 | Client version field | Done (superseded: the registered clients are hardcoded constants, no setting) |
 
 ## M1 Trust and correctness
 
@@ -549,8 +549,11 @@ Each of these items is platform-specific and goes behind a cross-platform abstra
 
 ### M8.4 Client version field
 
-- **Change:** add the `client_version` field to the AniDB section of Options next to **Client
-  name**, validated as a positive integer. Release version bumps never change it.
+- **Change:** originally a `client_version` field in the AniDB section of Options next to
+  **Client name**. Superseded: the maintainer registered Animatic's own AniDB clients (`animatic`
+  and `animatichttp`, version 1), which are the hardcoded constants `UDP_CLIENT`,
+  `UDP_CLIENT_VERSION`, `HTTP_CLIENT` and `HTTP_CLIENT_VERSION` in `animatic-anidb`. There is no
+  client name or version setting. Release version bumps never change them.
 
 ## Decisions
 

@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use animatic_anidb::error::AnidbError;
 use animatic_anidb::http::{HttpClient, MAX_IMAGE_BYTES};
 use animatic_anidb::limits::Limits;
+use animatic_anidb::{HTTP_CLIENT, HTTP_CLIENT_VERSION};
 use animatic_core::covers::{
     CoverError, CoverPlan, CoverRequest, covers_dir, discard_cover, download_cover, plan_cover,
 };
@@ -43,8 +44,6 @@ pub struct CoverJob {
     pub download: bool,
     /// `anidb.offline`.
     pub offline: bool,
-    pub client_name: String,
-    pub client_version: u32,
 }
 
 /// A decoded cover: straight (non-premultiplied) RGBA, at most [`MAX_COVER_SIDE`] on a side.
@@ -232,7 +231,7 @@ fn download(
         return CoverOutcome::Superseded;
     }
     #[allow(unused_mut)]
-    let mut http = HttpClient::new(&job.client_name, job.client_version, env.limits.clone());
+    let mut http = HttpClient::new(HTTP_CLIENT, HTTP_CLIENT_VERSION, env.limits.clone());
     #[cfg(test)]
     if let Some(base) = env.image_base {
         http = http.with_loopback_image_base(base);
@@ -326,8 +325,6 @@ mod tests {
             image_server: "cdn.example.test".into(),
             download: true,
             offline: false,
-            client_name: "synthetic".into(),
-            client_version: 1,
         }
     }
 

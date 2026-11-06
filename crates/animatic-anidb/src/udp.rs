@@ -422,8 +422,8 @@ impl UdpClient {
                 Err(AnidbError::Banned(reason))
             }
             503 => Err(AnidbError::ClientOutdated),
-            // The client name and version are banned for good: nothing helps until they change,
-            // so this is a correction-needed error like 503, not a timed ban.
+            // The built-in client name and version are banned for good: nothing helps until a
+            // new Animatic registers another, so this is a correction-needed error like 503, not a timed ban.
             504 => Err(AnidbError::ClientBanned),
             598 => Err(AnidbError::UnknownCommand),
             600 | 601 | 602 | 604 => {
@@ -796,12 +796,12 @@ mod tests {
     }
 
     #[test]
-    fn a_banned_client_version_needs_a_correction_instead_of_a_timed_ban() {
+    fn a_refused_client_version_needs_an_update_instead_of_a_timed_ban() {
         let mut c = client();
         let err = c.check_global(reply(504)).unwrap_err();
         assert!(matches!(err, AnidbError::ClientBanned), "{err:?}");
         assert!(err.is_fatal() && !err.is_transient() && err.retry_after().is_none());
-        assert!(err.to_string().contains("banned"), "{err}");
+        assert!(err.to_string().contains("refuses"), "{err}");
     }
 
     #[test]

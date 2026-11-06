@@ -10,10 +10,10 @@ by **Tools → Run command queue** or **Queue → Synchronize now**, or by Anima
 switch on **Run the command queue automatically** ([below](#automatic-runs-and-the-anidb-session);
 off by default, so nothing runs on a timer unless you ask for it).
 
-Before the first run: set **Client name** (registered with AniDB), **Username** and
-**Password**, optionally an **API key** (encrypted UDP sessions), clear **Work offline**, press
-**Save options**. See [client registration](First-Launch.md#anidb-client-registration). Imported AOM
-settings never contain a client name.
+Before the first run: set **Username** and **Password**, optionally an **API key** (encrypted UDP
+sessions), clear **Work offline**, press **Save options**. Animatic uses its own registered AniDB
+clients (`animatic` for UDP, `animatichttp` for HTTP), so no client is entered anywhere. See
+[client registration](First-Launch.md#anidb-client-registration).
 
 The job (`process_queue`):
 
@@ -89,7 +89,7 @@ first command needs it and out when it ends. With it on, Animatic starts the sam
   and counts the removals that are waiting.
 - **When it waits.** The run is postponed, with one log line (`Automatic command queue run
   postponed (reason); it starts when that is over`), while Work offline is on, an AniDB cooldown
-  is active, the user name, password or client name is not set (the queue is *not* blocked for
+  is active, the user name or password is not set (the queue is *not* blocked for
   that), another task is running, an import, settings review or restore is open, or changes are
   not saved to the database yet. It then starts by itself.
 - **Settings** reach the background timer when Options is closed, not while you edit.
@@ -113,7 +113,7 @@ out around every command):
   none is sent while Work offline is on or an AniDB cooldown is active, not even a logout (AniDB
   drops the session by itself).
 - Switching the option off logs a kept session out as soon as nothing else is running. Changing
-  the account, API key, client name, version, server or port drops the session without a packet,
+  the account, API key, server or port drops the session without a packet,
   and the next run logs in with the new values. A ban reply or a failed keep-alive forgets the
   session and starts the usual cooldown.
 - **On exit** Animatic sends one `LOGOUT` and waits for it at most about 8 seconds. It sends nothing
@@ -138,7 +138,7 @@ from AniDB** tells you when the next one is allowed (status bar and log). If suc
 already in the queue when it runs, it finishes as *skipped* (removed from the queue, logged with the
 time it is allowed again) and is neither an error nor a counted attempt. This includes a command
 whose first try failed: the failed try already used the window, so wait for the time shown. Requests
-that are refused before anything is sent (no client name, a login that fails first) are not
+that are refused before anything is sent (a login that fails first) are not
 counted.
 
 Anime covers follow the same rules without going through the queue: the
@@ -258,7 +258,8 @@ How the queue reacts. The retry, cooldown and blocking *policy* lives in the des
 | Situation | Reaction |
 |---|---|
 | Ban (UDP 510/555; HTTP ban text) | Entry kept, **no attempt counted**, queue stops, cooldown **30 minutes** (persisted) |
-| Rejected credentials, missing client name/user/password, outdated client (UDP 503), **banned client version (UDP 504)** or HTTP client rejection | **Every** unblocked command is blocked with the reason; the queue stops; no cooldown. Fix the setting (for 504 the client name and version must change, as AniDB bans that version), **Save options**, **Retry failed**, run again |
+| Rejected credentials, missing user name/password, outdated client (UDP 503) or **banned client version (UDP 504)** | **Every** unblocked command is blocked with the reason; the queue stops; no cooldown. Fix the credentials, **Save options**, **Retry failed**, run again. For 503/504 AniDB refuses Animatic's built-in client registration: update Animatic (a release carries a newly registered client version), or report it if you already run the latest release |
+| HTTP client rejection | Only the HTTP commands (anime records) are blocked; UDP commands keep running. Same remedy as for 504 |
 | Network/DNS/timeout, AniDB "unavailable" | Queue stops; cooldown 60 s (or the server's stated wait); not counted as an attempt |
 | No reply to the login (`AUTH`) | Queue stops; cooldown **30 s, then 2 min, 5 min, 10 min, 30 min and 2 hours** on every further login without a reply (the step is saved, so a restart continues it; a successful login resets it); not counted as an attempt |
 | UDP server errors 600/601/602/604 | 604 → 60 s cooldown; the others 30 minutes. Only error 600 and HTTP responses with an error status count toward the attempt limit |

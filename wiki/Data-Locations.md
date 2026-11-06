@@ -147,7 +147,7 @@ Keep the same shell session open (or note the printed folder name: `echo "$ROOT"
 `$root`) and use the same pair of overrides on every launch of the rehearsal profile. In the
 window, the sample is hashed, appears on **Hashed files** as `Unknown`, and (with the default
 *Identify files with AniDB after hashing*) an identify command is waiting on **Queue**.
-Do not run the queue with fabricated credentials or an unregistered client name.
+Do not run the queue with fabricated credentials.
 
 Clean up when finished (close Animatic first). The commands remove only the folder created above and
 refuse to run if the variable is empty or does not look like it:

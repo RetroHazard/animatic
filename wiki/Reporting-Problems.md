@@ -22,7 +22,7 @@ Sanitize first, then use the
 
 1. Copy only the lines you need and replace: user and drive names in paths with `<user>`,
    `<root>`; titles and file names with `<file>`; ED2K hashes, `lid`/`fid`/`aid`/`gid`
-   numbers and session text with `<id>`; any user name, password, API key or client name with
+   numbers and session text with `<id>`; any user name, password or API key with
    placeholders.
 2. Keep exact message wording (for example `AniDB sync paused until <time>: <reason>`), the
    status-bar indicators (**Offline**, **N blocked**, **N commands NOT saved yet**), and what

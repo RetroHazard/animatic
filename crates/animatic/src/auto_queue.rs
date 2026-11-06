@@ -9,7 +9,7 @@
 //! job, a manual run or an import review.
 //!
 //! A run is held back, and starts when that is over, while Work offline is on, a persisted
-//! cooldown is active, the account or client name is not set, or the UI reports an import,
+//! cooldown is active, the account is not set, or the UI reports an import,
 //! a settings review, a restore or unsaved commands. Blocked commands are not work: they wait
 //! for an explicit retry. `MylistDelete` is not work either: an automatic run never sends it
 //! (see [`QueueScope::Automatic`]), so a queue that holds nothing else starts no run at all.
@@ -224,8 +224,8 @@ impl QueueControl {
             .blocker
             .or_else(|| a.offline.then_some("Work offline is on"))
             .or_else(|| {
-                (a.username.is_empty() || a.password.is_empty() || a.client_name.is_empty())
-                    .then_some("the AniDB account or client name is not set")
+                (a.username.is_empty() || a.password.is_empty())
+                    .then_some("the AniDB account is not set")
             });
         Snapshot {
             enabled: a.auto_run_queue,
@@ -621,7 +621,6 @@ mod tests {
         AnidbSettings {
             username: "animatic-test-user".into(),
             password: "synthetic-password".into(),
-            client_name: "syntheticclient".into(),
             auto_run_queue: auto,
             ..AnidbSettings::default()
         }

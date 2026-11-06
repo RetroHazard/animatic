@@ -8,6 +8,7 @@ use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::HttpClient;
 use animatic_anidb::limits::Limits;
 use animatic_anidb::udp::Config as UdpConfig;
+use animatic_anidb::{HTTP_CLIENT, HTTP_CLIENT_VERSION, UDP_CLIENT, UDP_CLIENT_VERSION};
 use animatic_core::auto_rename::{self, AutoRenameMemory};
 use animatic_core::db::Db;
 use animatic_core::file_manager::{MoveControl, MoveMethod, clear_emptied_folders, move_file};
@@ -1869,8 +1870,8 @@ impl Network {
         UdpConfig {
             server: settings.udp_server.clone(),
             local_port: settings.local_port,
-            client: settings.client_name.clone(),
-            client_version: settings.client_version,
+            client: UDP_CLIENT.into(),
+            client_version: UDP_CLIENT_VERSION,
             username: settings.username.clone(),
             password: settings.password.clone(),
             api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
@@ -1978,8 +1979,7 @@ fn run_queue(
     let mut udp = network
         .session
         .take(network.udp_config(&settings), &network.limits);
-    let (http_name, http_version) = settings.http_client();
-    let mut http = HttpClient::new(http_name, http_version, network.limits.clone());
+    let mut http = HttpClient::new(HTTP_CLIENT, HTTP_CLIENT_VERSION, network.limits.clone());
     while !cancel.load(Ordering::Relaxed) {
         let next = match db.queue_peek_in(scope) {
             Ok(v) => v,
@@ -2201,7 +2201,6 @@ mod tests {
         AnidbSettings {
             username: "synthetic-user".into(),
             password: "synthetic-password".into(),
-            client_name: "syntheticclient".into(),
             udp_server: server.to_string(),
             local_port: 0,
             ..Default::default()
@@ -2404,8 +2403,6 @@ mod tests {
             image_server: "cdn.example.test".into(),
             download: true,
             offline: true,
-            client_name: "synthetic".into(),
-            client_version: 1,
         };
 
         worker.load_cover(job("100.png"));
@@ -3583,15 +3580,15 @@ mod tests {
     }
 
     #[test]
-    fn a_banned_client_version_blocks_the_queue_until_it_is_corrected() {
+    fn a_refused_client_version_blocks_the_queue_until_animatic_is_updated() {
         let fixture = Fixture::start(|_, _| "504 CLIENT VERSION BANNED".into());
         let db = TempDb::new();
         queue_two(&db.open());
         let s = settings(fixture.addr);
         let events = run_queue(&db, &s);
-        assert!(has_error(&events, "banned"), "{events:?}");
+        assert!(has_error(&events, "refuses"), "{events:?}");
         assert!(events.iter().any(
-            |e| matches!(e, Event::Blocked { description } if description.contains("banned"))
+            |e| matches!(e, Event::Blocked { description } if description.contains("refuses"))
         ));
         let d = db.open();
         assert_eq!(

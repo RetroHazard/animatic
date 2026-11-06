@@ -111,16 +111,6 @@ pub struct AnidbSettings {
     pub password: String,
     /// UDP API key (Profile → Settings → Account on anidb.net). Enables encrypted sessions.
     pub api_key: String,
-    /// Registered client name (<https://anidb.net/software/add>); both APIs refuse unregistered clients.
-    pub client_name: String,
-    /// Registered client version (`clientver`), at least 1. It identifies the registered client
-    /// to AniDB and is never changed by an Animatic release; see [`parse_client_version`].
-    pub client_version: u32,
-    /// Client registered for the HTTP API, when it differs from the UDP client: AniDB registers
-    /// a client per API. Empty uses `client_name`; see [`AnidbSettings::http_client`].
-    pub http_client_name: String,
-    /// Version of `http_client_name`; 0 uses `client_version`.
-    pub http_client_version: u32,
     pub udp_server: String,
     pub local_port: u16,
     /// Image host used for covers until a login has announced the host AniDB wants used.
@@ -148,10 +138,6 @@ impl Default for AnidbSettings {
             username: String::new(),
             password: String::new(),
             api_key: String::new(),
-            client_name: String::new(),
-            client_version: 1,
-            http_client_name: String::new(),
-            http_client_version: 0,
             udp_server: "api.anidb.net:9000".into(),
             local_port: 29_456,
             image_server: "cdn.anidb.net".into(),
@@ -161,36 +147,6 @@ impl Default for AnidbSettings {
             idle_logout_minutes: 10,
             auto_run_queue: false,
         }
-    }
-}
-
-impl AnidbSettings {
-    /// Client name and version sent to the HTTP API: the separate HTTP registration when a
-    /// name is set (its version, or `client_version` when that is 0), otherwise the UDP client.
-    pub fn http_client(&self) -> (&str, u32) {
-        let name = self.http_client_name.trim();
-        if name.is_empty() {
-            (self.client_name.as_str(), self.client_version)
-        } else if self.http_client_version == 0 {
-            (name, self.client_version)
-        } else {
-            (name, self.http_client_version)
-        }
-    }
-}
-
-/// Parses the text of the client version field: a whole number of at least 1 (`u32`).
-///
-/// The error text is meant to be shown next to the field.
-pub fn parse_client_version(text: &str) -> std::result::Result<u32, &'static str> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("Enter the registered client version, a whole number of 1 or more.");
-    }
-    match text.parse::<u32>() {
-        Ok(0) => Err("The client version must be at least 1."),
-        Ok(n) => Ok(n),
-        Err(_) => Err("The client version must be a whole number of 1 or more."),
     }
 }
 
@@ -1064,9 +1020,6 @@ impl Settings {
         if self.ui.zoom <= 0.3 {
             self.ui.zoom = 1.0;
         }
-        if self.anidb.client_version == 0 {
-            self.anidb.client_version = 1;
-        }
     }
 
     pub fn default_player(&self) -> Option<&Player> {
@@ -1915,54 +1868,32 @@ x</renamingPattern>
     }
 
     #[test]
-    fn client_version_text_must_be_a_whole_number_of_one_or_more() {
-        assert_eq!(parse_client_version("1"), Ok(1));
-        assert_eq!(parse_client_version("  42 "), Ok(42));
-        assert_eq!(parse_client_version("4294967295"), Ok(u32::MAX));
-        for text in [
-            "",
-            "   ",
-            "0",
-            "00",
-            "-1",
-            "1.5",
-            "abc",
-            "1e3",
-            "+",
-            "4294967296",
+    fn old_client_keys_in_the_file_are_ignored_and_dropped_on_save() {
+        let dir = TestDir::new("old-client-keys");
+        std::fs::write(
+            dir.primary(),
+            r#"{"anidb":{"username":"old-user","client_name":"syntheticclient","client_version":7,"http_client_name":"syntheticclienthttp","http_client_version":2}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert_eq!(loaded.settings.anidb.username, "old-user");
+
+        loaded
+            .settings
+            .save(&dir.primary(), &no_keystore())
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.primary()).unwrap()).unwrap();
+        let anidb = saved["anidb"].as_object().unwrap();
+        assert_eq!(anidb["username"], "old-user");
+        for key in [
+            "client_name",
+            "client_version",
+            "http_client_name",
+            "http_client_version",
         ] {
-            let message = parse_client_version(text).expect_err(text);
-            assert!(!message.is_empty(), "{text:?} needs an explanation");
+            assert!(!anidb.contains_key(key), "{key} must not be saved");
         }
-        // "+3" is what u32::from_str accepts; the field accepts it too.
-        assert_eq!(parse_client_version("+3"), Ok(3));
-    }
-
-    #[test]
-    fn the_http_api_uses_its_own_registration_only_when_one_is_set() {
-        let mut anidb = AnidbSettings {
-            client_name: "udpclient".into(),
-            client_version: 3,
-            ..AnidbSettings::default()
-        };
-        assert_eq!(anidb.http_client(), ("udpclient", 3));
-        anidb.http_client_name = " httpclient ".into();
-        assert_eq!(anidb.http_client(), ("httpclient", 3));
-        anidb.http_client_version = 2;
-        assert_eq!(anidb.http_client(), ("httpclient", 2));
-        anidb.http_client_name = "  ".into();
-        assert_eq!(anidb.http_client(), ("udpclient", 3));
-    }
-
-    #[test]
-    fn a_client_version_of_zero_in_the_file_is_read_as_one() {
-        let dir = TestDir::new("client-version-zero");
-        std::fs::write(dir.primary(), r#"{"anidb":{"client_version":0}}"#).unwrap();
-        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
-        assert_eq!(loaded.settings.anidb.client_version, 1);
-        std::fs::write(dir.primary(), r#"{"anidb":{"client_version":7}}"#).unwrap();
-        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
-        assert_eq!(loaded.settings.anidb.client_version, 7);
     }
 
     #[test]

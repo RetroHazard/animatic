@@ -27,8 +27,32 @@
 //! The UDP API is not protected by TLS: without an API key the login, including the password, is
 //! sent unencrypted, and even the encrypted mode has no message authentication.
 //!
-//! Both APIs require a client registered at <https://anidb.net/software/add>. Tests in this
-//! workspace use local fixtures and must never contact production AniDB.
+//! Both APIs require a registered client; Animatic's own are [`UDP_CLIENT`] and [`HTTP_CLIENT`].
+//! Tests in this workspace use local fixtures with synthetic client names and must never contact
+//! production AniDB.
+
+/// Client name registered with AniDB (<https://anidb.net/software/add>) for Animatic's UDP API
+/// client; sent as `client` in `AUTH`.
+///
+/// This is a registered identifier, not a program version: an Animatic release version bump never
+/// changes it.
+pub const UDP_CLIENT: &str = "animatic";
+/// Registered version of [`UDP_CLIENT`], sent as `clientver`.
+///
+/// A release version bump never changes it; raise it only when a new client version is
+/// registered with AniDB.
+pub const UDP_CLIENT_VERSION: u32 = 1;
+/// Client name registered with AniDB for Animatic's HTTP API client; sent as `client` in anime
+/// requests. AniDB registers a client per API, so this differs from [`UDP_CLIENT`].
+///
+/// This is a registered identifier, not a program version: an Animatic release version bump never
+/// changes it.
+pub const HTTP_CLIENT: &str = "animatichttp";
+/// Registered version of [`HTTP_CLIENT`], sent as `clientver`.
+///
+/// A release version bump never changes it; raise it only when a new client version is
+/// registered with AniDB.
+pub const HTTP_CLIENT_VERSION: u32 = 1;
 
 pub mod commands;
 pub mod error;

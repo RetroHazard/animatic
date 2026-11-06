@@ -16,7 +16,7 @@ written with the settings.
 
 | Section | Controls | Status |
 |---|---|---|
-| AniDB account | Username, Password (masked), API key (shown in clear), Client name, Client version | Used by sync and AVDump. *Client version* is the version registered with AniDB for your client name: a whole number of 1 or more, shown red with an explanation (and **Save options** disabled) while the text is not one. Animatic updates never change it |
+| AniDB account | Username, Password (masked), API key (shown in clear); a read-only line "AniDB client: animatic v1 (UDP), animatichttp v1 (HTTP)" | Used by sync and AVDump. The two clients are Animatic's own registered AniDB clients, built in and fixed: there is no client name or version to enter, and Animatic updates never change them ([client registration](First-Launch.md#anidb-client-registration)) |
 | | Work offline | Active |
 | | Run the command queue automatically; Log out of AniDB when idle for N min (1–30, enabled only with the automatic option) | Active, **off by default**; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session). The settings reach the background timer when Options is closed, not while you edit |
 | | Download anime covers when a detail window opens | Active (default on); see [Cover](Library-Pages.md#cover) |

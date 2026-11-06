@@ -84,8 +84,10 @@ cargo run -p animatic
 The executable is `target/release/animatic.exe` on Windows or
 `target/release/animatic` on Linux.
 
-Start **offline**. Before synchronizing, configure your AniDB credentials and a registered
-client identifier. Do not test production AniDB with invented client credentials.
+Start **offline**. Before synchronizing, configure your AniDB username and password (and,
+optionally, an API key). Animatic uses its own registered AniDB clients (`animatic` for UDP,
+`animatichttp` for HTTP), so no client name or version is entered anywhere. Do not test
+production AniDB with invented client credentials.
 The [Installation](https://github.com/RetroHazard/animatic/wiki/Installation),
 [Running Animatic](https://github.com/RetroHazard/animatic/wiki/Running-Animatic),
 [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations) and

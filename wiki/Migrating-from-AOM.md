@@ -22,7 +22,7 @@ import.
 2. Watch the progress bar (`Decrypting <name>.data`, `Importing <name>`, `Imported <name>`,
    `Computing derived data`, `Import complete`). Use **Cancel** to stop.
 3. The Log ends with `Imported N records from M collections`.
-4. Continue with [settings import](#import-aom-settings), then Options (client name!) and the
+4. Continue with [settings import](#import-aom-settings), then Options and the
    [first sync](AniDB-Synchronization.md#synchronization).
 
 What happens (`legacy::import::import_databank`):
@@ -114,7 +114,7 @@ Imports AOM's `local_settings.xml` (UTF-16 or UTF-8). It is read-only for the so
    your settings are unchanged.
 
 Important: the imported settings are built on the Animatic **defaults**, not on your current
-configuration. Everything the XML does not mention (client name, client version, API key, UDP
+configuration. Everything the XML does not mention (API key, UDP
 server and port, theme, scale, current folder rules when the XML has none, …) reverts to the default,
 and applying overwrites your settings file. A save first tries to copy your previous valid file to
 `settings.json.bak` (a failed copy is ignored, so the backup can be stale or absent); the backup
@@ -133,5 +133,5 @@ of those have no effect in Animatic (see the
 [settings reference](Settings-Files.md#aom-settings-import)). Applying saves the credentials like any
 save: into the system keystore when one is available, otherwise in plain text in the settings file
 ([details](Settings-Files.md#credentials-and-the-system-keystore)). After
-applying: open Options, set the **Client name**, review folder rules and players, check
+applying: review folder rules and players, check
 *Remove missing*/*Add to mylist*, then clear **Work offline** only when ready.

@@ -81,8 +81,8 @@ the generated line for that pull request's squash commit.
   are not requested again within 24 hours (7 days for files) of the last attempt, even after a
   failed or interrupted request; **Download anime titles**, the detail window's Refresh and the
   full update say when the next request is allowed. A busy `anidb.local_port` is an error instead
-  of a silent switch to another port, a banned client version (reply 504) blocks the queue until
-  corrected, and a login without a reply backs off from 30 s up to 2 hours across restarts.
+  of a silent switch to another port, a refused client version (reply 504) blocks the queue until
+  Animatic is updated, and a login without a reply backs off from 30 s up to 2 hours across restarts.
 - Renames run on the background worker with progress and cancel. A file whose new name is on
   another drive is copied beside the destination, verified against its stored ED2K, moved into
   place and recorded before the original is removed; any failure or cancel leaves the original and
@@ -113,8 +113,8 @@ the generated line for that pull request's squash commit.
   right-click it to choose columns). **Use status colors** tints rows in Hashed files, Anime,
   Advanced search and My list by status, always with the status also written in the row.
   **Theme: System** follows the operating system, and the saved theme and UI scale apply at
-  launch. Options has a **Client version** field next to **Client name**; a release update never
-  changes it.
+  launch. The AniDB client is built in and a release update never changes its registered
+  version.
 - Managed folders honour two rules that were stored only: **Skip system files** makes scans ignore
   files and folders with the Windows system attribute (no effect on Linux), and **Remove emptied
   folders** removes the folders a rename left completely empty beneath the managed folder, never
@@ -166,6 +166,14 @@ the generated line for that pull request's squash commit.
   after `idle_logout_minutes` (1 to 30), kept alive at most every 30 minutes while commands wait,
   kept behind a router with `PING nat=1` only when AniDB reports a different port, and logged out
   on exit, all within AniDB's request spacing.
+- Animatic uses its own registered AniDB clients: `animatic` version 1 for the UDP API and
+  `animatichttp` version 1 for the HTTP API. They are built in and not settings, so Options has no
+  client name, client version or HTTP client fields (it shows the two clients read-only) and you
+  only enter your username and password. A release update never changes the registered client
+  versions. Old settings files that still contain `client_name`, `client_version`,
+  `http_client_name` or `http_client_version` load normally; the keys are ignored and dropped on
+  the next save. A refused client (replies 503/504, or an HTTP client rejection) now says to update
+  Animatic or report it, and the automatic queue run no longer waits for a client name.
 
 ### Changed
 
