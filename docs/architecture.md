@@ -44,52 +44,82 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | Module | Responsibility |
 |---|---|
 | `db` | Connection setup (WAL), idempotent schema creation, `command_queue` upgrade, `write_tx`, cooldown storage in `meta` |
+| `limits` | Saved AniDB limit state: the `LimitStore` over `meta` (send times, `AUTH` backoff step) behind the process-wide spacing, and the attempt-based request guards (title dump once a day, minimum age per anime and per known file, one MyList export per day) |
 | `store` | Transactional application of API records, local hash/path writes, title dump spool and merge |
+| `mylist_export` | MyList export import: bounded container and XML reading, validation, private spool and the atomic merge (`Db::import_mylist_export`); the export request guard (`Db::mylist_export_next_allowed`) |
 | `library` | Read queries, display types and `LibraryProjection` snapshots with search keys |
 | `sync` | `Command`, queue operations (`impl Db`), edit coalescing, overlays, `CommandError`, `execute` |
 | `hash` | One-pass ED2K (red/blue), CRC32, MD5, SHA-1; hash-export template expansion |
-| `file_manager` | Side-effect-free scan planning, hash-and-register, `move_file`, missing-record removal |
+| `file_manager` | Side-effect-free scan planning, hash-and-register, `move_file` (same-volume rename or verified cross-volume copy), missing-record removal |
 | `legacy` | Databank discovery, page decryption, record decoding, per-collection import |
-| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning |
+| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`) |
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
-| `stats` | Library aggregation and XML/INI rendering |
-| `external` | Argument-vector parsing and external player/AVDump launching (no shell) |
+| `ui_state` | Pure rules for the saved window geometry, per-table column layout and sorting, and status row colours; no window code, so they are unit-tested |
+| `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
+| `covers` | Cover cache folder next to the database, `plan_cover` (the decision: cached, switched off, offline, banned, retried too soon) and `download_cover` (attempt saved first, one request through the shared limiter, atomic cache write); no decoder, no UI |
+| `stats` | Library aggregation (one read transaction) and XML/INI rendering |
+| `maintenance` | Online backup, restore validation and file swap, integrity/foreign-key check, `VACUUM`; blocking file work for the worker and the restore thread |
+| `external` | Argument-vector parsing, external player/AVDump launching (no shell), and the player selection rules (`PlayerAction::is_available`, `default_player`, `chosen_player`, `set_default_player`) |
+| `media` | Opt-in media properties through the external `ffprobe`: `tool` (detection order, `-version`), `install` (pinned, SHA-256 verified one-click install of an LGPL build, only `ffprobe` and its license kept), `probe` (argument-vector run with timeout and bounded output, JSON parsing into `MediaInfo`) and `store` (`media_info` table, `read_files` batch); own `MediaError`, no AniDB code, spacing or cooldowns |
 | `format` | Size, date, duration and count formatting |
 | `update` | GitHub release discovery (`UpdateClient`), CalVer comparison, bounded download, `SHA256SUMS` verification, staging in a temporary directory, versioned license files and `self-replace` install (`VerifiedUpdate`); own `UpdateError`, no AniDB code or cooldowns |
+| `instance` | Single-instance handoff: loopback listener, token and lock file next to the database; `start` decides forward, claim or standalone (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)) |
+| `shell_integration` | Per-user "Hash with Animatic" entry: `ShellIntegration` over the Windows registry (`HKCU`, via `winreg`) or a Linux desktop file, ownership marker, injectable location for tests |
 | `error` | Crate-wide `Error`/`Result` (the update module has its own) |
 
 ### `animatic-anidb`
 
-`udp` (session, pacing, encryption, compression, tag matching), `commands` (typed UDP requests
-and strict reply decoding), `http` (anime XML, title dump streaming, image download), `error`
-(`AnidbError` and its retry classification). Both AniDB APIs require a registered client name.
+`udp` (session, encryption, compression, tag matching, no silent port fallback, the upkeep of a
+held session: idle logout, keep-alive, NAT ping), `commands` (typed
+UDP requests and strict reply decoding), `http` (anime XML, title dump streaming, image
+download), `limits` (the process-wide `Limits`: UDP and HTTP spacing shared by every client,
+send times saved before each request, `AUTH` backoff; plus the `Clock` and `LimitStore` seams),
+`error` (`AnidbError` and its retry classification), `testing` (loopback fixtures and a manual
+clock behind the `test-support` feature). Both AniDB APIs require a registered client: Animatic's
+own are the constants `UDP_CLIENT`/`UDP_CLIENT_VERSION` (`animatic`, 1) and
+`HTTP_CLIENT`/`HTTP_CLIENT_VERSION` (`animatichttp`, 1) in `animatic-anidb`. They are not settings
+and a release version bump never changes them; the worker's `udp_config`, the queue run and the
+cover thread pass them to `UdpConfig`/`HttpClient::new`.
 
 ### `animatic`
 
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
-projection bookkeeping, the Software updates window), `worker.rs` (jobs, events, queue runs, projection thread, updater thread).
+projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `auto_queue.rs` (opt-in automatic queue runs), `session.rs` (the AniDB session kept between runs), `hash_jobs.rs` (worker side of the persistent hash queue).
+The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash queue panel is `app/hash_queue_panel.rs`.
+`media.rs` (the media tools thread for `ffprobe` detection and install, and the body of `Job::ReadMedia`),
+`app/media_options.rs` (the Options section, the install confirmation and the read after hashing).
 
 ## Runtime model
 
 | Thread | Database connection | Work |
 |---|---|---|
-| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); rename apply; hash-export file write; settings save |
-| `animatic-worker` | A fresh `Db::open` per job (hashing: per file) | `Job::Hash`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ProcessQueue`, `QueueFullUpdate` |
-| `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins) and `Job::ExportStatistics` |
+| UI (main) | One `Db` opened in `AnimaticApp::new`, busy timeout 1.5 s | Rendering; small outbox writes (`queue_push`, `queue_edit_mylist`, clear, retry); one-row request-guard reads before queueing a title dump, an anime refresh or a MyList export; the one-file rename preview (point reads of the local database); settings save |
+| `animatic-worker` | A fresh `Db::open` per job (hashing: one per drain); the shared limiter's `DbLimitStore` opens a short one for each request it saves a send time for | `Job::Hash` (queue files, then drain), `ResumeHashQueue`, `ClearHashQueue`, `Scan`, `ImportLegacy`, `ImportLegacySettings`, `ImportMylistExport`, `ProcessQueue`, `AutoProcessQueue`, `QueueFullUpdate`, `PreviewFullUpdate`, `RenameFiles` (rename apply, including cross-volume copies), `BackupLibrary`, `ValidateBackup`, `CheckLibrary` (read-only connection), `CompactLibrary`; between jobs it looks after a kept AniDB session (`SessionSlot::maintain`, which may open a short connection) |
+| `animatic-projection` | One cached connection | `Job::LoadLibrary` (newest queued request wins), `Job::ExportStatistics`, `Job::ExportHashes` and `Job::PlanRenames` (batch rename planning, answered by `Event::RenamesPlanned`) |
+| `animatic-scheduler` | none | Decides when a folder scan is due (`scheduler::Schedule`, polled once a second) and submits the ordinary `Job::Scan`; also submits the one-time `Job::ResumeHashQueue` for hashing autostart; see [Scheduled folder scans](#scheduled-folder-scans) and [Persistent hash queue](#persistent-hash-queue) |
+| `animatic-queue-scheduler` | One `Db` held only while automatic runs are on, read-only use | Decides when an automatic queue run is due (`auto_queue::QueueSchedule`, polled every 2 s: it watches the queue in the database) and submits `Job::AutoProcessQueue`; see [Automatic queue runs and the kept AniDB session](#automatic-queue-runs-and-the-kept-anidb-session) |
+| `animatic-covers` | A fresh `Db::open` per request | `Worker::load_cover` (not a `Job`): cache lookup, at most one image download through the shared limiter, decoding; answers with `Event::CoverLoaded`. Joined, like the worker, only by `stop_and_join` (restore) |
+| `animatic-restore` | Opens the library only to checkpoint and copy it | One-shot per confirmed restore, started after the worker and projection threads are joined and the UI connection is closed; see [Library backup, restore, check and compaction](#library-backup-restore-check-and-compaction) |
 | `animatic-updater` | none | Update check, download-and-verify and install (see [Updater thread](#updater-thread)); never opens the library database |
+| `animatic-instance` and per-connection threads | none | Accept forwarded media paths from other launches and queue them for the UI (see [Single instance and the file-menu entry](#single-instance-and-the-file-menu-entry)); only exists while this process owns the lock |
+| `animatic-shell` | none | One-shot per Options open or save: reads, registers or removes the file-menu entry |
+| `animatic-media-tools` | none | `ffprobe` search (`ffprobe -version` is a process) and the confirmed one-click install download; cancelled on drop; never opens the library database and never touches the AniDB limiter |
 | hash helpers | none | Three short-lived threads per hashed file (ED2K; MD5; SHA-1 + CRC32); the calling thread reads the file once in 4 MiB blocks |
 
 The UI sends `Job`s over an unbounded crossbeam channel and drains `Event`s every frame.
-`Worker::submit` routes `LoadLibrary` and `ExportStatistics` to the projection thread so a long
+`Worker::submit` routes `LoadLibrary`, `ExportStatistics` and `ExportHashes` to the projection thread so a long
 queue run or hash never delays a refresh. `cancel` and `pause` are shared atomics checked
 cooperatively: per 4 MiB block while hashing, between planned actions in a scan, between
 commands in a queue run, and between import steps. A cancel request applies to the job running
 when it is made and is cleared only when the next job starts.
 
 Dropping `Worker` (application exit) sets the shutdown and cancel flags, sends `Stop`, and joins
-only the projection thread, so accepted statistics exports finish. The network thread is not
-joined: it can be inside an exchange of up to the 20 s UDP timeout (or the 60 s HTTP budget) and
-is simply abandoned at process exit. The updater thread is the exception described below: its
+only the projection thread, so accepted statistics and hash exports finish. The network threads
+(the main worker and the cover thread) are not joined: either can be inside an exchange of up to
+the 20 s UDP timeout (or the 60 s HTTP budget) and
+is simply abandoned at process exit. The one exception is a kept AniDB session (or a queue run that
+may open one): `Worker::close` then waits at most `session::EXIT_LOGOUT_WAIT` (8 s) for the main
+worker thread to send its `LOGOUT` and end. The updater thread is the exception described below: its
 network work is cancelled on drop, and an install in progress is joined.
 
 SQLite is the shared state. WAL mode lets the projection thread and the UI read while the worker
@@ -98,6 +128,85 @@ writes; only one writer proceeds at a time. Writers that read-modify-write use
 database, a queued command is held in memory and shown as "NOT saved yet" (up to 1000, retried
 every 500 ms, one final 5 s attempt at exit); commands still unsaved after that are lost and logged. A
 failed mylist edit is not deferred: it reports the error and nothing changes.
+
+### Scheduled folder scans
+
+`scheduler.rs` holds the timing and the thread of the optional scan at start and the interval scan
+(`file_managers.scan_at_start`, `scheduled_scan`, `scan_interval_minutes`). `Schedule` is pure
+state driven by explicit `Instant`s (tests control the clock): it is due on a requested start
+scan or when the interval elapsed, stays due while the scan cannot start (reported once as
+`Event::Info`), and counts the next interval from the actual submission. The thread owns a
+`Schedule`, reads the settings and the UI's blocking state from a shared `ScanControl`, and starts
+a scan only through `worker::submit_if_idle`: one atomic `pending 0 -> 1` claim, so it never
+queues behind or between other jobs and a manual scan cannot slip in between check and submit.
+`AnimaticApp::sync_scan_schedule` (every frame, `scan_blocker`) publishes the settings and holds
+the scan back while a restore, an import or its confirmation, a settings review, the recovery
+notice or unsaved deferred commands are open or pending; while Options is open the published
+settings stay as they were. A scan is local (it never contacts AniDB), so Work offline does not
+gate it; identify-after-hashing still only queues commands. `Worker::close` drops the thread's
+stop channel and joins it, so stopping the application ends the scheduler within one poll and
+cancels a running scan at the next file.
+
+Inside a scan, `file_manager::settle_scan` applies `action_delay_ms` after planning: a file whose
+modification time is younger than the delay is deferred, the other candidates are re-stat'ed after
+one wait of the delay (once for the whole scan, cancellable) and deferred when size or
+modification time changed. Deferred files are not recorded, so the next scan plans them again.
+`sleep_time_ms` is a cancellable pause between two hashed files of one drain of the hash queue.
+
+### Persistent hash queue
+
+Every way of hashing a file ends in the `hash_queue` table (`animatic_core::hash_queue`, one row per
+canonical path, `HashSource` = add-files, command-line, scan, handoff) and then in one drain of
+it, so a quit or crash loses no queued file. `Job::Hash { paths, source, pause_between }`
+queues the paths (`Db::hash_queue_enqueue`: canonical-path key, absolute path as given is what is
+hashed and recorded, so a linked managed folder keeps its recorded paths) and drains; `Job::Scan`
+queues its settled `Hash`/`Rehash` actions with source `scan` and drains; `Job::ResumeHashQueue`
+(**Resume hashing**, **Retry failed**, autostart) drains only; `Job::ClearHashQueue` empties the
+table. `hash_queue::drain` takes the oldest `queued` row, hashes it with `hash_and_register`
+(rule 5: one read), removes the row only after the library holds the result, marks a
+file that cannot be read as `failed` with a reason (it is not retried on its own), and on cancel
+leaves the row it was hashing and every later row queued. A database error ends the drain with the
+row still queued; `hash_jobs.rs` turns drain steps into `Progress`, `Hashed`, `Error` and
+`HashQueueChanged` events. The projection carries `hash_queue` (exact counts plus the first 500
+rows), refreshed on those events, and `app/hash_queue_panel.rs` draws it on the Hashed files page
+and the Overview. Hashing autostart (`hashing.autostart`) is `ScanControl::request_hash_resume`,
+called once at start: the scheduler thread submits `Job::ResumeHashQueue` through
+`worker::submit_if_idle` under the same UI blocker as a scan, ahead of any scan, and an empty queue
+reports nothing. `hashing.priority` is stored for AOM compatibility only: there is no
+cross-platform thread-priority abstraction, so hashing threads run at normal priority (rule 10).
+
+### Automatic queue runs and the kept AniDB session
+
+`auto_queue.rs` follows the scan scheduler's pattern for the opt-in `anidb.auto_run_queue`.
+`QueueSchedule` is pure state driven by explicit `Instant`s: new commands (a higher newest id or a
+higher count in `Db::queue_pending(QueueScope::Automatic)`; ids are never reused, and a run only
+shrinks the queue) arm a 30 s debounce, restarted by each further command; an interval of 15 min
+counted from the last start picks up what is still waiting; a due run with nothing to send starts
+nothing; a due run that cannot start stays due and is reported once. The thread owns the
+schedule, watches the queue itself (commands are queued from the UI, the worker and full
+updates, so it is not told) and starts a run only through `worker::submit_if_idle`, with a
+blocker checked right before submitting: the UI's (`AnimaticApp::sync_queue_schedule` publishes
+the AniDB settings and the same `scan_blocker` as for scans through `QueueControl`), Work offline,
+an unset account, an active persisted cooldown (read from the database) and a busy
+worker. A run is `Job::AutoProcessQueue`, which differs from `ProcessQueue` only by its scope:
+`QueueScope::Automatic` (`Db::queue_peek_in`) never takes a `MylistDelete`, so removals stay
+queued for the user's run, and it returns silently when there is nothing to send.
+
+`session.rs` keeps the worker's one `UdpClient` between runs while `auto_run_queue` is on
+(`Network::session`, a `SessionSlot` that only the worker thread uses): `run_queue` takes the kept
+client (`set_config` drops its session when the account, key, server or
+port changed) and `finish` stores it back, or logs out and drops it when automatic runs are off,
+the client is banned or there is no session. Before the worker waits for a job (and when the wait
+ran out) it calls `SessionSlot::maintain`, which does what `UdpClient::upkeep` says is due and
+returns the time until the next step, so the worker uses `recv_timeout`: forget a session idle for
+35 min without a packet; a keep-alive command (`UPTIME`) every 30 min while an automatic run has
+commands waiting; otherwise `LOGOUT` after `idle_logout_minutes` (1 to 30); a `PING nat=1` after 4
+min of silence only when the `AUTH` reply's source port differs from the local port. Timing runs
+on the limiter's clock (`Limits::now_ms`), so tests drive it with a manual clock, and every packet
+waits for its send slot in the shared `Limits`. `maintain` sends nothing while Work offline is on
+or a cooldown is active, and any upkeep error forgets the session and starts the cooldown it calls
+for. On `Stop` or shutdown the worker calls `logout_on_exit` (one `LOGOUT`, 3 s reply timeout,
+skipped offline or cooling down), and `Worker::close` waits for it a bounded time.
 
 ## Principal data flows
 
@@ -111,7 +220,7 @@ sequenceDiagram
     participant Hash as hash_file
     participant DB
     User->>UI: Add files / Tools > Scan managed folders
-    UI->>Worker: Job::Hash or Job::Scan
+    UI->>Worker: Job::Hash or Job::Scan (queued in hash_queue, then drained)
     Worker->>Hash: read each file once (ED2K, CRC32, MD5, SHA-1)
     Hash-->>Worker: hashes
     Worker->>DB: add_local_file(path, hashes, mtime)
@@ -120,7 +229,7 @@ sequenceDiagram
     UI->>Worker: refresh projection
 ```
 
-A scan is started by the user; there is no scheduler. Each newly hashed file can then queue an `Identify`, carrying a MyList add when the matching folder has auto-add (sent only when the queue is run). `plan_scan` is read-only and returns
+A scan is started by the user, at application start or by the interval timer (see [Scheduled folder scans](#scheduled-folder-scans)). Each newly hashed file can then queue an `Identify`, carrying a MyList add when the matching folder has auto-add (sent only when the queue is run). `plan_scan` is read-only and returns
 `ScanAction`s (`Hash`, `Rehash`, `RemoveMissing`); the worker executes them. The modification
 time recorded in `local_file.mtime` is read *after* hashing, so a file changed during hashing
 can be stored with a newer mtime than the content that was hashed. A path is unique in
@@ -130,8 +239,14 @@ Missing-file removal needs an explicit matching manager with `auto_remove`, an a
 `NotFound` for the file, and a successful directory-metadata check of the manager root made
 afterwards. Unreachable roots and other filesystem errors keep records. The check and the later
 deletion are separate steps, so this is a conservative plan, not an atomic guarantee against a
-volume disconnecting in between. Removal deletes only `local_file`/`local_hash` rows; Animatic
-never deletes media files and does not use a recycle bin.
+volume disconnecting in between. Removal deletes only `local_file`/`local_hash` rows; scans,
+hashing and removal never delete media files and nothing uses a recycle bin. The one media
+file deletion is the source of a verified cross-volume rename; the one folder deletion is
+`clear_empty_folders` after a rename (see [Rename](#rename)). A scan never removes a folder.
+`exclude_system` makes `plan_scan` skip entries with the Windows system attribute (behind
+`has_system_attribute`; always false on Linux, where it is a documented no-op).
+
+**Media properties (opt-in).** When *Read media properties* is on and `ffprobe` was found, the UI notes the files of each `Event::Hashed`, and when that job's `Event::Finished` arrives it submits a separate `Job::ReadMedia` for them (the worker queues it behind whatever else is pending). The job probes each file with `ffprobe` (a process with timeout and bounded output, never part of the hash read, so rule 5 holds) and saves the figures in `media_info`, keyed by `local_file.id` with the `hash_id` that was probed. A file that is missing, a timeout or an `ffprobe` that cannot start is reported and not recorded; a file `ffprobe` refuses is recorded once. The hash export joins `media_info` to fill its media tokens. `Job::ReadMedia { scope: Missing }` (Options → **Read missing properties now**) probes every hashed file without figures for its current content.
 
 ### AniDB synchronization
 
@@ -148,7 +263,7 @@ sequenceDiagram
     User->>UI: Synchronize now / Run command queue
     UI->>Worker: Job::ProcessQueue(AnidbSettings)
     Worker->>DB: refuse while offline or in cooldown
-    Worker->>Net: build UdpClient and HttpClient from settings
+    Worker->>Net: build UdpClient and HttpClient from settings, over the worker's one shared Limits
     loop until empty, cancelled, blocked or cooling down
         Worker->>DB: queue_peek (lowest priority, oldest id)
         Worker->>Exec: execute(id, command, db, udp, http)
@@ -175,6 +290,15 @@ block only the affected command and the run continues. Counted failures stop at 
 The persisted cooldown is checked before any transport exists, so it also holds after a restart,
 and "Retry failed" only unblocks rows: it cannot bypass an active cooldown.
 
+AniDB's limits hold across runs and restarts. The worker creates one `Limits` (UDP and HTTP
+spacing) when it starts and lends it to the clients of every run, so repeated runs share one
+burst allowance; each send time is saved in `meta` before the request leaves, so a restart
+keeps the spacing. Request guards count attempts: the title dump (24 h), an anime (24 h) and a
+known file (7 days) are not requested again inside their window, even after a failed or
+interrupted request. The executor completes such a command as `Outcome::Skipped`, the full update
+leaves it out, and the UI refuses the click and says when it is allowed
+([Request guards](storage-and-network.md#request-guards)).
+
 ### MyList edits and optimistic state
 
 `Db::queue_edit_mylist` runs in one `BEGIN IMMEDIATE` transaction: it merges the entry's
@@ -193,6 +317,17 @@ The UI additionally keeps a short-lived in-memory overlay for the edited row, di
 projection requested after the write arrives. "Clear queue" deletes every row, blocked ones
 included, but does **not** revert optimistic local changes already applied to `mylist`.
 
+Adds, removals and refreshes use the plain queue (`queue_command`, with the same deferral when the
+database is busy). A `MylistAdd` for a file id or hash has no `lid` yet, so no local `mylist` row
+exists before AniDB answers; `LibraryProjection` derives `LocalFile::mylist_add_pending` from the
+queue snapshot so **Hashed files** shows `Add queued`. A removal never touches the `mylist` row
+until `execute` has AniDB's `MYLISTDEL` reply (`mylist_deleted_on_anidb`, which keeps the row when
+newer intent was queued after the delete); `LibraryProjection::mylist_pending` (from
+`pending_by_lid`) shows `Edit queued`, `Removal queued` and the `blocked` forms on **My list**. The
+latest `MYLISTSTATS` result is stored in `meta.mylist_stats` with its arrival time and exposed as
+`LibraryProjection::account_stats`; the Overview labels it as AniDB account figures, apart from
+the local counts.
+
 ### Library projections
 
 `LibraryProjection::load` reads every table the UI shows inside one deferred read transaction
@@ -208,37 +343,141 @@ snapshot still materializes the whole library; storage queries are not paged.
 `TitlesLimits` and validates the XML structure and gzip trailer. Rows go to a private temporary
 SQLite spool; only after the whole document validated does `Db::import_title_dump` merge them in
 one `BEGIN IMMEDIATE` transaction together with the `titles_dump_date` timestamp. The library
-database is neither written nor locked while the network is read. It is a public title list, not
-an account download: there is no full-MyList bootstrap, no resume and no external checksum.
+database is neither written nor locked while the network is read. The attempt time that keeps
+the dump to once a day is saved before the request, outside that transaction, so a failed
+download counts too. It is a public title list, not an account download (the account's MyList
+comes from the [MyList export](#mylist-export)); there is no resume and no external checksum.
 Limits and exact semantics are in [Title dump](storage-and-network.md#title-dump).
+
+### Anime covers
+
+`anime_detail_window` asks `AnimaticApp::covers` (`app/covers.rs`) for the picture of the anime it
+shows. The first time a `picname` is shown it sends `Worker::load_cover`, which goes to the
+`animatic-covers` thread (not the main worker thread, so a long queue run never delays a cover),
+and draws a placeholder until `Event::CoverLoaded` brings decoded pixels, which the UI uploads as a
+texture. The thread opens a database connection per request, asks `covers::plan_cover` what may be
+done (cached file; downloads switched off; offline; active ban or cooldown; the per-anime retry
+guard), and downloads at most one file through `HttpClient::image`. That client draws its send slot
+from the **same `Limits` as the queue** (`Worker::spawn` creates it once and hands it to both
+threads), so covers cannot exceed the HTTP spacing. A downloaded picture is decoded first and only
+then written to `covers/<picname>` next to the database, atomically; one that does not decode is
+never cached. A ban met by the request sets the shared sync cooldown. The host comes from the
+last `AUTH` (`meta.image_server`, saved when a queue run ends) or the `anidb.image_server` setting.
+Covers are for the user's own display and are never redistributed. Rules and the full contract:
+[Anime covers](storage-and-network.md#anime-covers).
+### MyList export
+
+The supported full-account MyList path: nothing walks the MyList entry by entry. It has two
+independent user actions.
+
+1. **Tools → Request MyList export…** opens a dialog (UI thread, no network). **Request export**
+   checks the 24 h request guard (one cheap `request_attempt` read, like the title dump) and queues
+   `Command::MylistExport`; **Cancel pending export** queues `Command::MylistExportCancel`;
+   **Open export page** opens AniDB's web export page in the browser. Nothing is sent until the
+   command queue runs. `execute` then logs in, saves the attempt and sends UDP `MYLISTEXPORT
+   template=xml-plain-new` through the worker's shared `Limits`; `217` is a success, `318`
+   (already queued) completes as skipped and is reported, `317` is a permanent error for that
+   command only. A full update never queues it and nothing schedules it.
+2. **File → Import MyList export…** picks the file the user downloaded from AniDB and submits
+   `Job::ImportMylistExport`. The worker calls `Db::import_mylist_export`, which reads the file
+   like the title dump (bounded by `ExportLimits`; tar/tgz/zip/gzip/plain XML told from the
+   content), validates all of it while spooling into a private temporary SQLite database, and
+   only then merges in one `BEGIN IMMEDIATE` transaction: pending queue intent wins, richer local
+   rows keep their data, local rows missing from the export are kept and only counted. The job
+   answers `Event::Imported` (or `Event::Error`, with the library unchanged) and the cancel flag is
+   checked between anime and during the merge.
+
+Details, accepted XML structure and merge rules:
+[MyList export import](storage-and-network.md#mylist-export-import).
 
 ### Legacy migration
 
 1. `find_databank` accepts a `kowai` directory or an install directory containing one.
-2. For each present collection (fixed order, lookup tables first) the encrypted pages are
-   decrypted to a plaintext SQLite copy in a temporary directory (the desktop uses a folder named
-   `import-temp` next to the database; the command-line example uses the output path with its
-   extension replaced by `import-temp`, so `library.sqlite3` gives `library.import-temp`).
-3. The copy is attached and imported in **one transaction per collection** with
+2. **File > Import AOM databank...** submits `Job::ImportLegacy { source, temp_root, confirmed }`.
+   The worker calls `open_for_legacy_import`: when the database is not empty (`Db::is_empty`:
+   no anime, MyList entry or local file) and the job is not `confirmed`, nothing is written and
+   the job answers `Event::LegacyImportNeedsConfirmation`. The UI thread never inspects the
+   database for this (rule 1); it shows the **Import into a database that has data?** dialog,
+   where **Continue** resubmits the job with `confirmed: true` and **Cancel** drops it. Deciding
+   inside the job keeps the database read off the UI thread and makes the decision and the
+   import see the same database. An empty database imports directly.
+3. `import_databank` creates an `ImportWorkdir` below `temp_root` (the desktop and the example pass
+   `legacy::workdir::default_temp_root()`, the system temporary directory; tests pass their own):
+   a directory named `animatic-legacy-import-<random>` (`tempfile`, private to the user on Unix)
+   whose marker file `.animatic-legacy-import` is created, and exclusively locked, **before** any
+   decrypted byte is written. No work folder is created when the source has no collection files.
+4. For each present collection (fixed order, lookup tables first) the encrypted pages are
+   decrypted to a plaintext SQLite copy inside that folder.
+5. The copy is attached and imported in **one transaction per collection** with
    `INSERT OR REPLACE` keyed by the legacy ids. A failing collection rolls back, is recorded in
-   `ImportReport::skipped`/`warnings`, and the import continues; committed collections stay.
-4. Derived columns are recomputed and `legacy_import_*` metadata is stored.
+   `ImportReport::skipped`/`warnings` (the worker logs each warning as an error line), and the
+   import continues; committed collections stay.
+6. Derived columns are recomputed and `legacy_import_*` metadata is stored.
 
-The source databank is only read. The plaintext copy is deleted after each collection when its
-merge succeeds, fails and rolls back, or the import is cancelled before the merge. Any other
-failure (an error while decrypting, `ATTACH`, `COMMIT` or `DETACH`) returns immediately without
-deleting that copy, and a crash leaves it too, so **plaintext of your library can remain after
-any failed import**. The temporary folder is not private to the importer and can already hold
-unrelated files: never delete the whole folder blindly. Inspect it and remove only the files you
-recognize as importer output (the decrypted copies are named `<collection>.sqlite`, for example
-`mylist.sqlite`).
+The source databank is only read (rule 6). The plaintext copy is deleted after each collection,
+and `import_databank` detaches the legacy copy and removes the whole work folder however it ends
+(success, a decryption error or any other `?` exit, cancel); the `Drop` of `ImportWorkdir`
+covers a panic. A removal failure after success is added to `ImportReport::warnings`. Only a
+crash, a kill or a power loss can leave the folder behind.
+
+**Leftover folders.** The exclusive lock on the marker file is held while the import runs and is
+released by the operating system when the process ends, however it ends, so a folder whose
+marker can be locked belongs to no running import (this process or another Animatic). At startup
+`AnimaticApp::new` submits `Job::FindLegacyLeftovers`; `find_leftover_workdirs` returns only real
+directories directly below the temporary root whose name has the prefix, that hold a regular marker
+file, and whose marker can be locked. Symbolic links never qualify and an unreadable or locked
+marker keeps the folder. A non-empty result becomes `Event::LegacyLeftovers` and the **Leftover
+import files** notice; **Remove** submits `Job::RemoveLegacyLeftovers`, and
+`remove_leftover_workdirs` re-checks each folder (parent equal to the temporary root, prefix,
+marker, unlocked) before `remove_dir_all`, reporting the rest as kept
+(`Kept leftover import folder <path>: <reason>`). Unmarked folders, other files in the temporary
+directory and anything outside it are never touched; an `import-temp` folder created by an older
+version carries no marker and is not offered.
 
 Cancellation is checked while decrypting and before each collection is merged, not inside the
 final transaction or the derived-data step. A cancel requested late can therefore still end in a
 successful import, and a large collection decrypts to completion before the cancel is noticed.
-The import is designed for a new database: nothing merges with pre-existing rows that share ids,
-and the desktop does not check that the database is empty (`Db::is_empty` exists but has no
-caller in the application crates).
+The import still replaces rows that share ids; the confirmation exists because of that. The
+`import-legacy` example does not ask, since it writes the file the caller names.
+
+### Library backup, restore, check and compaction
+
+The four menu actions share the rules of the rest of the application: pickers and confirmation
+dialogs run on the UI thread, everything that touches the database or copies files does not
+(rules 1, 3 and 16), and none of them starts while the worker is busy, an import or the
+settings-import review is open, or a restore is in progress (`library_task_blocker`; restore
+also needs an empty `deferred` list, since unsaved commands would be lost or land in the wrong
+library).
+
+- **File > Back up library...** → `Job::BackupLibrary { dest }` → `Event::LibraryBackedUp`. The
+  worker opens its own `Db` and runs `maintenance::backup_to`: SQLite's online backup API from
+  the live connection into `.animatic-copy-*.tmp` beside `dest`, journal mode `DELETE` so the
+  copy is one file, then a rename over `dest`. Writing over the library file (or its `-wal`/`-shm`)
+  is refused.
+- **File > Restore library...** → `Job::ValidateBackup { source }` → `Event::RestoreCandidate`
+  (or `Event::Error`; nothing changes). `maintenance::validate_backup` opens the file
+  read-only, requires `PRAGMA integrity_check` to be `ok`, the tables `meta`, `anime`, `mylist`,
+  `local_file`, `local_hash` and `command_queue`, and `meta.schema_version` not above
+  `SCHEMA_VERSION`; it removes `-wal`/`-shm` files that opening created next to a source. After the
+  user confirms, `AnimaticApp::begin_restore` re-checks the blockers, then
+  `Worker::stop_and_join` stops the worker and the projection thread, the UI's `Db` is replaced
+  by an in-memory placeholder (closing its connection) and `worker::spawn_restore` runs
+  `maintenance::restore_database` on an `animatic-restore` thread: validate again, copy the source
+  into `<db>.restore-staging` with the backup API (validated once more), keep the current
+  database as `<db>.before-restore-YYYYMMDD-HHMMSS` (checkpoint, then a byte copy of the file and,
+  if it still has content, its `-wal`), remove the old `-wal`/`-shm` and rename the staging file
+  over the database. A modal window covers the UI meanwhile. `finish_restore` then reopens the
+  `Db`, spawns a new `Worker` and resets every projection; if the reopen fails the only choice
+  left is **Quit** (`RestoreStage::Broken`), never working on the placeholder. `on_exit` waits for
+  a running restore thread.
+- **Tools > Check library** → `Job::CheckLibrary` → `Event::LibraryChecked`:
+  `maintenance::check_file` on a separate read-only connection runs `PRAGMA integrity_check`
+  (which includes `quick_check`) and, if that is clean, `PRAGMA foreign_key_check`. At most 100
+  findings are kept. A failure produces an error that points to **Restore library** and names the
+  latest backup of the session. Nothing is repaired.
+- **Tools > Compact library...** → confirmation → `Job::CompactLibrary` →
+  `Event::LibraryCompacted`: `maintenance::compact` runs `VACUUM` with `temp_store=FILE`
+  (the connections otherwise use memory) and truncates the WAL.
 
 ### Legacy settings migration
 
@@ -253,19 +492,54 @@ the current settings, so a value the XML does not mention reverts to its default
 
 ### Settings persistence
 
-`Settings::save` writes `settings.json.tmp`, flushes it with `sync_all`, copies a still-valid
-previous primary to `settings.json.bak` (through its own `.bak.tmp` and a rename), then renames
-the temporary file over the primary. A failed write leaves the previous primary in place, but a
-failure of the backup rotation is ignored, so the primary can be replaced while the `.bak` is
+`Settings::save(path, &Credentials)` first runs the credential fields through the keystore
+(`secrets.rs`, below), then writes `settings.json.tmp`, flushes it with `sync_all`, copies a
+still-valid previous primary to `settings.json.bak` (through its own `.bak.tmp` and a rename), then
+renames the temporary file over the primary. A failed write leaves the previous primary in place,
+but a failure of the backup rotation is ignored, so the primary can be replaced while the `.bak` is
 stale or absent. The parent directory is not synced. The `.bak` holds the *previous* valid
-settings, so it can retain credentials that were since changed or removed. Credentials are
-stored as plain text in both files. Two Animatic processes sharing one settings file are
+settings; its credentials are blanked in the copy when the keystore now holds them (the migration
+of an older plain-text file), and otherwise it can retain credentials that were since changed or
+removed. Two Animatic processes sharing one settings file are
 unsupported: they share the `.tmp` names, so saves can fail or cross-write rather than follow a
 clean last-writer-wins rule. `load_with_recovery` reads the backup only when the primary is missing or invalid,
 forces offline mode, and the UI then blocks the exit-time autosave until an explicit Save. On a
 normal exit the application otherwise saves the current in-memory settings (Options edits are
-live), so the file can change without pressing Save. See
+live), so the file can change without pressing Save. The window geometry (`ui.window`,
+`ui.maximized`) and the table layouts (`ui.columns`) are kept current in memory by `track_window`
+and `DataTable` and travel with these saves; they are never saved on a timer, so recovery mode
+(rule 17) skips them like every other autosave. Startup applies them: `AnimaticApp::viewport` builds the
+window from `ui_state::placement_from_saved` and `apply_visuals` sets the theme (`System`
+follows the operating system through egui's theme preference) and scale before the first frame. See
 the [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) for fields.
+
+### Credentials and the system keystore
+
+`secrets.rs` keeps `anidb.password`, `anidb.api_key` and `avdump.key` (`secrets::FIELDS`) out of
+the settings file. `SecretStore` is a flat account-to-secret trait with two implementations:
+`OsSecretStore` (Windows Credential Manager through `windows-native-keyring-store`, Linux Secret
+Service through `zbus-secret-service-keyring-store`, both on `keyring-core`, built directly so no
+global default store exists) and `MemorySecretStore` for tests, which never reach the real keystore.
+`Credentials` wraps one store, or a recorded reason why none is available
+(`Credentials::system()` opens the OS store once at startup; `main.rs` hands it to the app in
+`Startup`). Accounts are `<digest of the absolute, normalized settings path>/<field>` under service
+`animatic`, so `ANIMATIC_SETTINGS` profiles do not collide.
+
+* **Save.** `Credentials::seal` writes each non-empty secret to the keystore and deletes the entry
+  of an empty one; on full success the document written to disk has empty strings and
+  `secrets_in_keystore: true`. On any failure, or without a keystore, the document keeps every
+  value, so a secret is never lost, and the returned `CredentialStorage::SettingsFile { reason }`
+  becomes the Options notice. Entries whose read failed at load are never deleted by an empty
+  field. The backup copy of a previous primary that still holds plaintext is blanked on
+  success.
+* **Load.** `load_with_recovery(path)` stays file-only (rule 17: offline, no secret values in
+  errors). `Settings::load_with_credentials` additionally *reads* the keystore for empty credential
+  fields when `secrets_in_keystore` is set; values present in the file win. It never writes, so
+  recovery from a backup writes nothing to the keystore until an explicit Save.
+* **App.** The app keeps the last `CredentialStorage` and shows its notice under the AniDB
+  section of Options. Every save call site goes through `AnimaticApp::write_settings`; applying
+  an AOM settings import (rule 12) uses the same `Settings::save`. Keystore calls run on the
+  UI thread with the file write; a Linux keystore that prompts to unlock can pause the window.
 
 ### Updater thread
 
@@ -342,13 +616,107 @@ Rules the code relies on:
   never enter the command queue. Only the startup check consults AniDB *settings* (offline,
   recovery) to decide whether to contact GitHub automatically.
 
+### Single instance and the file-menu entry
+
+**Handoff** (`instance.rs`, started from `main.rs` after the arguments and the database path are
+known, so `--help` creates nothing). `instance::start(db, files)` canonicalizes the database path
+and uses `<database>.instance` as the lock. A live lock for the same database with files to give
+means *forward*: the files (made absolute, because this process has another working directory)
+are sent to `127.0.0.1:<port>` as one JSON line with the lock's random token, the primary queues
+them and answers `ok`, and `main` returns. A lock whose port refuses connections, or that cannot be
+parsed, is stale and is replaced. Otherwise the process binds a random loopback port, creates the
+lock with `create_new` (the loser of a simultaneous start re-reads the winner's lock and
+forwards) and keeps the `Primary` alive; dropping it stops the listener and deletes the lock if it
+still carries its token. Any failure degrades to a normal start (`Launch::Standalone`); a launch
+without files, or with `--full-update`, never forwards. The UI receives batches through
+`Incoming`, requests a repaint from the listener thread, hashes them with `Job::Hash` exactly
+like command-line files (held back while an AOM settings review blocks the worker) and asks the
+window to restore and focus itself. `main.rs` drops the `Primary` before relaunching after an
+update, or the new process would forward to the old one.
+
+**File-menu entry** (`shell_integration.rs`). The `integrate_into_shell` setting is only the
+user's choice; the system is changed by the Options **Save options** path alone
+(`apply_shell_integration` on a `animatic-shell` thread), never by loading settings, the exit
+save or an AOM import. Options shows the entry's real state from a read on opening. Every entry
+is marked (registry value `AnimaticManaged`, desktop line `X-Animatic-Managed=true`); register and
+unregister refuse to touch an unmarked entry of the same name. Platform code sits behind
+`ShellIntegration` (rule 10): the registry side is `cfg(windows)` and the desktop-file side is
+plain filesystem code that the tests drive in a temporary directory on both platforms, while the
+registry tests use a temporary `HKCU` subkey.
+
 ### Rename
 
 `rename::plan::plan` compiles and evaluates the pattern against database-backed objects and
 returns a `Plan`; `Plan::can_apply` is false for errors, warnings, or no target. Nothing in
-planning touches the filesystem. Applying is one file at a time on the **UI thread**:
-`file_manager::move_file` and then the path update. Language reference:
-[Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language).
+planning changes the filesystem. `plan_local_file` plans one identified file from the database;
+`plan_batch` plans a list of `Candidate`s in order and additionally blocks a row whose target
+path already exists on disk or is already claimed by an earlier row of the batch (it only reads
+metadata).
+
+- **Single file.** **Hashed files → Rename…** previews one file (the point reads of the local
+  database run on the UI thread) and, on confirmation, submits `Job::RenameFiles` with one item.
+- **Batch.** Selecting files on **Hashed files** (the selection **Add to MyList…** shares) and **Rename N selected…** sends
+  `Job::PlanRenames { request, pattern, files }` to the **projection thread** (it never waits
+  behind a long hashing or queue job). `Event::RenamesPlanned` opens the **Batch rename** window
+  with one line per file. One confirmation submits only the rows with `can_apply()` as
+  `Job::RenameFiles`; blocked rows are listed and skipped.
+- **Automatic rename** (opt-in per managed folder, rule 19). `FileManager::auto_rename` is an
+  `AutoRename` (`Off`, `DryRun`, `On`; stored as `"off"`/`"dry_run"`/`"on"`; a stored boolean
+  loads as `false` → `Off`, `true` → `DryRun`, so neither a legacy file nor the AOM import can
+  switch renaming on). `animatic_core::auto_rename::plan_pass` reads `Db::local_files`, keeps the
+  identified files whose path has an explicit `FileManagerSettings::matching_manager_index`
+  (the built-in Default fallback never qualifies; the longest folder wins, so a nested rule set
+  to Off excludes its files) and whose anime and episode rows are cached and that still exist,
+  plans them with `plan_batch` (so collisions with files on disk and within the pass are
+  blocked), and returns the renames for `On` folders plus log notes for dry-run plans and
+  skipped files. An `AutoRenameMemory` (owned by the worker's run loop) remembers the last
+  outcome per file, so each note is made, and each rename handed over, once per file and state;
+  a cancelled file is forgotten and retried. A pattern that does not compile pauses the pass with
+  one note.
+  The app (`app/auto_rename.rs`) marks a pass *due* on `Event::Hashed`, `Event::Synced { changed:
+  true }` (the FILE reply of an identify was applied), `Event::Imported`, a change of the folder
+  modes/paths/pattern and at start, and submits `Job::AutoRename { managers, pattern }` through
+  `Worker::submit_if_idle` only when the worker is idle, `scan_blocker()` is empty (no restore,
+  import, settings review, recovery notice or deferred changes) and Options is closed. The job
+  emits `Event::Info` notes and, only when something is to be moved, `Started`, the same
+  `Renamed`/`RenameFailed` events as a manual rename (shared `apply_renames`, hence
+  `move_file`'s verified cross-volume move and never-overwrite rule), an `Info` summary and
+  `Finished`; it is cancellable like `RenameFiles`. Choosing **On** in Options does not set the
+  mode directly: the app plans the folder's identified files from the projection with
+  `Job::PlanRenames` (read-only, same lines as **Batch rename**) and only the modal's **Turn on
+  automatic rename** sets `On`.
+- **Apply** runs on the worker. For every item `file_manager::move_file` moves the file and
+  records the path; the worker reports `Event::Renamed` or `Event::RenameFailed` per file, then
+  `Event::RenameSummary`. The activity bar's **Cancel** stops before the next file and during a
+  copy. Cross-volume behaviour is in [the guarantees](#what-the-code-guarantees-and-what-it-does-not).
+
+Language reference: [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language).
+
+### System tray
+
+Best effort, behind one surface in `crates/animatic/src/tray.rs` (rule 10). The `platform`
+modules are the only platform-specific code: **Windows** uses the `tray-icon` crate (a
+notification-area icon whose callbacks run on the UI thread, inside the event loop eframe already
+pumps); **Linux** implements the StatusNotifierItem and `com.canonical.dbusmenu` interfaces
+directly on `zbus` (a crate already in the graph for the Secret Service) on a thread of its own,
+which needs no system package and so no CI install change (`tray-icon`'s Linux backends need GTK
+with libappindicator, or the `ksni` crate, whose Unlicense is not in `about.toml`); other platforms
+report the tray as unavailable.
+
+- `TrayController` lives in `AnimaticApp::tray`, created on the first frame (it needs the egui
+  context) and driven once per frame by `tray_frame`. A probe thread decides `Availability`
+  (Windows: always; Linux: a session bus whose `org.kde.StatusNotifierWatcher` has an owner).
+- **No tray, no hiding.** The window is hidden only through `should_hide`, which requires that the
+  icon is actually up (`TrayEvent::Ready` received). A failed start or a vanished host
+  (`TrayEvent::Failed`; the Linux thread re-checks the watcher every 5 s) drops the icon, shows a
+  hidden window and marks the tray unavailable, which disables both Options controls with the
+  reason.
+- **Minimize hides, close quits.** `ViewportInfo::minimized` triggers `Visible(false)`; Show,
+  a left click or Quit use viewport commands, so closing still goes through the normal exit path
+  (`on_exit`). A restore suppresses hiding until the window system reports "not minimized".
+- **Queue gating.** The menu's *Run command queue* is only a request: the tray enables the item
+  from `AnimaticApp::queue_run_allowed` (the rule Tools and the Queue page use) and the app checks
+  the rule again before submitting `Job::ProcessQueue`. The tray never talks to AniDB itself.
 
 ## What the code guarantees, and what it does not
 
@@ -357,30 +725,53 @@ planning touches the filesystem. Applying is one file at a time on the **UI thre
 | Outbox edits | Edit merge, queue row and optimistic local row commit together or not at all; ids never reused | Delivery exactly once (at-least-once); that AniDB accepted a UDP packet whose reply was lost |
 | API reply application | FILE multi-table writes and MyList reply overlays are atomic, also when nested in a caller's transaction (`write_tx` savepoint) | Atomicity of `store_episode_info`, `store_group_info`, `store_anime_info`, `add_local_file` (separate statements); `store_anime_xml` is one transaction but must not be nested |
 | Title dump | Invalid, truncated or over-limit dumps leave titles and timestamp unchanged | Resume, external checksum, protection against a *valid* but wrong dump |
+| MyList export import | The whole file is validated (limits, container, XML structure, values) while it is spooled; the library is written once, in one transaction; a truncated, malformed, over-limit or cancelled file changes nothing; queued local intent is never overwritten; absent rows are never deleted; a second import of the same file changes nothing | That the element layout matches a file AniDB produced (see [MyList export import](storage-and-network.md#mylist-export-import)); that the export is current (it is a snapshot up to a day old); resume; external checksum |
 | Durability | SQLite WAL consistency | `synchronous=NORMAL`: the newest commits can be lost after an OS crash or power loss |
-| `move_file` | The database path changes only after `fs::rename` succeeded; an existing destination is refused first | See below |
-| Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. `.bak` may retain old or removed credentials. Directory-entry durability. Encryption (plain text). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
+| Library backup and restore | A backup is a consistent snapshot, written to a temporary file and renamed into place; a restore validates the file twice, keeps a byte-for-byte copy of the replaced library and swaps the database file with one rename, after removing the old `-wal`/`-shm`, so the database path is the old or the new library; a refused file changes nothing | That the restored queue matches what AniDB already received; settings (not part of the database); a crash between removing the old `-wal` and the rename (the kept copy is then the way back); automatic or rolling backups; repair |
+| `move_file` | The library never points at a missing file and the only copy is never deleted. Same volume: one `rename`, then the path update (undone if the update fails). A rename that fails because the volumes differ (`ErrorKind::CrossesDevices`: `EXDEV` / `ERROR_NOT_SAME_DEVICE`) falls back to copy → verify → swap → record → remove the source; any failure or cancel before the swap deletes the temporary copy and changes nothing. An existing destination is never replaced | See below |
+| `clear_emptied_folders` | Runs only after a successful move of Animatic's own rename job, only when the manager matching the old path has `clear_empty_folders` on and its root is a reachable directory. It removes the old folder and then each parent with `fs::remove_dir` (never recursive, so any entry, hidden files included, keeps the folder), only while the folder is strictly beneath the manager root and is a real directory (a link is neither followed nor removed). The root is never removed; an error stops the walk and is logged, never fatal to the rename | Removal of folders that were already empty, were emptied by anything but this job, or lie outside a matching manager; a folder that fills between the emptiness check and `remove_dir` is still safe because `remove_dir` itself refuses a non-empty folder |
+| Settings file | The previous primary survives a failed write; the `.bak` is only taken from a valid primary; a secret is never blanked in the file unless the keystore accepted it | A current backup: rotation failures are ignored, so a new primary can succeed while `.bak` is stale or absent. In the plain-text fallback `.bak` may retain old or removed credentials. Directory-entry durability. Encryption of the file itself; the keystore's own protection (it guards against copied files, not code running as the user). Concurrent saves from two processes (shared temp files: errors or cross-writes, not last-writer-wins) |
 | Updates | Only a stable, published, strictly newer CalVer release of `RetroHazard/animatic` is offered; downloads are size-limited and cancellable; the staged executable came from an archive whose SHA-256 matched `SHA256SUMS`; nothing is downloaded or installed without a click; no library data or credentials leave the machine | Authenticity (archives and checksums are unsigned, from the same release); rollback; atomic power-loss safety of the OS swap (leftover dot-files are never auto-deleted); that the install folder is writable; Linux runtime verification |
-| Statistics and hash export | Hash export uses the UI's loaded projection; statistics run on the projection thread | Atomic replace: both use `fs::write` (truncate then write) on the destination. `library_stats` is several separate queries, not one read transaction, so concurrent writes can be mixed into one report, and a failed scalar total is reported as 0 |
-| Hashing | One read pass; cancel/pause per 4 MiB block | Detecting a file that changes while it is read |
+| Statistics and hash export | Both run on the projection thread (the UI only opens the file dialog) and replace the target through `atomic::write_atomic`: a uniquely named temporary file in the target folder, flushed with `sync_all`, then renamed over the target; on any failure the temporary file is removed and the previous target stays. `Db::library_stats` reads every figure in one read transaction and returns an error, never zeros, when a query fails. `Db::export_local_hashes` reads the hashed files from the database, not the UI projection | Directory-entry durability (the parent folder is not synced), so a power loss right after the rename can still lose the new file; a crash between create and rename can leave a hidden `.<name>.<pid>.<n>.tmp` file. `Settings::save` keeps its own tmp+rename sequence (it must rotate the backup between writing and renaming) and does not use the helper |
+| Hashing | One read pass; cancel/pause per 4 MiB block; scans hold back files still being written (`settle_scan`) | Detecting a file that changes while it is read (Add files and command-line paths hash at once) |
 | Local-record removal | Only after affirmative absence under a reachable manager root | Atomic against a disconnect between planning and execution |
 
-`file_manager::move_file(db, local_id, old, new)`:
+`file_manager::move_file(db, local_id, old, new, control)` (`move_file_with` injects the rename step
+so tests force the cross-volume path on one volume):
 
-- Returns early when `old == new`; refuses when `new` exists; creates missing parent
-  directories (and does not remove them if the rename then fails); calls `std::fs::rename`;
-  updates `local_file.path` last.
-- The existence check and the rename are separate calls, so a file created at the destination
-  in between **can be silently overwritten** by the rename (on Windows and on Linux alike), not
-  merely cause a collision error. There is no copy-and-delete fallback: a move across volumes
-  fails with an I/O error, leaving file and record unchanged. No checksum is computed before or
-  after.
-- If the rename succeeds and the database update then fails, the file is at the new path while
-  the record still names the old one; the next scan sees the old path as missing and the new one
-  as unknown. There is no rollback.
+- Returns early when `old == new`. It refuses when the library no longer records `old` for
+  `local_id`, when `new` exists (including a dangling link), and creates missing parent
+  directories (kept if the move then fails).
+- **Same volume:** `file_manager::rename_no_replace` (Windows `MoveFileExW` without
+  `MOVEFILE_REPLACE_EXISTING`; Linux `renameat2(RENAME_NOREPLACE)`, or a hard link followed by
+  removing the source where the file system lacks it), then `local_file.path` is updated; if that
+  update fails the rename is reverted (best effort, also no-replace) so the record does not name a
+  missing file.
+- **Cross volume:** the stored hash must exist and the source size must equal the stored size
+  (otherwise "hash it again"). The file is copied in 4 MiB blocks (cancel and pause honoured,
+  progress reported over copy plus verification) to a hidden `.animatic-move-*.tmp` file in the
+  target folder, with the source's modification time (a different one would make the next scan
+  rehash the file) and permissions, flushed with `sync_all`. The copy's size is compared, then
+  it is **re-hashed in one pass with the library's ED2K variant and compared with the stored
+  ED2K and size**. This extra read of the whole file is deliberate: it is the only proof that
+  the copy is the file the library knows. Only then is the temporary file renamed into place
+  with `persist_noclobber` (no replacement of a file that appeared in the meantime), the
+  database updated, and the source removed. If the database update fails the new copy is
+  removed again; if the source cannot be removed the move still succeeds, the library points at
+  the verified copy and `MoveOutcome::source_left` says so (the old file is an extra copy).
+- Cancellation is checked while copying and verifying, not during the final swap. A crash
+  during the copy can leave a hidden `.animatic-move-*.tmp` file; the source and the record are
+  untouched, and a scan ignores it (hidden, not a media extension).
+- The existence check is only for a clear message: both the same-volume rename and the
+  cross-volume swap refuse atomically to replace a file that appeared at the destination in the
+  meantime.
 - [INFERENCE: untested] On case-insensitive filesystems a case-only rename is refused because
-  `new.exists()` is true for the same file.
+  the target "exists" (it is the same file).
 - Only the local file and its `local_file` row change; AniDB MyList `storage` text is not touched.
+- **Emptied folders.** After all the moves of a job, `run_renames` (and `run_auto_rename`) calls
+  `file_manager::clear_emptied_folders` for the old path of each file that moved (deferred to the
+  end so a folder emptied early can still receive a later file). See the guarantees table; the
+  Log reports a count, failures go to the diagnostic log only.
 
 ## Build and release automation
 
@@ -429,7 +820,8 @@ Worked examples with real signatures, including a compilable offline snippet, ar
 
 ## Security and privacy
 
-Settings contain AniDB credentials and an optional API key in plain text; libraries and
+Settings keep AniDB credentials and the API keys in the operating-system keystore, or in plain
+text in the settings file when none is available (shown in Options); libraries and
 statistics reveal viewing habits and filesystem layout. Keep runtime data outside the repository,
 out of logs and out of tests, and preserve the `.gitignore` protections. The UDP protocol is
 not TLS: see [Transport security](storage-and-network.md#transport-security). The update check and
@@ -450,14 +842,24 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Topic | Anchor |
 |---|---|
 | Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
+| MyList editor, add, remove, refresh, account figures | `crates/animatic/src/app/mylist_editor.rs`: `MylistForm::build`, `mylist_toolbar`, `entry_editor_window`, `open_add_dialog`/`add_window`, `remove_window`, `click_selection`, `account_figures`; `library.rs`: `pending_by_lid`, `mark_pending_adds`; `store.rs`: `store_mylist_stats`, `mylist_stats_snapshot` |
+| Full update menu action, update known file information | `crates/animatic/src/app/refresh.rs`: `after_hash` (what hashing queues: identify, refresh a known file inside the 7-day window, nothing), `start_full_update_preview`/`full_update_window`; `worker.rs`: `plan_full_update` (shared by `preview_full_update` and `queue_full_update`, so the preview counts equal what is queued) |
+| Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals` |
 | Search filters | `app.rs`: `filter_anime`, `filter_search`, `matches_anime`, `aid_query`; `library.rs`: `SearchKeys`, `LibraryProjection::assemble` |
-| Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan` |
+| Hash events, identify-after-hash | `app.rs`: `process_events`; `worker.rs`: `Job::Hash`, `Job::Scan`; `hash_jobs.rs`; `animatic-core/src/hash_queue.rs`: `drain` |
 | Queue, merge, retry, clear | `crates/animatic-core/src/sync.rs`: `queue_edit_mylist`, `coalesce_edits`, `queue_peek`, `queue_retry_failed`, `queue_clear`, `execute`; `worker.rs`: `process_queue`, `fail_command` |
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
-| Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `move_file`; `settings.rs`: `FileManagerSettings::matching_manager_for` |
-| Rename | `crates/animatic-core/src/rename/plan.rs`, `rename/mod.rs` (`target_path`), `app.rs`: `preview_rename`, `rename_window`, `pattern_editor_ui` |
-| Exports | `crates/animatic-core/src/stats.rs`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` |
-| External tools | `crates/animatic-core/src/external.rs` |
-| Migration | `crates/animatic-core/src/legacy/{crypto,blob,import}.rs`, `settings.rs`: `import_legacy_settings`, `app.rs`: `legacy_settings_review_window` |
+| Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |
+| Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `has_system_attribute`, `move_file`, `clear_emptied_folders`; `settings.rs`: `FileManagerSettings::matching_manager_for`; `worker.rs`: `run_renames`, `clear_vacated_folders` |
+| Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames, AutoRename}`, `run_renames`, `run_auto_rename`, `apply_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui`; `crates/animatic-core/src/auto_rename.rs`: `plan_pass`, `AutoRenameMemory`, `folder_candidates`; `app/auto_rename.rs`: `pump_auto_rename`, `mode_control`, `auto_rename_enable_window` |
+| Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
+| External tools | `crates/animatic-core/src/external.rs`; `app/player_actions.rs`: `file_menu`, `player_toolbar`, `run_file_action`; `app.rs`: `play_selected` |
+| System tray | `crates/animatic/src/tray.rs`: `TrayController::update`, `icon_wanted`, `should_hide`, `MENU`, `platform` backends; `app/tray_ui.rs`: `tray_frame`, `tray_options_ui`; `app.rs`: `queue_run_allowed` |
+| Media properties | `crates/animatic-core/src/media/{tool,install,probe,store}.rs`; `crates/animatic/src/media.rs` (`MediaTools`, `read_media`); `app/media_options.rs`; `app.rs`: `Event::Hashed`/`Event::Finished` hooks; `hash.rs`: `Hashes::export_with_media`; `db/schema.sql`: `media_info` |
+| Migration | `crates/animatic-core/src/legacy/{crypto,blob,import,workdir}.rs`, `settings.rs`: `import_legacy_settings`, `worker.rs`: `open_for_legacy_import`, `Job::{ImportLegacy, FindLegacyLeftovers, RemoveLegacyLeftovers}`, `app.rs`: `legacy_import_confirm_window`, `leftover_import_window`, `legacy_settings_review_window` |
 | Settings load/save/recovery | `settings.rs`: `load_with_recovery`, `save`; `app.rs`: `SettingsGuard`, `on_exit` |
+| Library backup, restore, check, compaction | `crates/animatic-core/src/maintenance.rs`: `backup_to`, `validate_backup`, `restore_database`, `check_file`, `compact`; `worker.rs`: `Job::{BackupLibrary, ValidateBackup, CheckLibrary, CompactLibrary}`, `spawn_restore`; `app.rs`: `RestoreStage`, `begin_restore`, `finish_restore`, `restore_window`, `library_task_blocker` |
+| Anime covers | `crates/animatic-core/src/covers.rs`: `plan_cover`, `download_cover`, `store_cover` (and `validate_picname` in `animatic-anidb`'s `http.rs`); `worker/covers.rs`: `run_covers`, `load_cover`, `decode_cover`; `worker.rs`: `Worker::load_cover`, `Event::CoverLoaded`; `app/covers.rs`: `CoverUi`; `app.rs`: `anime_detail_window` |
+| MyList export request and import | `crates/animatic-anidb/src/commands.rs`: `mylist_export`, `mylist_export_cancel`; `crates/animatic-core/src/sync.rs`: `Command::{MylistExport, MylistExportCancel}`, `execute`; `limits.rs`: `RequestKind::MylistExport`; `crates/animatic-core/src/mylist_export/`: `read_export`, `xml::read_document`, `Db::import_mylist_export`; `worker.rs`: `Job::ImportMylistExport`; `crates/animatic/src/app/mylist_export.rs`: `mylist_export_window`, `import_mylist_export` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |
+| Single instance, file-menu entry | `crates/animatic-core/src/instance.rs`: `start`, `Primary`, `Incoming`; `shell_integration.rs`: `ShellIntegration`, `Status`; `crates/animatic/src/app/shell_menu.rs`; `app.rs`: `process_handoff`, `apply_shell_integration`; `main.rs`: `instance::start` |

@@ -24,10 +24,10 @@ Linux-specific statements are reading of the code.
 | Rename one selected, AniDB-identified hashed file after a preview and explicit confirmation (**Hashed files → Rename…**) | Implemented |
 | Edit the pattern, reset it to the stable default, restore the replaced text and validate it on the selected file (**Tools → Options → Renaming pattern**) | Implemented |
 | Per-folder rename destination (`base_path`, shown as **Rename destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
-| Rename several files in one action | Not implemented; the dialog handles the one selected file |
-| Automatic renaming during or after a scan | **Not implemented.** The per-folder "Auto rename" checkbox is stored and shown but nothing reads it. Every rename is a manual, confirmed action. |
+| Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
+| Automatic renaming during or after a scan | **Opt-in per managed folder** (Options > Managed folders > **Auto rename**: Off, Dry run, On; off by default). Dry run only logs the plans; On renames identified files through the same verified worker job, and choosing On first shows a dry-run list to confirm. Collisions and blocked plans are skipped and logged, never overwritten. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). |
 | Renaming files that AniDB has not identified, or whose anime/episode rows are missing | Blocked with a message |
-| Cleaning up folders left empty by a move | Not implemented (`clear_empty_folders` is stored only) |
+| Cleaning up folders left empty by a move | Optional, per managed folder (**Remove emptied folders**, `clear_empty_folders`): only completely empty folders below the managed folder, see [Managed folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied) |
 
 User-interface steps (which page, which button) are in [Renaming files](Renaming-Files.md); the
 stored field and its neighbors are in the [Settings reference](Settings-Reference.md). These
@@ -40,8 +40,8 @@ Renaming is deliberately split so that nothing touches the file system until the
 | Stage | Entry points | Reads | Writes |
 |---|---|---|---|
 | **1. Evaluate** | `Pattern::compile`, `rename::evaluate` | Pattern text, the bound objects, and (through `DataSource`) title tables for `at`, `et`, `atr`, `etr`, `getanime`, `getepisode` | Nothing. Produces a text result, variables and warnings. |
-| **2. Plan** | `rename::plan::plan` (preceded by `check_pattern` and `classify`) | Everything stage 1 reads; the current path and the manager base path as strings | Nothing. No existence checks, no directory creation. Produces a `Plan`: result text, optional target path, warnings, errors. |
-| **3. Apply** | `file_manager::move_file`, called by the **Rename file** button | The file system (destination exists?) | Creates missing parent folders, renames the file, then updates the library path |
+| **2. Plan** | `rename::plan::plan` (preceded by `check_pattern` and `classify`); `plan_local_file` for one file, `plan_batch` for a list | Everything stage 1 reads; the current path and the manager base path as strings. `plan_batch` also looks whether a target path is already taken | Nothing. Produces a `Plan`: result text, optional target path, warnings, errors. |
+| **3. Apply** | `file_manager::move_file`, run by the worker after **Rename file** or **Rename N files** | The file system (destination exists?) | Creates missing parent folders, renames or copies the file, then updates the library path |
 
 - **Evaluate** is pure with respect to the file system. The database-backed data source only
   reads.
@@ -49,22 +49,24 @@ Renaming is deliberately split so that nothing touches the file system until the
   default, the empty/boolean result rules, warning blocking and path validation. A plan that
   `can_apply()` is *allowed* to be applied; it has not been applied and the destination may
   still exist.
-- **Apply** is the only stage that changes anything. `move_file` returns `Ok` immediately
-  when old and new are equal, refuses when the destination already exists
+- **Apply** is the only stage that changes anything, and it runs on the background worker.
+  `move_file` returns `Ok` immediately when old and new are equal, refuses when the library no
+  longer records the old path or the destination already exists
   (`destination already exists: <path>`), runs `create_dir_all` on the destination's parent,
-  calls `std::fs::rename`, and **only after that succeeds** updates the database path. A
-  failed rename leaves the database path unchanged.
+  renames the file (or copies, verifies and swaps it across volumes), and **only after that
+  succeeds** keeps the new database path. A failed move leaves the file and the database path
+  unchanged.
 
 Details worth knowing about apply (read from `move_file`; not exercised):
 
-- Folders created by `create_dir_all` stay even if the following `fs::rename` fails.
-- **The existence check and the rename are two separate steps, not one atomic operation.** If
-  another process creates a file at the destination between them, `std::fs::rename` can
-  replace it: on Linux/POSIX `rename(2)` overwrites an existing file, so the check protects
-  against ordinary collisions only, not against this race. Do not run other tools that write
-  to the destination folder while confirming a rename.
-- It is a rename, not copy-and-delete, so a destination on another volume can fail with the
-  operating system's error, shown as `Rename failed: …`.
+- Folders created by `create_dir_all` stay even if the following rename fails.
+- **An existing destination is never replaced**, even one another program creates between the
+  existence check and the rename: the rename itself refuses atomically (Windows `MoveFileExW`
+  without replace; Linux `renameat2` with `RENAME_NOREPLACE`, or a hard link where the file
+  system lacks it) and the file stays where it was.
+- It is a rename on the same volume. When the operating system refuses because the target is on
+  another volume, the file is copied, verified against the stored ED2K, swapped in and only
+  then removed from the old place (see [Renaming files](Renaming-Files.md#what-applying-does)).
 - The existence check compares the destination path, so a change that differs only in letter
   case on a case-insensitive file system may report the destination as existing.
 
@@ -391,8 +393,8 @@ Deliberate differences stated in the source and project rules:
   and device names including `¹ ² ³`), with a length unit that depends on the build platform.
 - The stable default needs fetched title and episode data; a pending-title stand-in is never
   used to name a file with it.
-- Renaming is manual and confirmed; automatic renaming is not implemented and must never be
-  enabled implicitly.
+- Renaming is manual and confirmed, except for a managed folder you explicitly set to **On**
+  (opt-in per folder, off by default, never implicit; collisions are skipped, never overwritten).
 
 Limits:
 

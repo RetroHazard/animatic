@@ -47,6 +47,133 @@ the generated line for that pull request's squash commit.
   feature parity) with a sidebar. Its source is `wiki/` in the repository, reviewed in pull
   requests and published by a workflow on `main`; release archives ship the same pages in
   `docs/` and no longer include the developer documentation. (#14)
+- Importing an AOM databank into a database that already holds data asks for confirmation first,
+  because rows with the same ids are replaced. The import decrypts into a marked
+  `animatic-legacy-import-*` temporary folder that is removed however the import ends; at the next
+  start Animatic offers to remove such folders left by a crash, and deletes only marked folders.
+- Hash and statistics exports are written to a temporary file and renamed over the target, so a
+  failed write leaves the previous file intact; the hash export runs off the interface thread, and
+  statistics come from one consistent database snapshot (a failed query reports an error instead
+  of zeros).
+- Options controls whose feature is not built yet are shown disabled with a "Not active yet" hint,
+  keeping their stored (for example imported AOM) values.
+- Library safety tools: **File → Back up library…** saves a consistent snapshot (queue included)
+  while Animatic runs; **File → Restore library…** validates a backup (integrity check, Animatic
+  tables, schema not newer), asks for confirmation, keeps the current library as
+  `<database>.before-restore-YYYYMMDD-HHMMSS` and reloads; **Tools → Check library** runs
+  `integrity_check` and `foreign_key_check` without repairing; **Tools → Compact library…** runs
+  `VACUUM`. All run in the background while no other work is active.
+- MyList management: **My list** has an entry editor for state, watched, view date, storage,
+  source and other (a ticked empty field clears the value), **Remove from MyList…** with
+  confirmation and **Refresh entry**; **Hashed files** has **Add to MyList…** for several
+  selected files with an `Add queued` marker; **Groups** and the anime detail episode list have
+  **Refresh**. **Fetch mylist statistics** stores its result and shows it on the Overview as AniDB
+  account figures next to the local ones. Every change is queued first and survives restarts, and
+  a removal deletes the local row only after AniDB acknowledges it.
+- Credentials live in the operating-system keystore (Windows Credential Manager, Linux Secret
+  Service): the AniDB password, UDP API key and AVDump key are no longer written to
+  `settings.json` or its backup, which hold empty values plus `secrets_in_keystore: true`. Older
+  plain-text settings move to the keystore on the first save. Entries are keyed by the settings
+  file path, so portable profiles do not share credentials. Without a usable keystore the values
+  stay in the settings file as before and Options shows why; no credential is ever lost.
+- AniDB's request limits hold across queue runs and restarts: UDP and HTTP spacing is shared by
+  the whole program and saved before each request. The title list, each anime and each known file
+  are not requested again within 24 hours (7 days for files) of the last attempt, even after a
+  failed or interrupted request; **Download anime titles**, the detail window's Refresh and the
+  full update say when the next request is allowed. A busy `anidb.local_port` is an error instead
+  of a silent switch to another port, a refused client version (reply 504) blocks the queue until
+  Animatic is updated, and a login without a reply backs off from 30 s up to 2 hours across restarts.
+- Renames run on the background worker with progress and cancel. A file whose new name is on
+  another drive is copied beside the destination, verified against its stored ED2K, moved into
+  place and recorded before the original is removed; any failure or cancel leaves the original and
+  the library untouched, and an existing destination is never replaced. **Hashed files** can
+  rename several selected files at once: a background-planned preview lists each file's new name
+  or problem, and one confirmation renames only the valid rows. Renaming is never automatic.
+- An optional **Hash with Animatic** file-manager entry (Options → Hashing, off by default):
+  saving the option registers a per-user entry (Windows `HKCU` registry key or Linux `.desktop`
+  file) and removes only entries Animatic created; Options shows whether it is actually present,
+  and an AOM settings import never registers it. Launching Animatic with media files while another
+  instance has the same database open hands the files to that window (loopback only,
+  token-protected lock file next to the database); a different `--database` starts normally.
+- Scheduled folder scanning (Options → Managed folders, off by default): scan at start and every
+  N minutes (5 minutes to one week). A background timer submits the ordinary scan and never
+  overlaps a running task, an import or settings review, a restore or unsaved commands. A scan
+  holds back files that may still be written: a file is hashed only once its size and modification
+  time have been unchanged for `action_delay_ms` (default 500 ms), and the next scan retries
+  deferred files. `sleep_time_ms` paces the hashed files of a scan (default 0, at most 10 s)
+  instead of storing AOM's pause between scans; an AOM import turns that pause into the scan
+  interval.
+- **Tools → Full update…** previews what a full update would queue (title list, file and anime
+  refreshes, minus what AniDB's limits do not allow yet and what is already queued) and queues it
+  after confirmation, the same as `--full-update`; nothing is sent until the queue runs. **Update
+  known file information** works: with it on, hashing an already identified file again queues a
+  refresh of its AniDB record, at most once per file per 7 days (off by default).
+- Animatic reopens with the window size, position and maximized state you left it with, and every
+  table remembers its column widths, hidden columns and sort order (click a header to sort,
+  right-click it to choose columns). **Use status colors** tints rows in Hashed files, Anime,
+  Advanced search and My list by status, always with the status also written in the row.
+  **Theme: System** follows the operating system, and the saved theme and UI scale apply at
+  launch. The AniDB client is built in and a release update never changes its registered
+  version.
+- Managed folders honour two rules that were stored only: **Skip system files** makes scans ignore
+  files and folders with the Windows system attribute (no effect on Linux), and **Remove emptied
+  folders** removes the folders a rename left completely empty beneath the managed folder, never
+  the managed folder itself and never anything non-empty (hidden files keep a folder).
+- The anime detail window shows the anime's cover. A cover is downloaded once, only when that
+  window opens, from the image host AniDB announces at login (falling back to
+  `anidb.image_server`), through the same request limiter as every other AniDB request, and never
+  offline or during a ban or cooldown. It is kept in a `covers` folder next to the database for
+  your own display only and never downloaded again. `anidb.download_covers` (default on, also in
+  Options) turns downloads off; covers already on disk are still shown.
+- System tray (best effort): Options → System tray has *Show tray icon* and *Minimize to tray*. On
+  Windows the icon sits in the notification area; on Linux it uses the StatusNotifierItem protocol
+  over D-Bus, with no extra system package. Its menu offers Show Animatic, Run command queue
+  (disabled whenever Tools → Run command queue is) and Quit. Minimizing hides the window only while
+  an icon is up, and closing still quits; where no tray exists both options are disabled with an
+  explanation.
+- Players: **Open in player** and **Enqueue** on Hashed files (buttons and a right-click menu) for
+  players with those argument templates, a chooser by player *Name* when several players exist,
+  and an Options editor for every player's name and open, play and enqueue arguments, with add,
+  remove and a single default.
+- **Tools → Request MyList export…** and **File → Import MyList export…**: AniDB prepares your
+  whole MyList on request (up to 24 hours, downloaded from AniDB's export page); Animatic requests
+  it at most once a day, never on a schedule. The downloaded `.tgz`, `.zip`, `.gz` or `.xml` file
+  is read with strict size and structure limits and merged in one step: a damaged file changes
+  nothing, queued local changes win, and entries missing from the export are never deleted. The
+  accepted layout is inferred and not yet checked against a real AniDB export.
+- Files waiting to be hashed survive a quit or crash: Add files, command-line paths, files
+  forwarded by another launch and scans go into a persistent hash queue hashed in order;
+  cancelling keeps the rest queued, and an unreadable file stays listed with its reason. Hashed
+  files and the Overview show the queue with Resume hashing, Retry failed and Clear hash queue.
+  **Start hashing automatically** resumes the queue at start. The hashing thread priority setting
+  is kept only for AOM compatibility and has no effect.
+- Optional media properties through FFmpeg's `ffprobe` (Options → Media properties, off by
+  default, disabled until `ffprobe` is found): duration, resolution, frame rate, codecs, sample
+  rate and bitrates of hashed files fill the hash export's media tokens. **Install ffprobe…**
+  downloads a pinned LGPL build after you confirm its size, license and source, verifies its
+  SHA-256 and keeps only `ffprobe` and its license next to the database; nothing is bundled in the
+  release archives.
+- Opt-in automatic rename per managed folder: **Auto rename** is Off (default), Dry run (logs
+  what would be renamed) or On. Files in folders set to On are renamed with the current pattern,
+  once identified, through the same verified worker job as a manual rename; nothing is
+  overwritten. Switching to On first shows a read-only preview and needs confirmation. Blocked
+  plans and collisions are skipped and logged once per file. An existing or AOM-imported
+  `auto_rename: true` loads as Dry run, never On.
+- **Run the command queue automatically** (Options → AniDB account, off by default): the queue
+  runs 30 seconds after new commands and every 15 minutes for anything still waiting, never while
+  offline, cooling down, unconfigured, busy or during an import or restore review. MyList removals
+  are never sent automatically. While it is on, one AniDB login is kept between runs, logged out
+  after `idle_logout_minutes` (1 to 30), kept alive at most every 30 minutes while commands wait,
+  kept behind a router with `PING nat=1` only when AniDB reports a different port, and logged out
+  on exit, all within AniDB's request spacing.
+- Animatic uses its own registered AniDB clients: `animatic` version 1 for the UDP API and
+  `animatichttp` version 1 for the HTTP API. They are built in and not settings, so Options has no
+  client name, client version or HTTP client fields (it shows the two clients read-only) and you
+  only enter your username and password. A release update never changes the registered client
+  versions. Old settings files that still contain `client_name`, `client_version`,
+  `http_client_name` or `http_client_version` load normally; the keys are ignored and dropped on
+  the next save. A refused client (replies 503/504, or an HTTP client rejection) now says to update
+  Animatic or report it, and the automatic queue run no longer waits for a client name.
 
 ### Changed
 

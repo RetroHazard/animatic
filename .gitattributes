@@ -2,3 +2,7 @@
 # platform. Without this, a Windows checkout with core.autocrlf=true embeds CRLF.
 crates/animatic-core/src/rename/default_pattern.txt text eol=lf
 crates/animatic-core/src/db/schema.sql text eol=lf
+
+# Application icon (crates/animatic/assets), embedded with include_bytes! and the Windows resource compiler.
+*.png binary
+*.ico binary

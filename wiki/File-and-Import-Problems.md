@@ -22,11 +22,17 @@ If a scan hashes nothing:
    and an empty list hashes nothing. Entries may include a leading dot and are matched
    case-insensitively. (Files passed on the command line are not filtered.)
 3. **Hidden files** are skipped when the rule's **exclude hidden** is on, and names starting
-   with `.` are hidden by this definition. Symbolic links are not followed. **Include
+   with `.` are hidden by this definition. On Windows, files and folders with the *system*
+   attribute are skipped when the rule's **Skip system files** is on (no effect on Linux).
+   Symbolic links are not followed. **Include
    subdirectories** controls depth: a non-recursive rule sees only its own folder.
 4. Unreadable subfolders are skipped silently; they produce no hash actions.
-5. Other settings in the rule (`auto_rename`, clear empty folders, exclude system files, the
-   delay fields) are stored but not used by scans; nothing renames or deletes automatically.
+5. The delay fields of the rule are stored but not used by scans; a scan never deletes folders
+   (see **Remove emptied folders** under [Rename problems](#rename-problems)). **Auto rename**
+   is separate: a rule set to Dry run only logs planned renames, and one set to On renames
+   identified files (see
+   [Renaming files](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder)); an imported
+   AOM `autorename` flag loads as Dry run.
 
 Per-file hashing errors appear in the Log as `<path>: <error>` and the scan continues with the
 next file. After a scan, each hashed file queues an **Identify** command when **Identify files
@@ -75,20 +81,27 @@ Speed is limited by the disk, network share, USB bridge or security scanner read
 
 - Files are hashed one after another on the background worker. The status bar shows the file
   and a progress bar; **Pause** and **Cancel** act between 4 MiB blocks.
-- A cancelled file is not recorded; the remaining files in that job are skipped. The Log shows
-  the file with an error such as `cancelled`. Quitting also cancels.
-- A file that cannot be read (permissions, a lock by another program, a vanished network share)
-  logs `<path>: <error>` and the job continues with the next file.
-- A hash is stored only after the whole file was read. Nothing is saved for a crash or
-  power loss mid-file; hash it again.
+- A cancelled file is not recorded, and neither it nor the files after it are lost: they stay in
+  the persistent [hash queue](Hashing-and-Identification.md#hash-queue) and the Log says how many.
+  **Resume hashing** (Hashed files page or Overview) or the next start with *Start hashing
+  automatically* on continues. Quitting also cancels.
+- A file that cannot be read (permissions, a lock by another program, a vanished network share,
+  a file that was moved) logs `<path>: <reason>` and the job continues with the next file. The
+  file stays in the hash queue as *failed* with that reason until you add it again, use **Retry
+  failed** or **Clear hash queue**.
+- A hash is stored only after the whole file was read, and the file leaves the queue only after
+  that. After a crash or power loss mid-file the file is simply still queued.
 - Hashing does not delay the interface; the library views read their own snapshot (WAL).
-  The queue runs separately and is not started by hashing.
+  The AniDB command queue runs separately and is not started by hashing.
 
 ## Rename problems
 
-Renaming is manual and previewed: choose a file on **Hashed files**, **Rename…**, review the
-**Confirm rename** window, then **Rename file**. Nothing renames automatically, and there is
-no undo.
+Renaming is manual and previewed unless you opted a managed folder in: choose a file on **Hashed
+files**, **Rename…**, review the **Confirm rename** window, then **Rename file**; or select
+several files and use **Rename N selected…** and **Batch rename** (see
+[Renaming files](Renaming-Files.md)). Only a folder whose **Auto rename** is **On** renames
+automatically (Dry run only logs), and its skipped files and collisions are explained in the Log
+(`Automatic rename skipped <path>: <reason>`). There is no undo.
 
 | Message | Meaning and action |
 |---|---|
@@ -103,31 +116,48 @@ no undo.
 | `The pattern produced an empty file name; nothing would be renamed. …` | Same cause; an empty target is an error, never a silent no-op |
 | `Renaming "<old>" to "<new>" would result in an invalid file name (<why>); rename skipped!` | A path component contains one of `<>:"\|?*` or a control character, is empty, is longer than 255 (UTF-16 units on Windows, UTF-8 bytes elsewhere), or is a reserved device name such as `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Trailing dots and spaces are trimmed first. The rules apply on every platform |
 | `The file already has the name the pattern produces` | Nothing to do |
-| `Rename failed: destination already exists: <path>` | A collision. The preview does **not** check for an existing target; the check happens when you apply it. Change the pattern or move the other file |
-| `Rename failed: I/O error: <os error>` | The filesystem operation failed (see below) |
-| `Rename failed: database error: …` | See the warning below |
+| `Rename failed: <file>: destination already exists: <path> (target …)` | A collision. A single-file preview does **not** check for an existing target; the check happens when you apply it (the batch preview does check, and marks such a line blocked). Change the pattern or move the other file |
+| `Rename failed: <file>: I/O error: <os error> (target …)` | The filesystem operation failed (see below) |
+| `Rename failed: <file>: database error: … (target …)` | The library could not be updated; see below |
+| `Rename failed: <file>: the file changed since it was hashed; hash it again before moving it …` | A move to another drive copies and verifies against the stored hash, so the file must still be the one that was hashed. Hash it again, then retry |
+| `Rename failed: <file>: the library has no stored hash for this file, so a copy to another volume cannot be verified …` | Hash the file (Add files…), then retry |
+| `Rename failed: <file>: the copy does not match the hash stored for this file; nothing was moved …` | The copy was damaged or the file changed while it was copied. Original and library are untouched and the temporary copy is removed; check the disks and retry |
+| `Rename failed: <file>: the library now records this file at …` / `… the file is no longer in the library` | The library entry changed after the preview (a rescan, another rename). Reopen the preview |
+| `Rename failed: <file>: Cancelled; the file and its library entry are unchanged` / `Skipped: cancelled` | You pressed Cancel; nothing was moved for that file |
 
 Details:
 
-- **Collisions** are detected only at apply time. Two files that map to the same name will
-  succeed once and fail the second time.
-- **Cross-volume moves fail.** A rename is a filesystem rename, not copy and delete. If the
-  pattern or the rule's base path puts the target on a different volume or drive, the
-  operating system refuses and nothing is moved. There is no partial copy.
+- **Collisions** are detected when you apply (and, in the batch preview, also when planning).
+  Two files that map to the same name succeed once and fail the second time; the batch preview
+  blocks the second line up front.
+- **Moves to another drive or filesystem** are copied, verified and swapped (see [Renaming
+  files](Renaming-Files.md#what-applying-does)): the copy is made beside the destination as a
+  hidden `.animatic-move-*.tmp` file, which is removed on any failure. It needs free space for a
+  whole extra copy of the file on the destination volume and reads the file twice (copy, then
+  verify). A crash during a copy can leave that hidden file behind; delete it with Animatic
+  closed (the original is untouched).
+- **The old file could not be removed** after a verified copy: the library already points at the
+  new copy, the Log says so, and the old file remains as a duplicate you can delete.
 - **Missing folders are created before the rename.** If the rename then fails, the new empty
   folders remain; Animatic does not remove them.
+- **Emptied source folders** are removed only when the matching managed folder has **Remove
+  emptied folders** on: the folder a moved file left, and its parents, while they are below the
+  managed folder and completely empty ([details](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied)).
+  A folder that still holds anything, hidden files included, stays; the managed folder itself
+  is never removed.
 - **Open files and permissions:** a file held open by a player or scanner, a read-only
   destination, or an operating-system limit on total path length (the planner limits each
   name component but not the whole path) causes an I/O error.
-- The library path is updated only **after** a successful rename. If the file moved but the
-  database update then failed (`Rename failed: database error: …`, for example from a busy
-  database), the library still shows the old path. Add the file again at its new location with
-  **File → Add files…**, or let a scan hash it, and remove the stale record with a scan that
-  has **auto remove** or accept it as stale.
-- The existence check and the rename are two separate steps, so a file created at the target in
-  between is not detected by Animatic. On Linux the rename can then **replace** that newly
+- The library path is updated only **after** the file reached its new place, and a failed update
+  is undone (the rename is reverted, or the new copy removed), so the library keeps naming a
+  file that exists. If the undo itself is impossible (for example the file is locked) the library
+  can still show the old path; add the file again at its new location with **File → Add files…**,
+  or let a scan hash it, and remove the stale record with a scan that has **auto remove** or
+  accept it as stale.
+- On the same drive the existence check and the rename are two separate steps, so a file created
+  at the target in between is not detected by Animatic. The rename can then **replace** that newly
   created file instead of failing with a collision, so do not let other programs write to
-  the destination folder while you rename.
+  the destination folder while you rename. A move to another drive never replaces such a file.
 
 For syntax and functions see [Rename language](Rename-Language.md).
 
@@ -142,14 +172,22 @@ folder (containing `mylist.data`, `local_files.data` or `animes.data`) or the AO
 above it is accepted; anything else is rejected with `No AOM databank found in <path> (choose
 the AOM folder or its kowai folder)`.
 
-The import reads the source files only (they are never modified), decrypts each collection
-into `import-temp/`, imports it in **one transaction per collection**, and tries to remove the
-plaintext (a failure can leave it behind). Results to be aware of:
+The import reads the source files only (they are never modified). Before it starts, the
+worker checks the database: if it already holds anime, MyList entries or hashed local files, the
+**Import into a database that has data?** dialog says that rows with the same ids will be
+replaced and offers **Continue** or **Cancel**; Cancel logs `Import cancelled; the database was
+not changed`. To keep the current database, cancel and start Animatic with `--database FILE`
+(a new file). An empty database imports without a question. The import decrypts each collection
+into a marked work folder in the system temporary folder (a name starting
+`animatic-legacy-import-` with the marker file `.animatic-legacy-import`), imports it in **one
+transaction per collection**, and removes that folder when it ends, on success, failure or cancel.
+If the folder cannot be removed the Log shows `Legacy import warning: could not remove the
+temporary import folder …`. Results to be aware of:
 
 - **Partial results.** A collection that fails to import is rolled back and skipped, and the
-  import continues. The interface reports only `Imported N records from M collections`; the
-  per-collection warnings and skipped list are not shown. If M is smaller than the number of
-  recognized `.data` files in the folder, some collections were skipped.
+  import continues. The Log reports `Imported N records from M collections` and one error line
+  `Legacy import warning: <collection>: <error>` per skipped collection. If M is smaller than
+  the number of recognized `.data` files in the folder, some collections were skipped.
 - **A decryption error aborts the run.** The text is `Legacy import failed: <error>`.
   Collections already committed stay in the database; the remaining ones and the final
   derived-data step (highest episode, special counts, group fix-up) did not run, and the
@@ -165,8 +203,15 @@ plaintext (a failure can leave it behind). Results to be aware of:
   rows instead of duplicating them; that also means a rerun overwrites rows with the
   databank's older values, so import into a fresh database, or one you have backed up, rather
   than into a library with newer synchronized data.
-- Remove leftover decrypted files as described in
-  [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers).
+- **Leftover decrypted files.** At every start Animatic looks in the system temporary folder for
+  import folders (name starting `animatic-legacy-import-`, containing the marker file
+  `.animatic-legacy-import`) that an interrupted import left behind and that no running import is
+  using. If it finds any, **Leftover import files** lists them; **Remove** deletes only those
+  folders, **Keep for now** asks again at the next start. A removal that fails is logged as
+  `Kept leftover import folder <path>: <reason>`. A folder without the marker, such as the
+  `import-temp` folder of an older version, is never offered; see
+  [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers)
+  for removing it by hand.
 - The import menu items are disabled while an import or settings review is pending, and other
   job submissions are blocked until the review ends.
 
@@ -179,22 +224,22 @@ leaves your active settings unchanged and releases the lock on other actions. **
 settings** saves first and forces offline mode; if the save fails you see `Could not save
 settings: …`, your old settings stay active, and the review remains open. The import starts
 from defaults and replaces whole sections, so settings the XML does not mention are replaced
-by the importer's fallbacks rather than kept. The imported values include the AOM password
-in plain text; review managed folders, players, credentials and the registered client name
+by the importer's fallbacks rather than kept. The imported values include the AOM password;
+it is saved to the system keystore, or in plain text when none is available. Review managed folders, players and credentials
 before going online (see the [Settings reference](Settings-Reference.md)).
 
 ## External tools and exports
 
 - `player executable is not configured`: set a player in **Options → External player**.
 - `invalid external command arguments: …`: the argument template could not be split (for
-  example an unbalanced quote). Templates are split into an argument list after placeholder
+  example an unbalanced quote). Templates are split into an argument list before placeholder
   substitution, with no shell involved; see the [Settings reference](Settings-Reference.md)
   for placeholders.
 - `AVDump integration is disabled` / `external executable is not configured`: enable and
-  configure it in **Options → AVDump**. Templates are expanded as raw text and then split into
-  arguments, so a value containing a space or quote (the user name, key or a path) can split
-  into extra arguments; quoting a placeholder is only a mitigation. A template that uses `{key}`
-  places that key on the child process's command line.
+  configure it in **Options → AVDump**. Each placeholder value (user name, key, path) is
+  substituted inside its own argument, so spaces or quotes in it cannot split it. A template
+  that uses `{key}` places that key on the child process's command line.
 - `Hash export failed: …`, `Automatic statistics export failed: …` or a manual statistics
-  export error: the destination is not writable or the path is invalid. These write to the path
-  you chose; they reveal your library, so keep them out of the repository.
+  export error: the destination is not writable, is a folder, the disk is full or the path is
+  invalid, or (statistics) a database query failed. The previous file is left unchanged; see
+  [Exports](Exports.md#safe-replacement). These write to the path you chose; they reveal your library, so keep them out of the repository.

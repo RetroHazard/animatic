@@ -7,21 +7,32 @@ and imports user-supplied AOM databanks without modifying the originals.
 ## What works
 
 - Read-only AOM databank import and reviewable, offline-first settings migration.
-- Single-pass ED2K-red, CRC32, MD5 and SHA-1 hashing; manual managed-folder scans.
+- Single-pass ED2K-red, CRC32, MD5 and SHA-1 hashing; managed-folder scans (manual, at start or
+  on an interval).
 - Searchable library views, anime details, local-file identification and MyList
   watched/state editing.
 - Durable synchronization queue with latest-intent edits, retained failures and
-  restart-persistent cooldowns.
+  restart-persistent cooldowns; AniDB's request spacing and once-a-day limits hold across
+  runs and restarts.
 - HTTP anime metadata and bounded, validated public-title downloads.
+- Anime covers in the detail window: downloaded once on demand, kept on disk for your own
+  display and never downloaded again (switch off with `anidb.download_covers`).
+- A user-requested MyList export from AniDB and a bounded, validated, all-or-nothing import of
+  the downloaded file.
 - Compatible rename expressions with diagnostics, preview and explicit confirmation.
-- Configurable players, AVDump integration and XML/INI statistics exports.
+- Configurable players with Open, Play and Enqueue actions and a chooser, a best-effort system
+  tray with minimize-to-tray, AVDump integration and XML/INI statistics exports.
 - Safe settings-backup recovery that starts offline and preserves the original files.
+- Library backup, validated restore, integrity check and compaction from the File and Tools
+  menus.
 - Explicit, user-confirmed updates from published GitHub releases (check, download and
   verify, install, restart); nothing is downloaded or installed unattended.
 
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
-There is **no full-account MyList bootstrap, scheduled folder scanning, automatic
-renaming, cover-art UI, or media-deletion UI**. See the
+The whole MyList is loaded through AniDB's MyList export (request it from the Tools menu,
+download the file from AniDB's web page, import it from the File menu), never entry by entry.
+There is **no automatic
+renaming, or media-deletion UI**. See the
 [feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity) and
 [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) before relying on an imported option.
 
@@ -73,8 +84,10 @@ cargo run -p animatic
 The executable is `target/release/animatic.exe` on Windows or
 `target/release/animatic` on Linux.
 
-Start **offline**. Before synchronizing, configure your AniDB credentials and a registered
-client identifier. Do not test production AniDB with invented client credentials.
+Start **offline**. Before synchronizing, configure your AniDB username and password (and,
+optionally, an API key). Animatic uses its own registered AniDB clients (`animatic` for UDP,
+`animatichttp` for HTTP), so no client name or version is entered anywhere. Do not test
+production AniDB with invented client credentials.
 The [Installation](https://github.com/RetroHazard/animatic/wiki/Installation),
 [Running Animatic](https://github.com/RetroHazard/animatic/wiki/Running-Animatic),
 [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations) and
@@ -123,12 +136,18 @@ research limits; it is not a claim of complete AOM parity or exhaustive forum co
 
 ## Privacy and license
 
-Settings and backups can contain plaintext credentials. Library databases, exports and
+The AniDB password and API keys are kept in the operating-system keystore (Windows Credential
+Manager, Linux Secret Service); when none is available they stay in the settings file as plain
+text, which Options says. Settings backups can then contain plaintext credentials. Library databases, exports and
 logs can expose viewing history and filesystem paths. Keep runtime data outside this
 repository; use synthetic fixtures for development and redact support reports.
 Original AOM binaries, databanks and extraction artifacts are not part of this project.
 Update checks and downloads contact GitHub (`github.com`, `api.github.com`), not AniDB; see
 [Storage and network](docs/storage-and-network.md#github-update-transport) for exactly what is sent.
+Optional media properties use an external `ffprobe` (FFmpeg). It is **not** bundled with Animatic or
+its release archives; Options can download a pinned LGPL build from GitHub into the data folder
+after you confirm, and the feature stays off until you enable it. See
+[Storage and network](docs/storage-and-network.md#ffprobe-download-transport) for exactly what is sent.
 
 MIT; see [LICENSE](LICENSE). AniDB and AniDB O'Matic are independent projects.
 

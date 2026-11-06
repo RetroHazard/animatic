@@ -1,7 +1,7 @@
 //! Write side: persisting AniDB replies, mylist changes and hashed files.
 
 use animatic_anidb::commands::{
-    AnimeInfo, EpisodeInfo, FileInfo, GroupInfo, MylistEntry as ApiMylistEntry,
+    AnimeInfo, EpisodeInfo, FileInfo, GroupInfo, MylistEntry as ApiMylistEntry, MylistStats,
 };
 use animatic_anidb::http::{AnimeXml, DumpTitle};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -14,6 +14,19 @@ use crate::library::{MylistEntry, anime_type_id, relation_id, title_kind_id};
 
 /// Metadata key holding the completion time of the last successful titles dump import.
 pub const TITLES_DUMP_DATE_KEY: &str = "titles_dump_date";
+
+/// Metadata key holding the latest MYLISTSTATS result as JSON ([`StoredMylistStats`]).
+pub const MYLIST_STATS_KEY: &str = "mylist_stats";
+
+/// The latest MyList statistics AniDB reported for the account, with the time they were
+/// fetched. These describe the whole AniDB account, a different population from the local
+/// library tables, so they are kept apart from them and never mixed into local counts.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoredMylistStats {
+    /// Unix time the statistics were received.
+    pub fetched: i64,
+    pub stats: MylistStats,
+}
 
 /// What a titles dump import read and what it newly stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -670,6 +683,8 @@ impl Db {
 
     pub fn remove_local_file(&self, id: i64) -> Result<()> {
         self.conn()
+            .execute("DELETE FROM media_info WHERE local_file_id = ?1", [id])?;
+        self.conn()
             .execute("DELETE FROM local_file WHERE id = ?1", [id])?;
         self.conn().execute(
             "DELETE FROM local_hash WHERE NOT EXISTS (SELECT 1 FROM local_file l WHERE l.hash_id = local_hash.id)",
@@ -679,8 +694,9 @@ impl Db {
     }
 
     pub fn clear_local_files(&self) -> Result<()> {
-        self.conn()
-            .execute_batch("DELETE FROM local_file; DELETE FROM local_hash;")?;
+        self.conn().execute_batch(
+            "DELETE FROM media_info; DELETE FROM local_file; DELETE FROM local_hash;",
+        )?;
         Ok(())
     }
 
@@ -692,6 +708,32 @@ impl Db {
         Ok(())
     }
 
+    /// Stored path and hashes of local file `id`, or `None` when the row is gone. Used to check
+    /// that a move still concerns the file the user saw and to verify a copy against the hash
+    /// recorded when the file was hashed.
+    pub fn local_file_record(&self, id: i64) -> Result<Option<(String, Hashes)>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT l.path, h.size, h.ed2k, h.crc32, h.md5, h.sha1
+                 FROM local_file l JOIN local_hash h ON h.id = l.hash_id WHERE l.id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        Hashes {
+                            size: r.get::<_, i64>(1)? as u64,
+                            ed2k: r.get(2)?,
+                            crc32: r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                            md5: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                            sha1: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                        },
+                    ))
+                },
+            )
+            .optional()?)
+    }
+
     pub fn local_file_id_by_path(&self, path: &str) -> Result<Option<(i64, i64)>> {
         Ok(self
             .conn()
@@ -701,6 +743,23 @@ impl Db {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?)
+    }
+
+    /// Keep the latest MYLISTSTATS result and when it arrived, replacing the previous one.
+    pub fn store_mylist_stats(&self, stats: &MylistStats, fetched: i64) -> Result<()> {
+        let stored = StoredMylistStats {
+            fetched,
+            stats: stats.clone(),
+        };
+        self.set_meta(MYLIST_STATS_KEY, &serde_json::to_string(&stored)?)
+    }
+
+    /// The stored AniDB account statistics. A value this version cannot read is reported as
+    /// absent rather than failing the whole library projection.
+    pub fn mylist_stats_snapshot(&self) -> Result<Option<StoredMylistStats>> {
+        Ok(self
+            .meta(MYLIST_STATS_KEY)?
+            .and_then(|json| serde_json::from_str(&json).ok()))
     }
 }
 

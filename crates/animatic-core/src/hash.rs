@@ -38,8 +38,22 @@ impl Hashes {
         format!("ed2k://|file|{}|{}|{}|/", file_name, self.size, self.ed2k)
     }
 
-    /// Expand the legacy hash-export template in its original substitution order.
+    /// Expand the legacy hash-export template in its original substitution order. The media
+    /// tokens keep their constants; see [`Hashes::export_with_media`].
     pub fn export(&self, path: &Path, template: &str, copy_length_as_minutes: bool) -> String {
+        self.export_with_media(path, template, copy_length_as_minutes, None)
+    }
+
+    /// [`Hashes::export`] with the media properties read through `ffprobe`. A media token
+    /// without a value in `media` (the file was not probed, or has no such stream) keeps its
+    /// constant.
+    pub fn export_with_media(
+        &self,
+        path: &Path,
+        template: &str,
+        copy_length_as_minutes: bool,
+        media: Option<&crate::media::MediaInfo>,
+    ) -> String {
         let file_name = path.file_name().unwrap_or_default().to_string_lossy();
         let full = self.ed2k_link(&file_name);
         let replacements = [
@@ -73,7 +87,10 @@ impl Hashes {
         } else {
             template.replace('\n', "\r\n")
         };
-        for (token, value) in replacements {
+        for (token, constant) in replacements {
+            let value = media
+                .and_then(|m| m.token(token, copy_length_as_minutes))
+                .unwrap_or(constant);
             out = out.replace(token, &value);
         }
         out

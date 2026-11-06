@@ -2,15 +2,19 @@
 //!
 //! This crate speaks the protocols and nothing else: it has no database, no command queue and
 //! no dependency on the rest of the workspace. It classifies errors (see [`error`]) and keeps
-//! only in-memory protocol state (flood spacing, one re-login/retry, a short server backoff and a
-//! ban latch per client). Persistent retry and cooldown policy is not here: `animatic-core`
-//! provides persistence and the command executor, and the application's worker decides how to
-//! retry, block or pause.
+//! only in-memory protocol state (a one-time re-login/retry, a short server backoff and a ban
+//! latch per client) plus the process-wide request spacing in [`limits`], whose state it saves
+//! through a [`limits::LimitStore`] the caller supplies. Persistent retry and cooldown policy is
+//! not here: `animatic-core` provides persistence and the command executor, and the
+//! application's worker decides how to retry, block or pause.
 //!
 //! * [`udp`] — the UDP API (login, file identification, MyList management): protocol version 3,
-//!   one blocking client per thread, client-side flood spacing (at least 2 s between packets,
-//!   4 s once a burst exceeds five), tag matching, optional API-key encryption, compressed
-//!   replies and a single automatic re-login/retry.
+//!   one blocking client per thread, tag matching, optional API-key encryption, compressed
+//!   replies and a single automatic re-login/retry. The bound local port is never replaced by
+//!   another one.
+//! * [`limits`] — one [`limits::Limits`] per process, shared by every client: UDP packets at
+//!   least 2 s apart (4 s once a burst exceeds five), HTTP requests at least 2 s apart, send
+//!   times saved before each request, and the escalating backoff after an unanswered `AUTH`.
 //! * [`commands`] — typed wrappers for the UDP commands. Success codes are decoded strictly;
 //!   only an explicit "no such" code means absence, any other unexpected or malformed reply is
 //!   an error.
@@ -23,12 +27,39 @@
 //! The UDP API is not protected by TLS: without an API key the login, including the password, is
 //! sent unencrypted, and even the encrypted mode has no message authentication.
 //!
-//! Both APIs require a client registered at <https://anidb.net/software/add>. Tests in this
-//! workspace use local fixtures and must never contact production AniDB.
+//! Both APIs require a registered client; Animatic's own are [`UDP_CLIENT`] and [`HTTP_CLIENT`].
+//! Tests in this workspace use local fixtures with synthetic client names and must never contact
+//! production AniDB.
+
+/// Client name registered with AniDB (<https://anidb.net/software/add>) for Animatic's UDP API
+/// client; sent as `client` in `AUTH`.
+///
+/// This is a registered identifier, not a program version: an Animatic release version bump never
+/// changes it.
+pub const UDP_CLIENT: &str = "animatic";
+/// Registered version of [`UDP_CLIENT`], sent as `clientver`.
+///
+/// A release version bump never changes it; raise it only when a new client version is
+/// registered with AniDB.
+pub const UDP_CLIENT_VERSION: u32 = 1;
+/// Client name registered with AniDB for Animatic's HTTP API client; sent as `client` in anime
+/// requests. AniDB registers a client per API, so this differs from [`UDP_CLIENT`].
+///
+/// This is a registered identifier, not a program version: an Animatic release version bump never
+/// changes it.
+pub const HTTP_CLIENT: &str = "animatichttp";
+/// Registered version of [`HTTP_CLIENT`], sent as `clientver`.
+///
+/// A release version bump never changes it; raise it only when a new client version is
+/// registered with AniDB.
+pub const HTTP_CLIENT_VERSION: u32 = 1;
 
 pub mod commands;
 pub mod error;
 pub mod http;
+pub mod limits;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod udp;
 
 pub use error::{AnidbError, Result};

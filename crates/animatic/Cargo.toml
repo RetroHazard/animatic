@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+build = "build.rs"
+
 [dependencies]
 animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb" }
 animatic-core = { version = "2026.11.0", path = "../animatic-core" }
@@ -15,11 +17,31 @@ directories = "6.0.0"
 eframe = "0.37.0"
 egui = "0.37.0"
 egui_extras = "0.37.0"
-image = "0.25.10"
+# Covers only: JPEG, PNG, WebP and GIF decoding, no encoders and no other formats.
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 log = "0.4.35"
 open = "5.4.5"
 parking_lot = "0.13.0"
 rfd = "0.17.2"
 serde = "1.0.229"
 serde_json = "1.0.154"
-trash = "5.2.9"
+
+# System tray (best effort, `src/tray.rs`). Windows uses the notification area through
+# `tray-icon`; Linux speaks the StatusNotifierItem protocol over the session bus with `zbus`
+# (already in the graph for the Secret Service), so neither adds a system package.
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "0.26.1", default-features = false }
+# Attach to the starting terminal's console (the program itself has no console window).
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.19.0"
+
+[dev-dependencies]
+# Test fixtures only: a manual clock, an in-memory limit store and loopback servers.
+animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb", features = ["test-support"] }
+tempfile = "3.27.0"
+
+# Embeds assets/animatic.ico as the Windows executable icon (build.rs).
+[build-dependencies]
+winresource = "0.1"

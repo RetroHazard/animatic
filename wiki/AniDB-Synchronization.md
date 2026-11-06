@@ -6,12 +6,14 @@ command fails. Error messages and recovery steps are in
 
 Animatic works **offline-first**. Hashing, browsing, searching and local MyList edits never
 touch the network. Network traffic happens only in the *Synchronizing with AniDB* job, started
-by **Tools → Run command queue** or **Queue → Synchronize now** (nothing runs on a timer).
+by **Tools → Run command queue** or **Queue → Synchronize now**, or by Animatic itself when you
+switch on **Run the command queue automatically** ([below](#automatic-runs-and-the-anidb-session);
+off by default, so nothing runs on a timer unless you ask for it).
 
-Before the first run: set **Client name** (registered with AniDB), **Username** and
-**Password**, optionally an **API key** (encrypted UDP sessions), clear **Work offline**, press
-**Save options**. See [client registration](First-Launch.md#anidb-client-registration). Imported AOM
-settings never contain a client name.
+Before the first run: set **Username** and **Password**, optionally an **API key** (encrypted UDP
+sessions), clear **Work offline**, press **Save options**. Animatic uses its own registered AniDB
+clients (`animatic` for UDP, `animatichttp` for HTTP), so no client is entered anywhere. See
+[client registration](First-Launch.md#anidb-client-registration).
 
 The job (`process_queue`):
 
@@ -23,28 +25,133 @@ The job (`process_queue`):
    the next unblocked command until the queue is empty, you cancel, a command stops the run or a
    cooldown begins. Every successful command is removed from the queue and logged
    (`known file F (anime A), mylist entry L`, `mylist entry updated`, `anime A updated`,
-   `N titles downloaded (M new)`, …). It logs out of UDP at the end.
-4. Requests are paced: UDP packets at least 2 s apart (4 s after a burst of five; idle for 10
-   minutes resets that), HTTP requests 2 s apart. UDP login is lazy (first UDP command).
+   `N titles downloaded (M new)`, …). It logs out of UDP at the end, unless automatic runs are on
+   and the login is kept for the next run ([below](#automatic-runs-and-the-anidb-session)).
+4. Requests are paced for the whole program, not per run: UDP packets at least 2 s apart for
+   the first five of a burst and 4 s apart afterwards (10 idle minutes restart the burst), HTTP
+   requests (anime records, the title list, images) at least 2 s apart. Repeated **Synchronize
+   now** clicks therefore share one burst allowance, and the time of every request is saved
+   before it is sent, so closing and restarting Animatic cannot shorten the gaps: after a
+   restart the first packet waits 4 s from the last one. A long queue takes a long time; that
+   is not a hang. UDP login is lazy (first UDP command). The local UDP port is always the one in
+   `anidb.local_port`: if it is busy the run stops with an error naming that setting (see
+   [Network and sync problems](Network-and-Sync-Problems.md#network-and-firewall)).
 
 What the user-reachable commands do:
 
 | Command | Effect on the local database |
 |---|---|
 | Identify | Stores AniDB's file record; optionally adds the file to MyList (see above) |
-| Edit mylist entry | Sends state/watched changes; on success updates the local entry (keeping any newer pending edit on top) |
-| Fetch anime N | Downloads the HTTP-API anime record: titles, episodes, genres, relations, reviews, metadata |
-| Fetch file N | Updates a file record (from a full update) |
-| Download anime title list | Streams `anime-titles.xml.gz` into a temporary store, validates it, then merges atomically in one transaction. Creates an anime row for every unknown id and replaces titles only of anime without a full HTTP record (imported AOM anime count as such). Failure leaves titles and the completion time untouched. Limits: 32 MiB compressed, 128 MiB decoded, 250 000 anime, 2 000 000 titles, 2048 bytes per name. |
-| Fetch mylist statistics | Log line only |
+| Edit mylist entry | Sends the merged state, watched, view date, storage, source and other changes; on success updates the local entry (keeping any newer pending edit on top) |
+| Add to mylist | From **Hashed files → Add to MyList…**. An identified file is added by file id; an unidentified one by size and ED2K hash, which AniDB looks up first (a file it does not know is dropped with the log line `file unknown to AniDB`). A new entry is stored locally with the values you set; if the file is already in MyList the entry is refreshed and your values are applied as an edit. Until then **Hashed files** shows `Add queued`. |
+| Remove mylist entry | From **My list → Remove from MyList…**. Deletes the entry on AniDB. The local row is removed only after AniDB acknowledges (or says the entry no longer exists), and not at all if you queued something for the entry afterwards. Never touches your media file. |
+| Refresh mylist entry | From **My list → Refresh entry**. Re-reads the entry and replaces the cached row, keeping edits that are still queued on top. If AniDB says the entry is gone, the row is removed unless changes for it are queued. |
+| Fetch anime N | Downloads the HTTP-API anime record: titles, episodes, genres, relations, reviews, metadata. At most once per anime per 24 hours (see [Request limits](#request-limits)) |
+| Fetch file N | Updates a file record (from a full update, or from hashing an already identified file again with *Update known file information* on). At most once per file per 7 days |
+| Fetch episode N | From the **Refresh** button of an episode in the [anime detail window](Library-Pages.md#anime-detail-window). Replaces the cached episode record |
+| Fetch group N | From the **Refresh** link on the [Groups page](Library-Pages.md#groups). Replaces the cached group record |
+| Download anime title list | Streams `anime-titles.xml.gz` into a temporary store, validates it, then merges atomically in one transaction. Creates an anime row for every unknown id and replaces titles only of anime without a full HTTP record (imported AOM anime count as such). Failure leaves titles and the completion time untouched. Limits: 32 MiB compressed, 128 MiB decoded, 250 000 anime, 2 000 000 titles, 2048 bytes per name. At most once per 24 hours (see [Request limits](#request-limits)) |
+| Request MyList export | Sends `MYLISTEXPORT template=xml-plain-new`. Only from **Tools → Request MyList export…**; logs the answer (requested, already queued, or blocked as an unknown template). At most once per 24 hours. See [Full-account MyList import](#full-account-mylist-import) |
+| Cancel MyList export | Sends `MYLISTEXPORT cancel=1` (from the same dialog); logs that the export was cancelled or that none was queued |
+| Fetch mylist statistics | Stores AniDB's account figures with the time they arrived (replacing the previous ones) and shows them on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures. The log line `N anime, N episodes, N files in mylist` is still written |
 
-A full update (`--full-update`) queues the title list plus one file lookup and one anime refresh for
+A full update (**Tools → Full update…** after a confirmation that shows the counts, or `--full-update`) queues the title list plus one file lookup and one anime refresh for
 each file id and anime id that your **identified hashed local files** resolve to (not the whole local
-cache or the title catalog); it does not run them.
+cache or the title catalog); it does not run them. It leaves out what AniDB's limits do not
+allow yet (the title list, anime and files requested recently, see [Request limits](#request-limits))
+and the log line says how many were left out.
+
+**Update known file information** (Options, off by default): when a file the library already
+knows from AniDB is hashed again (Add files, the command line or a scan), Animatic queues a
+`Fetch file` for it instead of looking it up by hash again, unless that file was requested within
+the last 7 days (the log then says when it is allowed). With the option off, hashing a known file
+again queues nothing; a file AniDB did not know yet keeps the *Identify after hashing* path. A
+folder that adds files to MyList automatically still queues `Identify` (which refreshes the record
+too).
+
+## Automatic runs and the AniDB session
+
+**Run the command queue automatically** (Options → AniDB account, `anidb.auto_run_queue`) is **off
+by default**. With it off nothing is sent unless you start a run, and every run logs in when its
+first command needs it and out when it ends. With it on, Animatic starts the same job for you:
+
+- **When.** 30 seconds after the newest command was queued (a burst of edits becomes one run) and
+  every 15 minutes for whatever is still waiting. Switching the option on counts the commands
+  already queued as new. A queue holding nothing a run may send starts no run at all.
+- **What.** The log shows `Automatic command queue run started` and the job is labelled
+  *Synchronizing with AniDB (automatic run)*. Spacing, cooldowns, blocking and failure handling
+  are exactly those of a manual run ([Request limits](#request-limits),
+  [Failure handling](#failure-handling)), so a burst of new commands never goes out faster than
+  AniDB allows. Blocked commands are not retried automatically: they wait for **Retry failed**.
+- **MyList removals are never sent automatically.** A removal queued with **Remove from MyList…**
+  stays queued until you click **Queue → Synchronize now** or **Tools → Run command queue**; an
+  automatic run sends everything else around it. The Queue page says so while the option is on
+  and counts the removals that are waiting.
+- **When it waits.** The run is postponed, with one log line (`Automatic command queue run
+  postponed (reason); it starts when that is over`), while Work offline is on, an AniDB cooldown
+  is active, the user name or password is not set (the queue is *not* blocked for
+  that), another task is running, an import, settings review or restore is open, or changes are
+  not saved to the database yet. It then starts by itself.
+- **Settings** reach the background timer when Options is closed, not while you edit.
+
+With the option on, **one AniDB login is kept between runs** (AniDB asks clients not to log in and
+out around every command):
+
+- Consecutive runs share one login. The session is logged out after
+  `idle_logout_minutes` (default 10, from 1 to 30) without a command, so it never reaches AniDB's
+  35 idle minutes. While commands that an automatic run would send are still waiting (the run was
+  postponed or stopped), the session is kept instead, with a keep-alive command (`UPTIME`) at least
+  every 30 minutes.
+- A session that AniDB has already dropped (for example after a long hashing job) is forgotten
+  without sending anything; the next run logs in again. A rejected session (`506`) is replaced by
+  a new login, as before.
+- **Behind a router.** The login reply tells which source port AniDB saw. Only when that differs
+  from your local port, a `PING nat=1` is sent whenever 4 minutes pass without any packet (home
+  routers forget a mapping after 5 to 15 minutes), until the logout. When the ports agree there
+  are no pings. Pings are not commands: they do not postpone the idle logout.
+- Every packet of this upkeep takes its place in the program-wide spacing like any other, and
+  none is sent while Work offline is on or an AniDB cooldown is active, not even a logout (AniDB
+  drops the session by itself).
+- Switching the option off logs a kept session out as soon as nothing else is running. Changing
+  the account, API key, server or port drops the session without a packet,
+  and the next run logs in with the new values. A ban reply or a failed keep-alive forgets the
+  session and starts the usual cooldown.
+- **On exit** Animatic sends one `LOGOUT` and waits for it at most about 8 seconds. It sends nothing
+  when offline or cooling down.
+
+## Request limits
+
+AniDB asks clients not to request the same data again and again, and bans those that do. Animatic
+counts every request it **sends**, whether or not it succeeded, and saves the time *before* sending,
+so a failed or interrupted request does not allow a quick second one:
+
+| Request | Not sent again within |
+|---|---|
+| Anime title list (**Tools → Download anime titles**, full update) | 24 hours |
+| One anime's details (anime detail **Refresh from AniDB**, full update) | 24 hours |
+| One known file (`Fetch file`, full update) | 7 days (Animatic's own conservative choice; AniDB only asks clients to cache file data for long periods) |
+| One anime's cover picture (anime detail window) | Never again once downloaded; 1 hour after a failed try (Animatic's own choice; AniDB publishes no image limits) |
+| The MyList export (**Tools → Request MyList export…**) | 24 hours |
+
+Inside the window the request is not sent and nothing is queued for it: the menu item or **Refresh
+from AniDB** tells you when the next one is allowed (status bar and log). If such a command is
+already in the queue when it runs, it finishes as *skipped* (removed from the queue, logged with the
+time it is allowed again) and is neither an error nor a counted attempt. This includes a command
+whose first try failed: the failed try already used the window, so wait for the time shown. Requests
+that are refused before anything is sent (a login that fails first) are not
+counted.
+
+Anime covers follow the same rules without going through the queue: the
+[detail window](Library-Pages.md#cover) requests one picture from AniDB's image server when it opens
+and the picture is not on disk yet. The request is paced with every other HTTP request (2 s), is not
+sent offline or during a ban or cooldown, is not repeated for the same anime within an hour of a try
+that failed, and a picture that arrived is never requested again. A ban answered to a cover request
+pauses the queue for the same cooldown as any other ban.
 
 ## MyList editing
 
-On **My list**, changing **State** or toggling **Watched** is a *local-first* edit:
+On **My list**, changing **State** or toggling **Watched**, or saving the **Edit…** dialog (state,
+watched, view date, storage, source, other), is a *local-first* edit:
 
 1. In one database transaction the edit is saved to the outbox **and** the stored MyList entry is
    updated, so the row shows the new value immediately (even before the next snapshot) and
@@ -53,7 +160,9 @@ On **My list**, changing **State** or toggling **Watched** is a *local-first* ed
 3. Further edits of the same entry before that are **merged** into one fresh queue row with a new,
    never-reused id: unset fields keep the older value, and the last watched/unwatched choice wins
    (watched → unwatched → watched ends watched at the latest time). Marking watched stamps the
-   time of your click, not the time AniDB hears of it; unmarking clears the date.
+   time of your click, not the time AniDB hears of it; unmarking clears the date. A field the
+   editor sent as an empty string (ticked, empty) is a real value that clears it on AniDB and
+   stays in the merge; a field you did not tick is simply absent.
 4. When AniDB acknowledges, the local entry is rewritten with the acknowledged values **plus** any
    newer pending edit. An acknowledgement or reply for an older command cannot erase newer
    intent. Queued edits that can be read are re-applied over AniDB data fetched meanwhile, so it
@@ -73,9 +182,72 @@ Failures and edge cases:
 - If the database is locked by a background write the edit is refused with a visible message;
   repeat it.
 - An entry with a queued removal ignores edits (`Mylist entry N is pending removal; edit
-  ignored`); no screen queues removals.
-- Storage, source, other and view date are not editable on screen; they are set only by a folder
-  rule's add policy.
+  ignored`); the editor says so and its **Save** is disabled. **Remove from MyList…** queues the
+  removal (and discards the entry's queued edits, which are moot). The local row stays and shows
+  `Removal queued` until AniDB acknowledges; a removal that fails permanently stays queued and
+  blocked (`Removal blocked`, last error on hover) and the row is kept, until you **Retry failed**
+  or clear it. If the removal left the queue while it was being sent (for example **Clear queue**
+  during a run) and you then edit the entry, that newer edit wins: the acknowledgement does not
+  delete the row.
+
+## Full-account MyList import
+
+AniDB has no way to hand a client its whole MyList, and asking for the entries one by one is the
+bulk extraction its rules forbid. The supported way is a **MyList export**: AniDB prepares a file
+on request, and Animatic imports that file. Nothing here runs by itself; each step is yours.
+
+1. **Request the export.** **Tools → Request MyList export…** explains the steps and queues the
+   request (UDP `MYLISTEXPORT`, template `xml-plain-new`). Like every queued command it is sent
+   only when you run the command queue, with Work offline cleared. AniDB prepares **one export
+   at a time**, and **may take up to 24 hours**. Animatic allows one request per 24 hours (the
+   dialog then says when the next one is allowed, and **Request export** is disabled).
+2. **Wait for AniDB's message.** AniDB announces the finished export as a message in your AniDB
+   inbox. Animatic does not poll for it.
+3. **Download the file.** Open [AniDB's export page](https://anidb.net/perl-bin/animedb.pl?show=export)
+   (the dialog's **Open export page** button opens it in your browser) and save the export.
+   AniDB documents no way to fetch it from a program, so Animatic does not try.
+4. **Import it.** **File → Import MyList export…** and pick the downloaded file (an archive
+   `.tgz`/`.zip`, a compressed `.gz` or a plain `.xml`; the kind is recognized from the content).
+
+What AniDB answers to the request:
+
+| Answer | What Animatic does |
+|---|---|
+| Queued (`217`) | Logs that the export was requested and when to expect it; the command leaves the queue |
+| Already queued (`318`) | Logs that an export is already on its way. This is **not an error**, nothing is retried and the rest of the queue goes on |
+| Unknown template (`317`) | Blocks that one command with the reason (a retry cannot succeed); the rest of the queue goes on |
+
+**Cancel pending export** in the dialog queues a cancellation (`cancel=1`) of the export AniDB
+has queued; it does not undo the 24-hour wait for a new request.
+
+The import reads the file on its own, never touching AniDB. It is **all or nothing**: the file is
+checked completely first (size and entry limits, a well-formed document, valid ids, hashes and
+dates), and only then written in a single step. A truncated, damaged, too large or unrecognized
+file is refused with a message naming the problem, and your library is exactly as it was.
+Cancel works while the file is read and during the final step, with the same result. The file may
+hold up to 256 MiB (1 GiB decoded), 250 000 anime and 5 000 000 files.
+
+How the file is merged:
+
+- **Pending changes win.** A MyList entry with a queued add, edit or removal is not touched; the
+  log says how many entries were kept for that reason.
+- **Nothing is deleted.** Entries in your library that are not in the export stay; the log only
+  counts them. The export is a snapshot (up to a day old), so a missing entry is no proof that
+  it is gone. Remove entries with **Remove from MyList…**.
+- **Richer local data stays.** Missing anime, episodes, files and groups are created; known ones
+  only get empty fields filled. An existing MyList entry takes the export's state, watched flag
+  and view date, plus the date added and storage text when the export has them; its other
+  values stay. An entry that your library keeps for a different file is left alone.
+- **Repeatable.** Importing the same file again changes nothing.
+- Anime that are only on your wishlist (no files) are skipped.
+
+The accepted file layout is listed in
+[the storage reference](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#mylist-export-import).
+Because AniDB's own example files may not be downloaded for this project, the layout follows
+what third-party tools read; Animatic has **not** been checked against a real `xml-plain-new`
+file. If AniDB's file differs, the import stops with a message naming the first element it
+could not use, and nothing changes. See
+[Network and sync problems](Network-and-Sync-Problems.md#the-library-is-missing-entries).
 
 ## Failure handling
 
@@ -85,9 +257,11 @@ How the queue reacts. The retry, cooldown and blocking *policy* lives in the des
 
 | Situation | Reaction |
 |---|---|
-| Ban (UDP 510/555/504; HTTP ban text) | Entry kept, **no attempt counted**, queue stops, cooldown **30 minutes** (persisted) |
-| Rejected credentials, missing client name/user/password, outdated client (UDP 503) or HTTP client rejection | **Every** unblocked command is blocked with the reason; the queue stops; no cooldown. Fix the setting, **Save options**, **Retry failed**, run again |
+| Ban (UDP 510/555; HTTP ban text) | Entry kept, **no attempt counted**, queue stops, cooldown **30 minutes** (persisted) |
+| Rejected credentials, missing user name/password, outdated client (UDP 503) or **banned client version (UDP 504)** | **Every** unblocked command is blocked with the reason; the queue stops; no cooldown. Fix the credentials, **Save options**, **Retry failed**, run again. For 503/504 AniDB refuses Animatic's built-in client registration: update Animatic (a release carries a newly registered client version), or report it if you already run the latest release |
+| HTTP client rejection | Only the HTTP commands (anime records) are blocked; UDP commands keep running. Same remedy as for 504 |
 | Network/DNS/timeout, AniDB "unavailable" | Queue stops; cooldown 60 s (or the server's stated wait); not counted as an attempt |
+| No reply to the login (`AUTH`) | Queue stops; cooldown **30 s, then 2 min, 5 min, 10 min, 30 min and 2 hours** on every further login without a reply (the step is saved, so a restart continues it; a successful login resets it); not counted as an attempt |
 | UDP server errors 600/601/602/604 | 604 → 60 s cooldown; the others 30 minutes. Only error 600 and HTTP responses with an error status count toward the attempt limit |
 | Storage I/O or database errors while applying a reply | Treated as transient: 60 s cooldown, counted |
 | Attempt limit | After 5 counted failures a command is blocked (`blocked after 5 failed attempts`) |

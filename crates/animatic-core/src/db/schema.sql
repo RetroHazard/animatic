@@ -263,6 +263,25 @@ CREATE TABLE IF NOT EXISTS local_file (
 CREATE UNIQUE INDEX IF NOT EXISTS local_file_path ON local_file(path);
 CREATE INDEX IF NOT EXISTS local_file_hash ON local_file(hash_id);
 
+-- Media properties read through ffprobe (opt-in, see the media module). One row per local file that was
+-- probed; hash_id records the content that was probed, so a row left behind by a re-hash to
+-- different content is ignored. All value columns are NULL when ffprobe ran but found nothing
+-- usable (the row then only records the attempt). Lengths in seconds, bitrates in kbit/s.
+CREATE TABLE IF NOT EXISTS media_info (
+    local_file_id    INTEGER PRIMARY KEY,         -- local_file.id; removed with the file (store.rs)
+    hash_id          INTEGER NOT NULL,
+    length           REAL,
+    fps              REAL,
+    video_width      INTEGER,
+    video_height     INTEGER,
+    video_codec      TEXT,
+    video_bitrate    REAL,
+    audio_codec      TEXT,
+    audio_samplerate INTEGER,
+    audio_bitrate    REAL,
+    probed           INTEGER NOT NULL DEFAULT 0   -- unix time of the probe
+);
+
 -- Pending AniDB commands (mylist edits etc.), persisted so offline work survives restarts.
 -- AUTOINCREMENT: ids are never reused, so an acknowledgement for a command that was
 -- superseded (or cleared) while in flight can never delete a newer command.
@@ -282,3 +301,31 @@ CREATE TABLE IF NOT EXISTS command_queue (
 CREATE INDEX IF NOT EXISTS command_queue_order ON command_queue(blocked, priority, id);
 CREATE INDEX IF NOT EXISTS command_queue_lid ON command_queue(lid);
 CREATE INDEX IF NOT EXISTS command_queue_payload ON command_queue(payload);
+
+-- Last time a request for one record was sent to AniDB, saved BEFORE sending and whether or not
+-- it succeeded, so a failure, crash or restart cannot allow a repeat inside the minimum age.
+-- kind: 'anime' (HTTP record), 'file' (UDP FILE by id), 'cover' (image server) or 'export'
+-- (UDP MYLISTEXPORT, id 0); id: aid, fid or aid (cover; 0 for export); attempted: unix time.
+-- `anime.fetched` and `meta.titles_dump_date` keep recording only successes.
+CREATE TABLE IF NOT EXISTS request_attempt (
+    kind      TEXT    NOT NULL,
+    id        INTEGER NOT NULL,
+    attempted INTEGER NOT NULL,
+    PRIMARY KEY (kind, id)
+);
+
+-- Files waiting to be hashed (roadmap M5.4), so a quit or crash does not lose them.
+-- key: canonical path (unique), so one file is queued once however its path is spelled;
+-- path: the absolute path as given, which is hashed and recorded in local_file.
+-- source: 'add-files', 'command-line', 'scan' or 'handoff'.
+-- state: 'queued' or 'failed'; a failed entry keeps its reason until retried or cleared.
+CREATE TABLE IF NOT EXISTS hash_queue (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    path   TEXT    NOT NULL,
+    key    TEXT    NOT NULL UNIQUE,
+    added  INTEGER NOT NULL,
+    source TEXT    NOT NULL,
+    state  TEXT    NOT NULL DEFAULT 'queued',
+    reason TEXT
+);
+CREATE INDEX IF NOT EXISTS hash_queue_order ON hash_queue(state, id);

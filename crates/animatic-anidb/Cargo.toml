@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Fixtures for tests of this crate and of the crates built on it (a manual clock, an in-memory
+# limit store, a loopback HTTP server, endpoint overrides). Enabled only by dev-dependencies.
+test-support = []
+
 [dependencies]
 aes = "0.9.4"
 chrono = "0.4.45"

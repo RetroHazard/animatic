@@ -102,7 +102,7 @@ property of an object that is **not bound** is a hard error.
 
 Guard optional objects with `if(G, …)`, `if(H, …)`, `if(M, …)`, and use the lazy three-argument
 form so the unbound branch never runs. The "Can't autorename" wording is inherited legacy text;
-no automatic renaming exists.
+no automatic renaming happens unless a managed folder is explicitly set to **On**.
 
 The tables list each property with its value type. Strings marked `AStr` are truthy when
 non-empty; `WStr`, `Int64` and `Byte` values are never truthy.

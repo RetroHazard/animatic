@@ -66,6 +66,11 @@ equivalent development packages. A build failure that mentions a missing GTK, xk
 Wayland or OpenSSL library or a `pkg-config` lookup almost always means one of those
 packages is absent.
 
+The system tray adds no package to that list: on Linux it speaks the StatusNotifierItem protocol
+over D-Bus through the `zbus` crate (no GTK or libappindicator), on Windows it uses `tray-icon`.
+A desktop needs a tray host (or the GNOME AppIndicator extension) to show the icon; without one
+the tray options are disabled, so a CI or container run is unaffected.
+
 Linux is a supported build target (CI compiles and tests it), but a native Linux run of the
 desktop application has not been recorded; treat Linux UI behavior as unverified until you
 have exercised it yourself.
@@ -164,12 +169,13 @@ private databank that lives **outside** the repository:
 cargo run -p animatic-core --example import-legacy -- /outside/repo/kowai /tmp/animatic-import.sqlite3
 ```
 
-It writes decrypted intermediate files to a sibling directory named after the output
-(`animatic-import.import-temp` here; `output.with_extension("import-temp")` in the example's
-code) and removes it after a successful run. After a failed or interrupted run, plaintext
-copies of private library data can remain there. The example does not require the directory
-to be new, so inspect it, delete only the `<collection>.sqlite` files the importer created, and
-remove the directory once it is empty; delete the output yourself. Only record the
+It writes decrypted intermediate files to a marked `animatic-legacy-import-*` folder in the
+system temporary directory (`legacy::workdir::default_temp_root()`) and removes it when the
+run ends, whether it succeeded or failed. After a crash or a kill, plaintext copies of private
+library data can remain there; the desktop application offers to remove such folders at its
+next start, or delete one yourself only if it has that name prefix **and** contains the
+`.animatic-legacy-import` marker file. The example writes into the output file you name and, unlike the desktop
+import, does not ask when that file already holds data; delete the output yourself. Only record the
 observation ("imported N records from M collections"), never the content, in notes or
 commits.
 
@@ -252,7 +258,7 @@ into an issue, a commit or documentation.
   embed record dumps, ciphertext, header samples or hex copied from a real databank, even
   encoded. They are private artifacts, not format constants.
 - **Use fictitious identities.** User name `animatic-test-user`, a client name that cannot
-  be mistaken for a registered one, and paths under a clearly fictitious root (a temporary
+  be mistaken for Animatic's registered ones, and paths under a clearly fictitious root (a temporary
   directory such as `<TEMP>/animatic-test-root`).
 - **Isolate the filesystem.** Create per-test directories under `std::env::temp_dir()` named
   with the process id and a counter, and delete them in a `Drop` guard (the worker tests'
@@ -271,23 +277,36 @@ into an issue, a commit or documentation.
 No automated test may contact production AniDB, and none may use fabricated or unregistered
 client credentials against it. The existing tests show the pattern:
 
-- **UDP:** the worker tests bind a fixture `UdpSocket` to `127.0.0.1:0`, point
-  `AnidbSettings::udp_server` at its address, set `local_port` to `0`, and reply with canned
-  lines. `AnidbSettings::default()` points at `api.anidb.net:9000`, so a test that forgets
-  the override targets the real server. Always set the server address and assert on the
-  fixture's packet count.
-- **HTTP:** `HttpClient::anime` and `HttpClient::titles_dump` use fixed production URLs
-  (`HTTP_API`, `TITLES_DUMP`), and `process_queue` in the worker builds its clients from
-  those. A worker-level test therefore must not queue `FetchAnime` or `TitlesDump`. HTTP
-  behavior is tested inside `animatic-anidb` against a loopback `TcpListener` through the
-  crate-private `titles_dump_from(url, …)`, with the proxy disabled (`.proxy(None)`, because
-  the default agent can pick up a proxy from the environment), or against byte fixtures
-  passed straight to the parsers.
-- **No registered production client exists in this repository.** Do not invent one, and do not
-  put real credentials, API keys or session keys in tests, fixtures, logs or documentation.
+- **UDP:** the worker tests start `animatic_anidb::testing::UdpFixture` (a socket on
+  `127.0.0.1:0` that echoes the request tag and replies with canned lines; an empty reply
+  models a server that does not answer), point `AnidbSettings::udp_server` at its address, set
+  `local_port` to `0`, and reply with canned lines. `AnidbSettings::default()` points at
+  `api.anidb.net:9000`, so a test that forgets the override targets the real server. Always set
+  the server address and assert on the fixture's packet count.
+- **Spacing and time:** never sleep in a test. The clients take their send slots from a
+  `Limits` whose `Clock` is replaceable: `animatic_anidb::testing::ManualClock` only moves when
+  the limiter "sleeps", so a test reads exact packet gaps (record `clock.now_ms()` when the
+  fixture receives a packet) and a restart is a new `Limits` over the same store
+  (`MemoryStore`, or `animatic_core::limits::open_limits_with_clock` over the test database).
+- **HTTP:** `HttpClient::anime` and `HttpClient::titles_dump` use the fixed production URLs
+  (`HTTP_API`, `TITLES_DUMP`) unless a test calls `HttpClient::with_loopback_endpoints`, which
+  points both at `animatic_anidb::testing::HttpFixture` (a loopback server that counts requests)
+  and disables proxies (the default agent can pick one up from the environment). `process_queue`
+  in the worker builds its clients from the production URLs, so a worker-level test must not
+  run `FetchAnime` or `TitlesDump` against the network; the guard tests for those commands call
+  `sync::execute` with loopback clients (see `animatic-core/src/limits.rs`). The fixtures are
+  behind the `test-support` cargo feature of `animatic-anidb`, which only the
+  `[dev-dependencies]` of `animatic-core` and `animatic` enable.
+- **The only registered client identifiers are Animatic's own.** They are the constants
+  `UDP_CLIENT`/`UDP_CLIENT_VERSION` (`animatic`, 1) and `HTTP_CLIENT`/`HTTP_CLIENT_VERSION`
+  (`animatichttp`, 1) in `animatic-anidb`, hardcoded: no setting, no override. A release version
+  bump never changes them; raise a version only when a new client version is registered with
+  AniDB. Production code passes them to `UdpConfig` and `HttpClient::new`, which keep taking a
+  name and version so that tests can pass synthetic ones. Do not invent other identifiers, and do
+  not put real credentials, API keys or session keys in tests, fixtures, logs or documentation.
 - Deliberate production contact is a manual, maintainer-run activity with that person's own
-  account and registered client identifier; it is not part of any test or CI job, and nothing
-  in this repository records it as done.
+  account; it is not part of any test or CI job, and nothing in this repository records it as
+  done.
 
 ### Update tests and smoke rehearsals
 
@@ -334,6 +353,83 @@ Reported by the implementing session; historical evidence, not a substitute for 
   passed. Counts are a dated fact; do not quote them as current.
 - **Not exercised:** the Linux GUI and the Linux install path, and any update against real GitHub
   releases.
+
+## Media properties and the pinned FFmpeg build
+
+The optional media properties (roadmap M7.5) use the external `ffprobe` tool. Code:
+`crates/animatic-core/src/media/` (`tool`, `install`, `probe`, `store`), the tools thread and the
+`Job::ReadMedia` body in `crates/animatic/src/media.rs`, the Options section in
+`crates/animatic/src/app/media_options.rs`. Network contract and trust model:
+[ffprobe download transport](storage-and-network.md#ffprobe-download-transport). Animatic does
+not bundle FFmpeg: release archives contain no `ffprobe`, and the user installs it (or points to
+one) from Options.
+
+**Distributor choice (researched 2026-11-06).** The install needs a static build for Windows and
+Linux x86-64 under a license that can be downloaded at the user's request and shown to them.
+
+| Source | Platforms | License of its builds | Checksums and retention |
+|---|---|---|---|
+| [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) (GitHub releases) | Windows, Linux (x86-64 and arm64) | **LGPL** and GPL variants, static or shared | `checksums.sha256` in every release plus GitHub's `digest` per asset; last 14 daily builds, the last build of each month for two years, a floating `latest` |
+| [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) | Windows only | all builds GPLv3 (stated on the page) | not evaluated further: no LGPL build |
+| [johnvansickle.com](https://johnvansickle.com/ffmpeg/) | Linux only | GPLv3 (stated in its readme) | not evaluated further: no LGPL build |
+
+BtbN is the only source with an LGPL build for both platforms and a checksum list that is part
+of the release, so it is the one pinned. A distribution package on Linux is preferred over the
+download when `ffprobe` is on `PATH`.
+
+**What is pinned.** A *month-end* autobuild, because the retention policy removes daily builds
+after 14 days and `latest` floats, so neither gives a stable URL. The release is
+`autobuild-2026-10-31-12-59` (FFmpeg 9.0 branch, `n9.0.2-39-g7adfbe40dc`), assets
+`...-win64-lgpl-9.0.zip` and `...-linux64-lgpl-9.0.tar.xz`. Version, URL, exact size and SHA-256 are
+the constants `WINDOWS_X64` and `LINUX_X64` in `media/install.rs`; the install refuses any
+download whose size or SHA-256 differs. The expected values were taken from the release's
+`checksums.sha256` and GitHub's `digest` field (they agree), and both assets were downloaded
+manually once (with `curl`, outside of any test) and hashed locally to confirm them and to read
+the archive layout (`<root>/bin/ffprobe[.exe]`, `<root>/LICENSE.txt`).
+
+**Updating the pin** (when a newer FFmpeg is wanted, or before the month-end build expires, which
+is two years after its date):
+
+1. Pick the newest month-end release on the
+   [releases page](https://github.com/BtbN/FFmpeg-Builds/releases): the last `autobuild-YYYY-MM-DD-HH-MM`
+   of a month (the next month's first build confirms it was the last). Prefer a release branch
+   (`n9.0.x`) over `master`.
+2. From that release take the two LGPL, **non-shared** assets (`win64-lgpl-<branch>.zip`,
+   `linux64-lgpl-<branch>.tar.xz`), their sizes, and their SHA-256 values from
+   `checksums.sha256`; compare them with the `digest` of each asset in
+   `https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/<tag>`.
+3. Download both once by hand and run `sha256sum` (or `Get-FileHash`) to confirm; check that the
+   archive still has `<root>/bin/ffprobe[.exe]` and `<root>/LICENSE.txt`, that `ffprobe -version`
+   shows `--enable-version3` without `--enable-gpl`, and that the license text is still the LGPL.
+4. Update `version`, `build`, `url`, `sha256`, `size`, `root` and `page` of both pins (and the
+   license text if it changed), the table in the transport section above and the sizes quoted in
+   `wiki/External-Tools.md` and `wiki/Data-Locations.md`. `the_pinned_constants_are_well_formed`
+   checks the shape (LGPL asset, HTTPS GitHub URL, 64 hex digits, size limit).
+5. Run the workspace checks, then a manual install on both platforms (Options → Media properties →
+   **Install ffprobe…**) and one probe of a synthetic media file; a Linux run is not verified by
+   the project until someone records one.
+
+**Tests.** All automated tests use loopback servers, synthetic zip and tar.xz archives (built with
+the `zip`, `tar` and `lzma-rs` crates), a stand-in `ffprobe` (a shell script on Unix, a batch file
+on Windows) and the test binary re-run as a child process for timeout and output-limit cases. They
+never contact GitHub or AniDB and never need a real FFmpeg. `lzma-rs` (MIT, pure Rust) was added
+for the Linux `tar.xz`; it brings `crc` and `crc-catalog`. All three declare MIT or MIT/Apache-2.0,
+which `about.toml` accepts (`cargo about` itself was not run locally).
+
+**Manual verification record (2026-11-06, Windows).** The pinned Windows archive was extracted by
+the production code (`extract_zip`), the resulting `ffprobe.exe` reported
+`ffprobe version n9.0.2-39-g7adfbe40dc-20261031`, and a synthetic two-second 8 kHz mono WAV
+written by a script gave `pcm_s16le`, 8000 Hz, 128 kbit/s, 2.0 s; a local `.m3u8` playlist pointing
+at an HTTP address was refused by `-protocol_whitelist file` ("Protocol 'http' not on whitelist").
+The pinned Linux archive was extracted by the production tar.xz path on Windows (about 15 s, correct
+sizes), but the Linux binary was not executed. In the native Windows window, with offline mode on,
+Options → **Install ffprobe…** showed the confirmation (size, license, source, folder; declining
+created nothing), then downloaded, verified and installed the real pinned archive in about three
+seconds and showed `ffprobe n9.0.2-39-g7adfbe40dc-20261031 (installed by Animatic)`; after
+enabling *Read media properties after hashing* and saving, a synthetic WAV given on the command
+line was hashed at startup, read in a separate job (`media_info`: 2.0 s, `pcm_s16le`, 8000 Hz,
+128 kbit/s), and **File → Export hashes…** wrote `len=2 a=pcm_s16le sr=8000 abr=128.00` with the
+video tokens at their constants. The Linux GUI path was not exercised.
 
 ## Continuous integration
 
@@ -683,8 +779,9 @@ Runtime data and where it lands:
   [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the settings file holds the AniDB password, API key
   and AVDump key in plain text, and the database holds your viewing history and file paths.
   Statistics and hash exports are user-chosen files that reveal the same kind of information.
-- The legacy import writes decrypted intermediates to an `import-temp` directory beside the
-  database (or `<output>.import-temp` for the example).
+- The legacy import writes decrypted intermediates to a marked `animatic-legacy-import-*` folder
+  in the system temporary directory and removes it when it ends; the desktop application offers
+  to remove marked folders an interrupted import left behind at the next start.
 
 [`.gitignore`](../.gitignore) is a defense, not permission to create private artifacts inside
 the checkout. It excludes `/target/`, `settings.json`, `*.sqlite`, `*.sqlite3`,

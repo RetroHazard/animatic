@@ -77,17 +77,31 @@ const TYPE_KEYS: [(&str, i64); 7] = [
 const STATUS_KEYS: [(&str, i64); 4] = [("unknown", 0), ("onhdd", 1), ("oncd", 2), ("deleted", 3)];
 
 impl Db {
+    /// Compute every figure from one consistent snapshot of the database.
+    ///
+    /// All reads run inside a single read transaction, so a concurrent writer can neither make
+    /// the AniDB totals disagree with the MyList figures nor appear half-applied. A failing query
+    /// is returned as an error; it never counts as zero.
     pub fn library_stats(&self) -> Result<LibraryStats> {
+        self.library_stats_with(|| {})
+    }
+
+    /// [`Self::library_stats`], calling `between_reads` after the AniDB totals were read and
+    /// before the MyList rows are. Tests use it to commit a write from another connection at that
+    /// exact point and prove it stays out of the snapshot.
+    fn library_stats_with(&self, mut between_reads: impl FnMut()) -> Result<LibraryStats> {
         let c = self.conn();
-        let scalar = |sql: &str| -> i64 { c.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
+        let tx = c.unchecked_transaction()?;
+        let scalar = |sql: &str| -> Result<i64> { Ok(c.query_row(sql, [], |r| r.get(0))?) };
         let anidb = Totals {
-            anime: scalar("SELECT count(*) FROM anime"),
-            episodes: scalar("SELECT count(*) FROM episode"),
-            files: scalar("SELECT count(*) FROM file"),
-            groups: scalar("SELECT count(*) FROM grp"),
-            size: scalar("SELECT COALESCE(sum(size),0) FROM file"),
-            length: scalar("SELECT COALESCE(sum(length),0) FROM file"),
+            anime: scalar("SELECT count(*) FROM anime")?,
+            episodes: scalar("SELECT count(*) FROM episode")?,
+            files: scalar("SELECT count(*) FROM file")?,
+            groups: scalar("SELECT count(*) FROM grp")?,
+            size: scalar("SELECT COALESCE(sum(size),0) FROM file")?,
+            length: scalar("SELECT COALESCE(sum(length),0) FROM file")?,
         };
+        between_reads();
         let items = self.mylist_items()?;
         let states = self.mylist_state_by_anime(&items);
         let anime = self.all_anime()?;
@@ -172,6 +186,7 @@ impl Db {
             }
             statuses.insert(key.into(), out);
         }
+        drop(tx);
         Ok(LibraryStats {
             anidb,
             mylist: mt,
@@ -193,11 +208,13 @@ impl LibraryStats {
         }
     }
 
+    /// Render and write the statistics file, replacing `path` atomically (see
+    /// [`crate::atomic::write_atomic`]): a failed write leaves the previous file intact.
     pub fn write(&self, path: &Path, username: &str, format: StatFormat) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, self.render(username, format))?;
+        crate::atomic::write_atomic(path, self.render(username, format).as_bytes())?;
         Ok(())
     }
 
@@ -306,5 +323,95 @@ mod tests {
         let xml = stats.render("a&b", StatFormat::Xml);
         assert!(xml.contains("<username>a&amp;b</username>"));
         assert!(xml.ends_with("</stats>"));
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "animatic-stats-test-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_failed_scalar_query_is_an_error_not_zero() {
+        let db = Db::memory().unwrap();
+        db.conn().execute_batch("DROP TABLE grp;").unwrap();
+        let err = db.library_stats().unwrap_err();
+        assert!(matches!(err, crate::error::Error::Db(_)), "{err:?}");
+        assert!(err.to_string().contains("grp"), "{err}");
+    }
+
+    #[test]
+    fn a_failed_mylist_query_is_an_error_not_empty_figures() {
+        let db = Db::memory().unwrap();
+        db.conn().execute_batch("DROP TABLE mylist;").unwrap();
+        assert!(db.library_stats().is_err());
+    }
+
+    #[test]
+    fn figures_come_from_one_snapshot_even_when_a_write_commits_mid_read() {
+        let dir = temp_dir("snapshot");
+        let path = dir.join("library.db");
+        let db = Db::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO file(fid, aid, size) VALUES (1, 10, 100);
+                 INSERT INTO mylist(lid, fid, aid) VALUES (1, 1, 10);",
+            )
+            .unwrap();
+        let writer = Db::open(&path).unwrap();
+        let stats = db
+            .library_stats_with(|| {
+                writer
+                    .conn()
+                    .execute_batch(
+                        "INSERT INTO file(fid, aid, size) VALUES (2, 10, 200);
+                         INSERT INTO mylist(lid, fid, aid) VALUES (2, 2, 10);",
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+        assert_eq!((stats.anidb.files, stats.anidb.size), (1, 100));
+        assert_eq!((stats.mylist.files, stats.mylist.size), (1, 100));
+        // The next read sees the committed write, in every figure at once.
+        let later = db.library_stats().unwrap();
+        assert_eq!((later.anidb.files, later.mylist.files), (2, 2));
+        drop((db, writer));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_previous_statistics_file() {
+        let dir = temp_dir("write");
+        let target = dir.join("stats.ini");
+        let stats = Db::memory().unwrap().library_stats().unwrap();
+        stats
+            .write(&target, "animatic-test-user", StatFormat::Ini)
+            .unwrap();
+        let first = std::fs::read(&target).unwrap();
+        assert!(first.starts_with(b"[anidb]"));
+
+        // A directory in place of the target makes the final rename fail on every platform.
+        let blocked = dir.join("blocked.ini");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(
+            stats
+                .write(&blocked, "animatic-test-user", StatFormat::Ini)
+                .is_err()
+        );
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read(&target).unwrap(), first);
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["blocked.ini", "stats.ini"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

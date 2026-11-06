@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::secrets::{CredentialStorage, Credentials};
 
 /// The rename script AniDB O'Matic used when none was configured (literal at 0x7d4078).
 pub const DEFAULT_RENAME_PATTERN: &str = include_str!("rename/default_pattern.txt");
@@ -28,8 +29,80 @@ pub enum Theme {
     System,
 }
 
+/// Automatic rename of identified files in a managed folder (roadmap M6.3).
+///
+/// Stored as `"off"`, `"dry_run"` or `"on"`. A stored boolean (the pre-M6.3 field and the AOM
+/// import) still loads: `false` is `Off`, `true` is `DryRun`, never `On`, so nothing is renamed
+/// until the user explicitly chooses `On` for the folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoRename {
+    /// Never rename automatically.
+    #[default]
+    Off,
+    /// Log the renames that would happen; move nothing.
+    DryRun,
+    /// Rename through the verified rename worker job.
+    On,
+}
+
+impl AutoRename {
+    pub fn is_off(self) -> bool {
+        self == AutoRename::Off
+    }
+
+    /// Settings-file spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AutoRename::Off => "off",
+            AutoRename::DryRun => "dry_run",
+            AutoRename::On => "on",
+        }
+    }
+}
+
+impl Serialize for AutoRename {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AutoRename {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Flag(bool),
+            Name(String),
+        }
+        match Stored::deserialize(deserializer)? {
+            Stored::Flag(false) => Ok(AutoRename::Off),
+            Stored::Flag(true) => Ok(AutoRename::DryRun),
+            Stored::Name(name) => match name.as_str() {
+                "off" => Ok(AutoRename::Off),
+                "dry_run" => Ok(AutoRename::DryRun),
+                "on" => Ok(AutoRename::On),
+                other => Err(serde::de::Error::custom(format!(
+                    "unknown auto_rename mode \"{other}\" (expected off, dry_run or on)"
+                ))),
+            },
+        }
+    }
+}
+
 /// Mylist state values used by AniDB (`state=` parameter).
 pub const MYLIST_STATES: [&str; 5] = ["Unknown", "On HDD", "On CD/DVD", "Deleted", "Remote/Shared"];
+
+/// Shortest and longest idle logout, in minutes. The longest is
+/// [`animatic_anidb::limits::UDP_MAX_IDLE_LOGOUT`]: a kept session is logged out before AniDB
+/// would expire it after 35 idle minutes.
+pub const MIN_IDLE_LOGOUT_MINUTES: u32 = 1;
+pub const MAX_IDLE_LOGOUT_MINUTES: u32 =
+    (animatic_anidb::limits::UDP_MAX_IDLE_LOGOUT.as_secs() / 60) as u32;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,18 +111,25 @@ pub struct AnidbSettings {
     pub password: String,
     /// UDP API key (Profile → Settings → Account on anidb.net). Enables encrypted sessions.
     pub api_key: String,
-    /// Registered client name (<https://anidb.net/software/add>); both APIs refuse unregistered clients.
-    pub client_name: String,
-    pub client_version: u32,
     pub udp_server: String,
     pub local_port: u16,
+    /// Image host used for covers until a login has announced the host AniDB wants used.
     pub image_server: String,
+    /// Download an anime's cover when its detail window opens. Covers already cached are
+    /// shown whatever this says.
+    pub download_covers: bool,
     /// Refresh cached AniDB data of known files when they are touched ("Auto update known file data").
     pub update_file_information: bool,
     /// Work offline: commands are queued until this is switched off.
     pub offline: bool,
-    /// Log out after this many idle minutes.
+    /// Log out after this many idle minutes, from [`MIN_IDLE_LOGOUT_MINUTES`] to
+    /// [`MAX_IDLE_LOGOUT_MINUTES`]. It only applies while a session is kept between queue
+    /// runs (`auto_run_queue`); without automatic runs every queue run logs out when it ends.
     pub idle_logout_minutes: u32,
+    /// Run the command queue automatically (roadmap M5.5): shortly after new commands are
+    /// queued and at an interval, and keep one AniDB session between those runs. Off by
+    /// default. An automatic run never sends `MylistDelete`: removals wait for a manual run.
+    pub auto_run_queue: bool,
 }
 
 impl Default for AnidbSettings {
@@ -58,15 +138,33 @@ impl Default for AnidbSettings {
             username: String::new(),
             password: String::new(),
             api_key: String::new(),
-            client_name: String::new(),
-            client_version: 1,
             udp_server: "api.anidb.net:9000".into(),
             local_port: 29_456,
             image_server: "cdn.anidb.net".into(),
+            download_covers: true,
             update_file_information: false,
             offline: false,
             idle_logout_minutes: 10,
+            auto_run_queue: false,
         }
+    }
+}
+
+impl AnidbSettings {
+    /// Bring the idle logout into its valid range. A session must be logged out before AniDB
+    /// expires it after 35 idle minutes, so more than 30 is not allowed.
+    pub fn clamp_timing(&mut self) {
+        self.idle_logout_minutes = self
+            .idle_logout_minutes
+            .clamp(MIN_IDLE_LOGOUT_MINUTES, MAX_IDLE_LOGOUT_MINUTES);
+    }
+
+    /// How long a kept session may idle before the client logs out.
+    pub fn idle_logout(&self) -> std::time::Duration {
+        let minutes = self
+            .idle_logout_minutes
+            .clamp(MIN_IDLE_LOGOUT_MINUTES, MAX_IDLE_LOGOUT_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
     }
 }
 
@@ -91,7 +189,8 @@ pub struct FileManager {
     pub auto_hash: bool,
     pub auto_rehash: bool,
     pub auto_remove: bool,
-    pub auto_rename: bool,
+    /// Automatic rename of identified files (see [`AutoRename`]); off by default.
+    pub auto_rename: AutoRename,
     /// Destination folder for renamed files ("" = keep the current folder).
     pub base_path: String,
     pub exclude_hidden: bool,
@@ -122,7 +221,7 @@ impl Default for FileManager {
             auto_hash: false,
             auto_rehash: false,
             auto_remove: false,
-            auto_rename: false,
+            auto_rename: AutoRename::Off,
             base_path: String::new(),
             exclude_hidden: true,
             exclude_system: true,
@@ -173,13 +272,28 @@ impl FileManager {
     }
 }
 
+/// Longest settle delay (`action_delay_ms`) and file pacing pause (`sleep_time_ms`): 10 minutes
+/// and 10 seconds. Larger stored values are not meaningful for either.
+pub const MAX_ACTION_DELAY_MS: u64 = 600_000;
+pub const MAX_SLEEP_TIME_MS: u64 = 10_000;
+/// Shortest and longest interval of the scheduled folder scan, in minutes (5 minutes, 1 week).
+pub const MIN_SCAN_INTERVAL_MINUTES: u32 = 5;
+pub const MAX_SCAN_INTERVAL_MINUTES: u32 = 10_080;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileManagerSettings {
-    /// Delay between two file manager actions in milliseconds.
+    /// Settle delay in milliseconds: a discovered file is hashed only once its size and
+    /// modification time have been unchanged for this long (0 hashes at once).
     pub action_delay_ms: u64,
-    /// Pause between two scans in milliseconds.
+    /// Pause between two hashed files of one scan, in milliseconds (0 = none).
     pub sleep_time_ms: u64,
+    /// Scan the managed folders on a schedule (see `scan_interval_minutes`).
+    pub scheduled_scan: bool,
+    /// Minutes between scheduled scans, from `MIN_SCAN_INTERVAL_MINUTES`.
+    pub scan_interval_minutes: u32,
+    /// Scan the managed folders once when the application starts.
+    pub scan_at_start: bool,
     pub managers: Vec<FileManager>,
 }
 
@@ -187,7 +301,10 @@ impl Default for FileManagerSettings {
     fn default() -> Self {
         FileManagerSettings {
             action_delay_ms: 500,
-            sleep_time_ms: 900_000,
+            sleep_time_ms: 0,
+            scheduled_scan: false,
+            scan_interval_minutes: 60,
+            scan_at_start: false,
             managers: vec![
                 FileManager::builtin_default(),
                 FileManager::network_default(),
@@ -197,6 +314,34 @@ impl Default for FileManagerSettings {
 }
 
 impl FileManagerSettings {
+    /// Bring the timing fields into their valid ranges. A `sleep_time_ms` above the maximum can
+    /// only be a value stored when the field meant a pause between scans (its default was
+    /// 900000); it is reset to the default rather than pausing between every file.
+    pub fn clamp_timing(&mut self) {
+        self.action_delay_ms = self.action_delay_ms.min(MAX_ACTION_DELAY_MS);
+        if self.sleep_time_ms > MAX_SLEEP_TIME_MS {
+            self.sleep_time_ms = FileManagerSettings::default().sleep_time_ms;
+        }
+        self.scan_interval_minutes = self
+            .scan_interval_minutes
+            .clamp(MIN_SCAN_INTERVAL_MINUTES, MAX_SCAN_INTERVAL_MINUTES);
+    }
+
+    pub fn settle_delay(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.action_delay_ms.min(MAX_ACTION_DELAY_MS))
+    }
+
+    pub fn file_pause(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.sleep_time_ms.min(MAX_SLEEP_TIME_MS))
+    }
+
+    pub fn scan_interval(&self) -> std::time::Duration {
+        let minutes = self
+            .scan_interval_minutes
+            .clamp(MIN_SCAN_INTERVAL_MINUTES, MAX_SCAN_INTERVAL_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
+    }
+
     pub fn default_manager(&self) -> &FileManager {
         self.managers
             .iter()
@@ -214,6 +359,11 @@ impl FileManagerSettings {
 
     /// Explicit path match, without the fallback used for non-destructive folder policy.
     pub(crate) fn matching_manager_for(&self, path: &Path) -> Option<&FileManager> {
+        self.matching_manager_index(path).map(|i| &self.managers[i])
+    }
+
+    /// Index in `managers` of the explicit path match (the longest matching folder).
+    pub fn matching_manager_index(&self, path: &Path) -> Option<usize> {
         let p = normalize_path(&path.to_string_lossy());
         let parent = path
             .parent()
@@ -221,8 +371,9 @@ impl FileManagerSettings {
             .unwrap_or_default();
         self.managers
             .iter()
-            .filter(|m| !m.path.is_empty())
-            .filter(|m| {
+            .enumerate()
+            .filter(|(_, m)| !m.path.is_empty())
+            .filter(|(_, m)| {
                 let mp = normalize_path(&m.path);
                 let mp_dir = if mp.ends_with('/') {
                     mp.clone()
@@ -235,7 +386,8 @@ impl FileManagerSettings {
                     format!("{parent}/") == mp_dir
                 }
             })
-            .max_by_key(|m| normalize_path(&m.path).len())
+            .max_by_key(|(_, m)| normalize_path(&m.path).len())
+            .map(|(i, _)| i)
     }
 }
 
@@ -268,10 +420,14 @@ pub enum ColorSlot {
     FileCrcInvalid = 23,
     FileInMylist = 25,
     LocalFileDuplicate = 27,
+    /// Animatic-only slot (no legacy tag): an anime that is in MyList.
+    AnimeInMylist = 101,
+    /// Animatic-only slot (no legacy tag): a watched file, MyList entry or fully watched anime.
+    Watched = 103,
 }
 
 impl ColorSlot {
-    pub const ALL: [ColorSlot; 14] = [
+    pub const ALL: [ColorSlot; 16] = [
         ColorSlot::LocalRoot,
         ColorSlot::LocalFolder,
         ColorSlot::LocalFile,
@@ -286,6 +442,8 @@ impl ColorSlot {
         ColorSlot::FileCrcOk,
         ColorSlot::FileCrcInvalid,
         ColorSlot::FileInMylist,
+        ColorSlot::AnimeInMylist,
+        ColorSlot::Watched,
     ];
 
     pub fn label(self) -> &'static str {
@@ -304,7 +462,24 @@ impl ColorSlot {
             ColorSlot::FileCrcOk => "AniDB: file CRC ok",
             ColorSlot::FileCrcInvalid => "AniDB: file CRC invalid",
             ColorSlot::FileInMylist => "AniDB: file in mylist",
+            ColorSlot::AnimeInMylist => "AniDB: anime in mylist",
+            ColorSlot::Watched => "Watched",
         }
+    }
+
+    /// Slots that describe the plain, unremarkable row: they tint a row only when the user
+    /// customised them, because their legacy defaults are light greys that would glare in a
+    /// dark theme and carry no status.
+    pub fn is_neutral(self) -> bool {
+        matches!(
+            self,
+            ColorSlot::LocalRoot
+                | ColorSlot::LocalFolder
+                | ColorSlot::LocalFile
+                | ColorSlot::Anime
+                | ColorSlot::Episode
+                | ColorSlot::File
+        )
     }
 
     /// Legacy default background as 0xRRGGBB.
@@ -319,6 +494,8 @@ impl ColorSlot {
             ColorSlot::LocalFileDuplicate => 0xFF8000,
             ColorSlot::EpisodeInMylist => 0x7070D0,
             ColorSlot::FileCrcOk => 0x80FF80,
+            ColorSlot::AnimeInMylist => 0x70A0FF,
+            ColorSlot::Watched => 0x90E090,
         }
     }
 
@@ -340,11 +517,23 @@ pub struct SlotColor {
     pub text: Option<u32>,
 }
 
+/// Sort direction of a table column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+/// One column of a table: its id (the lower-case header text, see `ui_state::column_id`), its
+/// width in points, whether it is shown and whether the table is sorted by it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct ColumnState {
     pub id: String,
     pub width: f32,
     pub visible: bool,
+    /// Set on at most one column of a table. Absent in files written before sorting existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SortDirection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -414,8 +603,12 @@ impl UiSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HashingSettings {
+    /// Resume the persistent hash queue (`hash_queue`) when the application starts. Off: the
+    /// pending count is shown with a **Resume hashing** button.
     pub autostart: bool,
-    /// 0 idle .. 6 time critical (legacy thread priority index).
+    /// 0 idle .. 6 time critical (legacy thread priority index). Stored for AOM settings
+    /// compatibility only: hashing runs at the normal thread priority, because Animatic has no
+    /// cross-platform thread-priority abstraction (AGENTS.md rule 10).
     pub priority: u8,
     pub use_extensions: bool,
     pub extensions: Vec<String>,
@@ -514,6 +707,19 @@ impl Default for UpdateSettings {
     }
 }
 
+/// Media properties read through the external `ffprobe` tool (see [`crate::media`]). Opt-in: the
+/// default reads nothing and starts no process.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaSettings {
+    /// Read duration, resolution, codecs and bitrates of a file after it was hashed. Only
+    /// effective while `ffprobe` is available; Options keeps the control disabled otherwise.
+    pub read_properties: bool,
+    /// Path of the `ffprobe` executable (or of the folder that holds it). Empty: Animatic's own
+    /// copy (installed from Options) and `PATH`, in the order of [`crate::media::tool`].
+    pub ffprobe_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -530,6 +736,12 @@ pub struct Settings {
     /// True until the first-run assistant has been completed.
     pub first_launch: bool,
     pub updates: UpdateSettings,
+    /// Opt-in media properties through the external `ffprobe` tool.
+    pub media: MediaSettings,
+    /// Set by [`Settings::save`] when the credential fields (see [`crate::secrets::FIELDS`]) were
+    /// moved to the system keystore and are stored empty here. Loading then reads the empty
+    /// fields back from the keystore. Never decides anything else; do not set it by hand.
+    pub secrets_in_keystore: bool,
 }
 
 impl Default for Settings {
@@ -546,6 +758,8 @@ impl Default for Settings {
             ed2k_space_replacement: None,
             first_launch: true,
             updates: UpdateSettings::default(),
+            media: MediaSettings::default(),
+            secrets_in_keystore: false,
         }
     }
 }
@@ -636,6 +850,7 @@ impl Settings {
     /// applying an imported settings review keeps the user's current choices.
     pub fn keep_preferences_unknown_to_legacy(&mut self, current: &Settings) {
         self.updates = current.updates.clone();
+        self.media = current.media.clone();
     }
 
     /// Location of the backup written by [`Settings::save`] next to the primary file.
@@ -701,17 +916,41 @@ impl Settings {
         }
     }
 
+    /// [`Settings::load_with_recovery`] followed by reading the credentials the settings file
+    /// left to the keystore ([`Credentials::restore`]).
+    ///
+    /// Only reads: recovery from a backup never writes to the keystore, and a keystore failure
+    /// is reported in the returned [`CredentialStorage`] instead of failing the load. Errors
+    /// contain no secret values.
+    pub fn load_with_credentials(
+        path: &Path,
+        credentials: &Credentials,
+    ) -> Result<(SettingsLoad, CredentialStorage)> {
+        let mut loaded = Self::load_with_recovery(path)?;
+        let storage = credentials.restore(&mut loaded.settings, path);
+        Ok((loaded, storage))
+    }
+
     /// Write the settings atomically (temp file + rename).
     ///
+    /// The credential fields go to the keystore of `credentials` and are stored empty in the file
+    /// (`secrets_in_keystore`). When the keystore is missing or refuses a write, nothing is
+    /// blanked: the file keeps the values and the returned [`CredentialStorage::SettingsFile`]
+    /// carries the reason. Plaintext values of an older file are moved by the first successful
+    /// save.
+    ///
     /// An existing primary file that still parses is copied to the backup first; an invalid
-    /// primary never replaces the backup. If writing or renaming fails the original primary stays
-    /// in place.
-    pub fn save(&self, path: &Path) -> Result<()> {
+    /// primary never replaces the backup. A copy of a primary that still holds plaintext
+    /// credentials is blanked when they now live in the keystore, so the migration leaves no
+    /// plaintext behind in the backup either. If writing or renaming fails the original primary
+    /// stays in place.
+    pub fn save(&self, path: &Path, credentials: &Credentials) -> Result<CredentialStorage> {
         use std::io::Write;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let json = serde_json::to_string_pretty(self)?;
+        let (document, storage) = credentials.seal(self, path);
+        let json = serde_json::to_string_pretty(&document)?;
         let tmp = path.with_extension("json.tmp");
         let written = std::fs::File::create(&tmp).and_then(|mut f| {
             f.write_all(json.as_bytes())?;
@@ -721,9 +960,17 @@ impl Settings {
             let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
         }
-        if let Ok(previous) = std::fs::read(path)
-            && parse_settings(&previous).is_ok()
+        if let Ok(mut previous) = std::fs::read(path)
+            && let Ok(previous_settings) = parse_settings(&previous)
         {
+            if storage == CredentialStorage::Keystore && previous_settings.holds_secrets() {
+                let mut scrubbed = previous_settings;
+                scrubbed.clear_secrets();
+                scrubbed.secrets_in_keystore = true;
+                if let Ok(text) = serde_json::to_string_pretty(&scrubbed) {
+                    previous = text.into_bytes();
+                }
+            }
             let backup = Self::backup_path(path);
             let backup_tmp = path.with_extension("json.bak.tmp");
             let copied = std::fs::write(&backup_tmp, &previous)
@@ -736,7 +983,30 @@ impl Settings {
             let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
         }
-        Ok(())
+        Ok(storage)
+    }
+
+    /// The credential fields, in the order of [`crate::secrets::FIELDS`].
+    pub(crate) fn secrets(&self) -> [&String; 3] {
+        [&self.anidb.password, &self.anidb.api_key, &self.avdump.key]
+    }
+
+    pub(crate) fn secrets_mut(&mut self) -> [&mut String; 3] {
+        [
+            &mut self.anidb.password,
+            &mut self.anidb.api_key,
+            &mut self.avdump.key,
+        ]
+    }
+
+    fn holds_secrets(&self) -> bool {
+        self.secrets().iter().any(|s| !s.is_empty())
+    }
+
+    pub(crate) fn clear_secrets(&mut self) {
+        for secret in self.secrets_mut() {
+            secret.clear();
+        }
     }
 
     fn fixup(&mut self) {
@@ -745,8 +1015,8 @@ impl Settings {
                 .managers
                 .insert(0, FileManager::builtin_default());
         }
-        self.file_managers.action_delay_ms = self.file_managers.action_delay_ms.max(1);
-        self.file_managers.sleep_time_ms = self.file_managers.sleep_time_ms.max(60_000);
+        self.file_managers.clamp_timing();
+        self.anidb.clamp_timing();
         if self.ui.zoom <= 0.3 {
             self.ui.zoom = 1.0;
         }
@@ -1010,10 +1280,13 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
     }
 
     if let Some(v) = num("filemanager/actionDelay") {
-        s.file_managers.action_delay_ms = v.max(1) as u64;
+        s.file_managers.action_delay_ms = v.max(0) as u64;
     }
+    // AOM's sleepTime is the pause between two scans: it becomes the scan interval, which stays
+    // switched off. `sleep_time_ms` now paces files and keeps its default.
     if let Some(v) = num("filemanager/sleepTime") {
-        s.file_managers.sleep_time_ms = v.max(60_000) as u64;
+        s.file_managers.scan_interval_minutes =
+            (v.max(0) / 60_000).min(i64::from(MAX_SCAN_INTERVAL_MINUTES)) as u32;
     }
     let managers: Vec<FileManager> = x
         .managers
@@ -1026,7 +1299,11 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
             auto_hash: b(m.get("autohash"), false),
             auto_rehash: b(m.get("autorehash"), false),
             auto_remove: b(m.get("autoremove"), false),
-            auto_rename: b(m.get("autorename"), false),
+            auto_rename: if b(m.get("autorename"), false) {
+                AutoRename::DryRun
+            } else {
+                AutoRename::Off
+            },
             base_path: m.get("basepath").cloned().unwrap_or_default(),
             exclude_hidden: b(m.get("excludehiddenfiles"), false),
             exclude_system: b(m.get("excludesystemfiles"), false),
@@ -1120,9 +1397,93 @@ x</renamingPattern>
         assert_eq!(s.ui.last_directory, "Z:\\AnimaticTestMedia\\");
         assert_eq!(s.players[0].open, "\"%L\"");
         assert!(s.players[0].default);
-        assert_eq!(s.file_managers.sleep_time_ms, 450_000);
+        assert_eq!(
+            s.file_managers.scan_interval_minutes, 7,
+            "AOM's pause between scans becomes the scan interval"
+        );
+        assert!(!s.file_managers.scheduled_scan);
+        assert_eq!(s.file_managers.sleep_time_ms, 0);
         assert_eq!(s.file_managers.managers.len(), 2);
-        assert!(s.file_managers.default_manager().auto_rename);
+        assert_eq!(
+            s.file_managers.default_manager().auto_rename,
+            AutoRename::DryRun,
+            "an imported autorename flag only logs planned renames; nothing is renamed until the user chooses On"
+        );
+    }
+
+    #[test]
+    fn scan_timing_defaults_and_ranges_apply_when_loading() {
+        let old =
+            parse_settings(br#"{"file_managers":{"action_delay_ms":500,"sleep_time_ms":900000}}"#)
+                .unwrap();
+        let fm = &old.file_managers;
+        assert!(
+            !fm.scheduled_scan && !fm.scan_at_start,
+            "automation is off by default"
+        );
+        assert_eq!(fm.scan_interval_minutes, 60);
+        assert_eq!(
+            fm.sleep_time_ms, 0,
+            "a legacy between-scans value must not pace files"
+        );
+        assert_eq!(fm.settle_delay(), std::time::Duration::from_millis(500));
+
+        let wild = parse_settings(
+            br#"{"file_managers":{"action_delay_ms":0,"sleep_time_ms":4000,"scan_interval_minutes":1}}"#,
+        )
+        .unwrap();
+        let fm = &wild.file_managers;
+        assert_eq!(fm.action_delay_ms, 0, "0 is a valid settle delay");
+        assert_eq!(fm.sleep_time_ms, 4000);
+        assert_eq!(fm.scan_interval(), std::time::Duration::from_secs(5 * 60));
+
+        let huge = parse_settings(
+            br#"{"file_managers":{"action_delay_ms":99999999,"scan_interval_minutes":4000000000}}"#,
+        )
+        .unwrap();
+        assert_eq!(huge.file_managers.action_delay_ms, MAX_ACTION_DELAY_MS);
+        assert_eq!(
+            huge.file_managers.scan_interval_minutes,
+            MAX_SCAN_INTERVAL_MINUTES
+        );
+    }
+
+    #[test]
+    fn automatic_queue_runs_are_off_by_default_and_the_idle_logout_stays_below_the_server_timeout()
+    {
+        let old = parse_settings(br#"{"anidb":{"username":"animatic-test-user"}}"#).unwrap();
+        assert!(
+            !old.anidb.auto_run_queue,
+            "settings files from before have no such field"
+        );
+        assert_eq!(old.anidb.idle_logout_minutes, 10);
+        assert_eq!(
+            old.anidb.idle_logout(),
+            std::time::Duration::from_secs(10 * 60)
+        );
+
+        let on = parse_settings(br#"{"anidb":{"auto_run_queue":true}}"#).unwrap();
+        assert!(on.anidb.auto_run_queue);
+
+        for (stored, kept) in [
+            (0u32, 1u32),
+            (1, 1),
+            (30, 30),
+            (35, 30),
+            (4_000_000_000, 30),
+        ] {
+            let text = format!(r#"{{"anidb":{{"idle_logout_minutes":{stored}}}}}"#);
+            let loaded = parse_settings(text.as_bytes()).unwrap();
+            assert_eq!(loaded.anidb.idle_logout_minutes, kept, "stored {stored}");
+            assert_eq!(
+                loaded.anidb.idle_logout(),
+                std::time::Duration::from_secs(u64::from(kept) * 60)
+            );
+        }
+        assert!(
+            std::time::Duration::from_secs(u64::from(MAX_IDLE_LOGOUT_MINUTES) * 60)
+                < animatic_anidb::limits::UDP_SESSION_TIMEOUT
+        );
     }
 
     #[test]
@@ -1217,6 +1578,11 @@ x</renamingPattern>
 
     fn error_text(result: Result<SettingsLoad>) -> String {
         result.expect_err("load must fail").to_string()
+    }
+
+    /// Keeps the secrets in the file so the byte-exact backup assertions stay meaningful.
+    fn no_keystore() -> Credentials {
+        Credentials::unavailable("test without a keystore")
     }
 
     #[test]
@@ -1362,7 +1728,7 @@ x</renamingPattern>
             .unwrap()
             .settings;
         recovered.anidb.username = "edited-user".into();
-        recovered.save(&dir.primary()).unwrap();
+        recovered.save(&dir.primary(), &no_keystore()).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.backup()).unwrap(),
             backup,
@@ -1385,7 +1751,7 @@ x</renamingPattern>
             .unwrap()
             .settings;
         s.anidb.username = "new-user".into();
-        s.save(&dir.primary()).unwrap();
+        s.save(&dir.primary(), &no_keystore()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), previous);
         assert_eq!(
             Settings::load_with_recovery(&dir.primary())
@@ -1406,7 +1772,11 @@ x</renamingPattern>
         std::fs::write(dir.backup(), &backup).unwrap();
         // A directory occupying the temp path makes the write step fail.
         std::fs::create_dir(dir.primary().with_extension("json.tmp")).unwrap();
-        assert!(Settings::default().save(&dir.primary()).is_err());
+        assert!(
+            Settings::default()
+                .save(&dir.primary(), &no_keystore())
+                .is_err()
+        );
         assert_eq!(std::fs::read_to_string(dir.primary()).unwrap(), primary);
         assert_eq!(std::fs::read_to_string(dir.backup()).unwrap(), backup);
     }
@@ -1420,7 +1790,7 @@ x</renamingPattern>
             .unwrap()
             .settings;
         assert_eq!(recovered.renaming_pattern, CUSTOM_PATTERN);
-        recovered.save(&dir.primary()).unwrap();
+        recovered.save(&dir.primary(), &no_keystore()).unwrap();
         let reloaded = Settings::load_with_recovery(&dir.primary())
             .unwrap()
             .settings;
@@ -1438,7 +1808,9 @@ x</renamingPattern>
             let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
             assert!(loaded.recovered_from_backup, "{document}");
             assert_eq!(loaded.settings.anidb.username, "backup-user", "{document}");
-            Settings::default().save(&dir.primary()).unwrap();
+            Settings::default()
+                .save(&dir.primary(), &no_keystore())
+                .unwrap();
             assert_eq!(
                 std::fs::read_to_string(dir.backup()).unwrap(),
                 backup,
@@ -1479,7 +1851,10 @@ x</renamingPattern>
         assert!(!loaded.settings.updates.auto_check);
         assert_eq!(loaded.settings.anidb, Settings::default().anidb);
 
-        loaded.settings.save(&dir.primary()).unwrap();
+        loaded
+            .settings
+            .save(&dir.primary(), &no_keystore())
+            .unwrap();
         let again = Settings::load_with_recovery(&dir.primary()).unwrap();
         assert!(!again.settings.updates.auto_check);
 
@@ -1490,5 +1865,125 @@ x</renamingPattern>
         let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
         assert_eq!(loaded.settings.anidb.username, "old-user");
         assert!(loaded.settings.updates.auto_check);
+    }
+
+    #[test]
+    fn old_client_keys_in_the_file_are_ignored_and_dropped_on_save() {
+        let dir = TestDir::new("old-client-keys");
+        std::fs::write(
+            dir.primary(),
+            r#"{"anidb":{"username":"old-user","client_name":"syntheticclient","client_version":7,"http_client_name":"syntheticclienthttp","http_client_version":2}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        assert_eq!(loaded.settings.anidb.username, "old-user");
+
+        loaded
+            .settings
+            .save(&dir.primary(), &no_keystore())
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.primary()).unwrap()).unwrap();
+        let anidb = saved["anidb"].as_object().unwrap();
+        assert_eq!(anidb["username"], "old-user");
+        for key in [
+            "client_name",
+            "client_version",
+            "http_client_name",
+            "http_client_version",
+        ] {
+            assert!(!anidb.contains_key(key), "{key} must not be saved");
+        }
+    }
+
+    #[test]
+    fn column_layouts_from_before_sorting_still_load_and_round_trip() {
+        let dir = TestDir::new("columns-without-sort");
+        std::fs::write(
+            dir.primary(),
+            r#"{"ui":{"columns":{"groups":[{"id":"name","width":210.5,"visible":true},{"id":"votes","width":60.0,"visible":false}]}}}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_with_recovery(&dir.primary()).unwrap();
+        let columns = &loaded.settings.ui.columns["groups"];
+        assert_eq!(columns.len(), 2);
+        assert_eq!((columns[0].width, columns[0].visible), (210.5, true));
+        assert_eq!(columns[0].sort, None);
+        assert!(!columns[1].visible);
+
+        let mut settings = loaded.settings;
+        settings.ui.columns.get_mut("groups").unwrap()[1].sort = Some(SortDirection::Descending);
+        let json = serde_json::to_value(&settings).unwrap();
+        let written = &json["ui"]["columns"]["groups"];
+        assert!(written[0].get("sort").is_none(), "no sort is not written");
+        assert_eq!(written[1]["sort"], "Descending");
+        let back: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.ui.columns, settings.ui.columns);
+    }
+
+    #[test]
+    fn a_column_missing_a_required_field_still_makes_the_file_invalid() {
+        let dir = TestDir::new("column-missing-field");
+        std::fs::write(
+            dir.primary(),
+            r#"{"ui":{"columns":{"groups":[{"id":"name","width":210.5}]}}}"#,
+        )
+        .unwrap();
+        assert!(Settings::load_with_recovery(&dir.primary()).is_err());
+    }
+
+    #[test]
+    fn animatic_only_color_slots_do_not_collide_with_legacy_tags() {
+        for slot in [ColorSlot::AnimeInMylist, ColorSlot::Watched] {
+            let tag = slot as u32;
+            assert!(tag > 28, "{slot:?} must stay clear of the legacy tag range");
+            assert_eq!(ColorSlot::from_tag(tag), Some((slot, true)));
+            assert_eq!(ColorSlot::from_tag(tag + 1), Some((slot, false)));
+        }
+        // Every legacy tag still maps to the slot it always did.
+        assert_eq!(
+            ColorSlot::from_tag(25),
+            Some((ColorSlot::FileInMylist, true))
+        );
+        assert_eq!(
+            ColorSlot::from_tag(28),
+            Some((ColorSlot::LocalFileDuplicate, false))
+        );
+        assert_eq!(ColorSlot::from_tag(29), None);
+    }
+
+    #[test]
+    fn media_properties_are_off_by_default_and_old_files_load_without_them() {
+        let defaults = Settings::default();
+        assert!(!defaults.media.read_properties);
+        assert!(defaults.media.ffprobe_path.is_empty());
+
+        let mut document = serde_json::to_value(Settings::default()).unwrap();
+        document.as_object_mut().unwrap().remove("media");
+        let loaded: Settings = serde_json::from_value(document).unwrap();
+        assert_eq!(loaded.media, MediaSettings::default());
+        let partial: Settings =
+            serde_json::from_str(r#"{"media":{"ffprobe_path":"/opt/ffprobe"}}"#).unwrap();
+        assert!(!partial.media.read_properties);
+        assert_eq!(partial.media.ffprobe_path, "/opt/ffprobe");
+    }
+
+    #[test]
+    fn the_media_choice_survives_a_save_and_an_aom_settings_import() {
+        let dir = TestDir::new("media-choice");
+        let mut settings = Settings::default();
+        settings.media.read_properties = true;
+        settings.media.ffprobe_path = "/opt/ffprobe".into();
+        settings.save(&dir.primary(), &no_keystore()).unwrap();
+        let again = Settings::load_with_recovery(&dir.primary())
+            .unwrap()
+            .settings;
+        assert_eq!(again.media, settings.media);
+
+        let mut imported = Settings::default();
+        imported.anidb.username = "legacy-user".into();
+        imported.keep_preferences_unknown_to_legacy(&settings);
+        assert_eq!(imported.media, settings.media);
+        assert_eq!(imported.anidb.username, "legacy-user");
     }
 }

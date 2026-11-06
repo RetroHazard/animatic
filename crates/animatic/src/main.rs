@@ -1,4 +1,17 @@
+// A desktop program: on Windows no console window opens with it. `--help` and startup errors
+// still reach a terminal that started it (see `console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod app;
+mod auto_queue;
+mod console;
+mod hash_jobs;
+mod icon;
+mod media;
+mod scheduler;
+mod session;
+mod table;
+mod tray;
 mod worker;
 
 use std::path::{Path, PathBuf};
@@ -7,7 +20,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> std::process::ExitCode {
+    console::attach_parent();
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            console::report_error(&format!("{e:#}"));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     // Captured first, before anything can replace the file: the updater installs over exactly
     // this file (checked by identity, not just by path) and the restart starts exactly this path.
     let installation = match animatic_core::update::InstallationTarget::capture() {
@@ -57,6 +81,15 @@ fn main() -> anyhow::Result<()> {
         None => default_dirs()?.data_dir().join("animatic.sqlite3"),
     };
     let db_path = std::path::absolute(&db_path).unwrap_or(db_path);
+    // Media files go to the Animatic that already has this database open. Without files (or
+    // with `--full-update`, which a handoff cannot carry) nothing is forwarded; this process
+    // then owns the lock, or starts without one if another instance holds it.
+    let handoff: &[PathBuf] = if full_update { &[] } else { &files };
+    let primary = match animatic_core::instance::start(&db_path, handoff) {
+        animatic_core::instance::Launch::Forwarded => return Ok(()),
+        animatic_core::instance::Launch::Primary(primary) => Some(primary),
+        animatic_core::instance::Launch::Standalone => None,
+    };
     let relaunch_settings = settings_override.clone();
     let settings_path = match settings_override {
         Some(path) => path,
@@ -70,6 +103,8 @@ fn main() -> anyhow::Result<()> {
         full_update,
         installation: installation.clone(),
         restart: restart.clone(),
+        credentials: animatic_core::secrets::Credentials::system(),
+        incoming: primary.as_ref().map(|primary| primary.incoming()),
     })
     .with_context(|| {
         format!(
@@ -79,10 +114,7 @@ fn main() -> anyhow::Result<()> {
         )
     })?;
     let native = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Animatic — AniDB library manager")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([900.0, 600.0]),
+        viewport: app.viewport(),
         ..Default::default()
     };
     // The app (and with it the worker and database connections) is dropped when this returns.
@@ -90,11 +122,13 @@ fn main() -> anyhow::Result<()> {
         "Animatic",
         native,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(eframe::egui::Visuals::dark());
+            app.apply_visuals(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("the window system failed: {e}"))?;
+    // Release the lock before the updated version starts, or it would hand its files to us.
+    drop(primary);
     if restart.load(Ordering::SeqCst) {
         let target = installation.context("the executable was not identified at startup")?;
         relaunch(target.path(), &db_path, relaunch_settings.as_deref()).context(

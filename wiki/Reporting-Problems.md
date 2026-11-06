@@ -5,9 +5,10 @@ Sanitize first, then use the
 ## What is sensitive
 
 - **Settings and backups:** `settings.json`, `settings.json.bak` and any `.tmp` copy hold the
-  AniDB password, API key and AVDump key in plain text. Never attach or paste them.
+  AniDB password, API key and AVDump key in plain text whenever Options reports that no system
+  keystore is available (otherwise they are empty there). Never attach or paste them.
 - **The database** (`animatic.sqlite3` and its `-wal`/`-shm`), exports (statistics XML/INI,
-  hash lists) and `import-temp` contents are personal data: viewing history, file paths and
+  hash lists) and `animatic-legacy-import-*` temporary folders are personal data: viewing history, file paths and
   names, hashes, AniDB identifiers.
 - **The Log page** is the only diagnostic channel, and it is kept in memory only (older lines
   are discarded as it grows, **Clear** empties it, and it is lost on exit; there is no log
@@ -21,7 +22,7 @@ Sanitize first, then use the
 
 1. Copy only the lines you need and replace: user and drive names in paths with `<user>`,
    `<root>`; titles and file names with `<file>`; ED2K hashes, `lid`/`fid`/`aid`/`gid`
-   numbers and session text with `<id>`; any user name, password, API key or client name with
+   numbers and session text with `<id>`; any user name, password or API key with
    placeholders.
 2. Keep exact message wording (for example `AniDB sync paused until <time>: <reason>`), the
    status-bar indicators (**Offline**, **N blocked**, **N commands NOT saved yet**), and what

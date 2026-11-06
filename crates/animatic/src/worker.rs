@@ -6,36 +6,113 @@ use std::time::{Duration, Instant};
 
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::HttpClient;
-use animatic_anidb::udp::{Config as UdpConfig, UdpClient};
+use animatic_anidb::limits::Limits;
+use animatic_anidb::udp::Config as UdpConfig;
+use animatic_anidb::{HTTP_CLIENT, HTTP_CLIENT_VERSION, UDP_CLIENT, UDP_CLIENT_VERSION};
+use animatic_core::auto_rename::{self, AutoRenameMemory};
 use animatic_core::db::Db;
-use animatic_core::file_manager::hash_and_register;
+use animatic_core::file_manager::{MoveControl, MoveMethod, clear_emptied_folders, move_file};
 use animatic_core::format;
-use animatic_core::hash::Ed2kVariant;
+use animatic_core::hash_queue::HashSource;
 use animatic_core::library::LibraryProjection;
+use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
+use animatic_core::maintenance::{self, BackupInfo, CompactReport, IntegrityReport};
+use animatic_core::mylist_export::ExportLimits;
+use animatic_core::rename::plan::{BatchRow, Candidate, Plan};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
-use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES};
+use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES, QueueScope};
 use animatic_core::update::{
     InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
 };
+
+use crate::auto_queue::{self, QueueControl};
+use crate::hash_jobs;
+use crate::scheduler::{self, ScanControl};
+use crate::session::{EXIT_LOGOUT_WAIT, SessionSlot};
 use crossbeam_channel::{Receiver, Sender};
+
+mod covers;
+pub use covers::{CoverJob, CoverOutcome};
+use covers::{CoverMsg, run_covers};
+
+/// One file of a rename job: the library entry and where it moves.
+#[derive(Debug, Clone)]
+pub struct RenameItem {
+    pub local_id: i64,
+    pub old: PathBuf,
+    pub new: PathBuf,
+}
 
 #[derive(Debug)]
 pub enum Job {
-    Hash(Vec<PathBuf>),
+    /// Queue the files in the persistent hash queue (`source` tells where they came from) and
+    /// drain the queue (see `hash_jobs`).
+    Hash {
+        paths: Vec<PathBuf>,
+        source: HashSource,
+        pause_between: Duration,
+    },
+    /// Drain the persistent hash queue (**Resume hashing**, autostart). `retry_failed` queues
+    /// failed entries again first. Silent when nothing is queued.
+    ResumeHashQueue {
+        retry_failed: bool,
+        pause_between: Duration,
+    },
+    /// Remove every hash queue entry, waiting and failed.
+    ClearHashQueue,
     Scan {
         settings: FileManagerSettings,
         extensions: String,
     },
+    /// Import an AOM databank. A database that already holds data is not written until the user
+    /// confirms (`confirmed`), because rows with the same ids are replaced; without the
+    /// confirmation the job only answers with `Event::LegacyImportNeedsConfirmation`.
+    /// Decrypted copies go to a marked folder below `temp_root` (see `legacy::workdir`).
     ImportLegacy {
         source: PathBuf,
-        temp: PathBuf,
+        temp_root: PathBuf,
+        confirmed: bool,
     },
     ImportLegacySettings {
         source: PathBuf,
     },
+    /// Back the library up into `dest` (online backup, off the UI thread).
+    BackupLibrary {
+        dest: PathBuf,
+    },
+    /// Import a MyList export file (see `animatic_core::mylist_export`): read and validated
+    /// completely first, then merged in one transaction. Any error or cancellation leaves the
+    /// library unchanged; answered by `Event::Imported` or `Event::Error`.
+    ImportMylistExport {
+        source: PathBuf,
+    },
+    /// Check that `source` may replace the library; the swap itself is `spawn_restore`.
+    ValidateBackup {
+        source: PathBuf,
+    },
+    /// Integrity and foreign key check of the library; never repairs.
+    CheckLibrary,
+    /// `VACUUM` the library.
+    CompactLibrary,
     ProcessQueue(AnidbSettings),
+    /// An automatic queue run (roadmap M5.5), submitted by the queue scheduler: like
+    /// `ProcessQueue`, but it never sends `MylistDelete` (those wait for the user's run).
+    AutoProcessQueue(AnidbSettings),
+    /// Look for leftover marked import folders below `temp_root` (see `legacy::workdir`).
+    FindLegacyLeftovers {
+        temp_root: PathBuf,
+    },
+    /// Remove the given leftover import folders. Only unused marked folders directly below
+    /// `temp_root` are removed.
+    RemoveLegacyLeftovers {
+        temp_root: PathBuf,
+        folders: Vec<PathBuf>,
+    },
     /// Queue the commands of a full update from the hashed local files, off the UI thread.
     QueueFullUpdate,
+    /// Work out, without queueing anything, what `QueueFullUpdate` would queue now; answered
+    /// by `Event::FullUpdatePreview` (no started/finished events).
+    PreviewFullUpdate,
     /// Reload the library read model on the projection thread (see `Worker::submit`).
     LoadLibrary {
         generation: u64,
@@ -46,6 +123,46 @@ pub enum Job {
         path: PathBuf,
         username: String,
         format: StatFormat,
+    },
+    /// Build and write the hash export of every hashed local file on the projection thread
+    /// (no started/finished events).
+    ExportHashes {
+        path: PathBuf,
+        template: String,
+        copy_length_as_minutes: bool,
+    },
+    /// Rename apply: move each file to its planned path, in order, and record the new paths.
+    /// Moves across volumes copy, verify and swap (see `file_manager::move_file`). Cancel stops
+    /// before the next file and during a copy; every file gets a `Renamed` or `RenameFailed`.
+    /// Afterwards the folders the moves emptied are removed in the managed folders whose
+    /// `clear_empty_folders` is on (see `file_manager::clear_emptied_folders`).
+    RenameFiles {
+        items: Vec<RenameItem>,
+        managers: FileManagerSettings,
+    },
+    /// Opt-in automatic rename (roadmap M6.3): plan the identified files of the managed folders
+    /// whose `auto_rename` is on or on dry run with `pattern`, log dry-run plans and skipped
+    /// files once per file and state, and rename the files of folders that are on through the
+    /// same verified move as `RenameFiles` (emptied folders are cleared the same way). Emits no
+    /// events when there is nothing to report or move; collisions are skipped and logged, never
+    /// overwritten.
+    AutoRename {
+        managers: FileManagerSettings,
+        pattern: String,
+    },
+    /// Opt-in media properties: probe files with `ffprobe` after they were hashed and save the
+    /// figures (separate from hashing, never part of its read). Cancel stops before the next
+    /// file and kills the running `ffprobe`.
+    ReadMedia {
+        ffprobe: PathBuf,
+        scope: crate::media::MediaScope,
+    },
+    /// Plan a batch rename on the projection thread (answered by `Event::RenamesPlanned`; no
+    /// started/finished events, never queued behind a long main-worker job).
+    PlanRenames {
+        request: u64,
+        pattern: String,
+        files: Vec<Candidate>,
     },
     Stop,
 }
@@ -70,12 +187,34 @@ pub enum Event {
     Imported {
         summary: String,
     },
+    /// The database already holds data and the import has not been confirmed; nothing was written.
+    LegacyImportNeedsConfirmation {
+        source: PathBuf,
+    },
+    /// Unused marked import folders found at startup.
+    LegacyLeftovers {
+        temp_root: PathBuf,
+        folders: Vec<PathBuf>,
+    },
+    LibraryBackedUp {
+        path: PathBuf,
+        bytes: u64,
+    },
+    /// A restore source passed validation; the UI asks for confirmation.
+    RestoreCandidate {
+        source: PathBuf,
+        info: BackupInfo,
+    },
+    LibraryChecked(Box<IntegrityReport>),
+    LibraryCompacted(CompactReport),
     LegacySettingsImported(Box<Settings>),
     LegacySettingsImportFailed(String),
     Synced {
         description: String,
         changed: bool,
     },
+    /// Answer to `Job::PreviewFullUpdate`: nothing has been queued.
+    FullUpdatePreview(FullUpdateReport),
     Error(String),
     /// A queue entry was blocked (permanent failure, rejected credentials or too many attempts).
     Blocked {
@@ -86,6 +225,8 @@ pub enum Event {
         until: i64,
         reason: String,
     },
+    /// A notice for the activity log (not an error and not tied to a job).
+    Info(String),
     LibraryLoaded {
         generation: u64,
         projection: Box<LibraryProjection>,
@@ -94,7 +235,41 @@ pub enum Event {
         generation: u64,
         message: String,
     },
+    /// One file was moved; the library already records `new`.
+    Renamed {
+        local_id: i64,
+        old: PathBuf,
+        new: PathBuf,
+        /// Copied to another volume (and verified) instead of renamed in place.
+        copied: bool,
+        /// The old file could not be removed after a verified copy.
+        note: Option<String>,
+    },
+    /// One file was not moved; the file and its library entry are unchanged.
+    RenameFailed {
+        local_id: i64,
+        old: PathBuf,
+        new: PathBuf,
+        message: String,
+    },
+    /// End of a rename job (before `Finished`).
+    RenameSummary {
+        renamed: usize,
+        not_renamed: usize,
+    },
+    /// Answer to `Job::PlanRenames`, one row per requested file in request order.
+    RenamesPlanned {
+        request: u64,
+        rows: Vec<BatchRow>,
+    },
+    /// The cover of an anime (or why there is none), the answer to `Worker::load_cover`.
+    CoverLoaded {
+        picname: String,
+        outcome: CoverOutcome,
+    },
     Finished,
+    /// The hash queue table changed (files queued, drained or cleared); reload the projection.
+    HashQueueChanged,
 }
 pub struct Worker {
     pub jobs: Sender<Job>,
@@ -106,8 +281,23 @@ pub struct Worker {
     /// Jobs submitted to the main worker thread that have not finished yet (queued or running).
     pending: Arc<AtomicUsize>,
     loads: Sender<Background>,
+    covers: Sender<CoverMsg>,
     projection: Option<std::thread::JoinHandle<()>>,
+    covers_thread: Option<std::thread::JoinHandle<()>>,
     main: Option<std::thread::JoinHandle<()>>,
+    /// Settings and blocking state for the scheduled scan; see [`crate::scheduler`].
+    scan: Arc<ScanControl>,
+    scheduler_stop: Option<Sender<()>>,
+    scheduler: Option<std::thread::JoinHandle<()>>,
+    /// Settings and blocking state for automatic queue runs and the kept AniDB session; see
+    /// [`crate::auto_queue`] and [`crate::session`].
+    queue: Arc<QueueControl>,
+    queue_scheduler: Option<std::thread::JoinHandle<()>>,
+    /// True while a queue run is in progress or an AniDB session is kept: a logout is worth
+    /// waiting for at exit.
+    session_open: Arc<AtomicBool>,
+    /// Disconnects when the main worker thread has ended.
+    exited: Receiver<()>,
 }
 
 impl Worker {
@@ -119,16 +309,30 @@ impl Worker {
         let pause = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let pending = Arc::new(AtomicUsize::new(0));
+        let session_open = Arc::new(AtomicBool::new(false));
+        let queue = Arc::new(QueueControl::new());
+        let (exit_tx, exited) = crossbeam_channel::bounded(1);
         let flags = RunFlags {
             cancel: cancel.clone(),
             pause: pause.clone(),
             shutdown: shutdown.clone(),
             pending: pending.clone(),
+            session_open: session_open.clone(),
+            queue: queue.clone(),
+            exit: exit_tx,
         };
         let projection_db = db_path.clone();
         let projection_events = event_tx.clone();
+        let scheduler_events = event_tx.clone();
+        let queue_events = event_tx.clone();
         let projection_shutdown = shutdown.clone();
         let main_loads = load_tx.clone();
+        // The one AniDB request limiter of the process, shared by the queue runs and covers.
+        let limits = animatic_core::limits::open_limits(&db_path);
+        let (cover_tx, cover_rx) = crossbeam_channel::unbounded();
+        let cover_db = db_path.clone();
+        let cover_events = event_tx.clone();
+        let cover_shutdown = shutdown.clone();
         let projection = std::thread::Builder::new()
             .name("animatic-projection".into())
             .spawn(move || {
@@ -140,10 +344,34 @@ impl Worker {
                 )
             })
             .expect("start projection worker");
+        let scan = Arc::new(ScanControl::new());
+        let (scheduler_stop, scheduler_stop_rx) = crossbeam_channel::bounded(1);
+        let scheduler = scheduler::spawn(
+            scan.clone(),
+            job_tx.clone(),
+            pending.clone(),
+            scheduler_events,
+            scheduler_stop_rx.clone(),
+            scheduler::POLL,
+        );
+        let main_limits = limits.clone();
+        let queue_scheduler = auto_queue::spawn(
+            queue.clone(),
+            db_path.clone(),
+            job_tx.clone(),
+            pending.clone(),
+            queue_events,
+            scheduler_stop_rx,
+            auto_queue::Timing::DEFAULT,
+        );
         let main = std::thread::Builder::new()
             .name("animatic-worker".into())
-            .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags))
+            .spawn(move || run(db_path, job_rx, event_tx, main_loads, flags, main_limits))
             .expect("start worker");
+        let covers_thread = std::thread::Builder::new()
+            .name("animatic-covers".into())
+            .spawn(move || run_covers(cover_db, cover_rx, cover_events, limits, cover_shutdown))
+            .expect("start cover worker");
         Worker {
             jobs: job_tx,
             events: event_rx,
@@ -152,9 +380,35 @@ impl Worker {
             shutdown,
             pending,
             loads: load_tx,
+            covers: cover_tx,
             projection: Some(projection),
+            covers_thread: Some(covers_thread),
             main: Some(main),
+            scan,
+            scheduler_stop: Some(scheduler_stop),
+            queue,
+            queue_scheduler: Some(queue_scheduler),
+            session_open,
+            exited,
+            scheduler: Some(scheduler),
         }
+    }
+
+    /// The channel to the scan scheduler thread.
+    pub fn scan_control(&self) -> &ScanControl {
+        &self.scan
+    }
+
+    /// Show the cover of an anime: from the cache, else downloaded once (see
+    /// `animatic_core::covers`). Answered by `Event::CoverLoaded`. Runs on its own thread, so a
+    /// long queue run never delays it, but it shares the process-wide request limiter.
+    pub fn load_cover(&self, job: CoverJob) {
+        let _ = self.covers.send(CoverMsg::Load(job));
+    }
+
+    /// The channel to the automatic queue scheduler and the kept AniDB session.
+    pub fn queue_control(&self) -> &QueueControl {
+        &self.queue
     }
 
     /// Queue a job. Projection loads are served immediately by their own thread and neither
@@ -177,6 +431,28 @@ impl Worker {
                     format,
                 });
             }
+            Job::ExportHashes {
+                path,
+                template,
+                copy_length_as_minutes,
+            } => {
+                let _ = self.loads.send(Background::ExportHashes {
+                    path,
+                    template,
+                    copy_length_as_minutes,
+                });
+            }
+            Job::PlanRenames {
+                request,
+                pattern,
+                files,
+            } => {
+                let _ = self.loads.send(Background::PlanRenames {
+                    request,
+                    pattern,
+                    files,
+                });
+            }
             job => {
                 self.pending.fetch_add(1, Ordering::SeqCst);
                 if self.jobs.send(job).is_err() {
@@ -192,6 +468,12 @@ impl Worker {
         self.pending.load(Ordering::SeqCst) == 0
     }
 
+    /// Submit `job` only if no job of the main worker thread is queued or running, as one atomic
+    /// step (like the scan scheduler's submission). Returns whether the job was queued.
+    pub fn submit_if_idle(&self, job: Job) -> bool {
+        submit_if_idle(&self.jobs, &self.pending, job)
+    }
+
     /// Stops the worker and waits for the main worker thread too, so that its database
     /// connection is closed when this returns. Only meant for an idle worker (restart): a job in
     /// a network exchange would delay the return by up to its timeout.
@@ -202,15 +484,72 @@ impl Worker {
     fn close(&mut self, join_main: bool) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.cancel.store(true, Ordering::Relaxed);
+        // Dropping the sender wakes the scheduler threads, which then end without submitting.
+        drop(self.scheduler_stop.take());
+        if let Some(scheduler) = self.scheduler.take() {
+            let _ = scheduler.join();
+        }
+        if let Some(scheduler) = self.queue_scheduler.take() {
+            let _ = scheduler.join();
+        }
         let _ = self.jobs.send(Job::Stop);
         let _ = self.loads.send(Background::Stop);
+        let _ = self.covers.send(CoverMsg::Stop);
         if let Some(projection) = self.projection.take() {
             let _ = projection.join();
         }
-        if join_main && let Some(main) = self.main.take() {
-            let _ = main.join();
+        if join_main {
+            // Like the main thread, this may be inside a network exchange: restart only.
+            if let Some(covers) = self.covers_thread.take() {
+                let _ = covers.join();
+            }
+            if let Some(main) = self.main.take() {
+                let _ = main.join();
+            }
+        } else if self.session_open.load(Ordering::SeqCst) {
+            // The worker thread logs out of AniDB on its way out. Wait for that, a bounded time
+            // (best effort: AniDB drops an unused session by itself), before the process ends.
+            let _ = self.exited.recv_timeout(EXIT_LOGOUT_WAIT);
         }
     }
+}
+
+/// Submit `job` only if no job of the main worker thread is queued or running; the claim is a
+/// single atomic step, so a manual submission cannot slip in between check and submit. Used by
+/// the scan scheduler, which must never queue behind other work.
+pub(crate) fn submit_if_idle(jobs: &Sender<Job>, pending: &AtomicUsize, job: Job) -> bool {
+    if pending
+        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return false;
+    }
+    if jobs.send(job).is_err() {
+        pending.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Log text for files a scan held back because they may still be written.
+fn deferred_note(deferred: &[PathBuf]) -> String {
+    const SHOWN: usize = 5;
+    let names: Vec<String> = deferred
+        .iter()
+        .take(SHOWN)
+        .map(|p| p.display().to_string())
+        .collect();
+    let more = deferred.len().saturating_sub(SHOWN);
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    format!(
+        "Scan deferred {} file(s) that may still be written, the next scan retries them: {}{more}",
+        deferred.len(),
+        names.join(", ")
+    )
 }
 
 /// One counted job of the main worker thread; the count drops when the job is finished.
@@ -221,7 +560,11 @@ impl PendingJob {
     /// requests are never counted.
     fn of(job: &Job, pending: &Arc<AtomicUsize>) -> PendingJob {
         match job {
-            Job::Stop | Job::LoadLibrary { .. } | Job::ExportStatistics { .. } => PendingJob(None),
+            Job::Stop
+            | Job::LoadLibrary { .. }
+            | Job::ExportStatistics { .. }
+            | Job::ExportHashes { .. }
+            | Job::PlanRenames { .. } => PendingJob(None),
             _ => PendingJob(Some(pending.clone())),
         }
     }
@@ -236,9 +579,11 @@ impl Drop for PendingJob {
 }
 
 impl Drop for Worker {
-    /// Cancels the running job and waits only for the projection thread: it finishes accepted
+    /// Cancels the running job and waits for the projection thread: it finishes accepted
     /// statistics exports and a load in progress (local database reads/writes, no network). The
-    /// main worker thread is not joined: it may be inside a network exchange of up to 20 s.
+    /// main worker thread is not joined: it may be inside a network exchange of up to 20 s. Only
+    /// when an AniDB session is open (or a queue run may open one) does it wait, for at most
+    /// [`EXIT_LOGOUT_WAIT`], for the worker's logout.
     fn drop(&mut self) {
         self.close(false);
     }
@@ -250,6 +595,12 @@ struct RunFlags {
     pause: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
+    /// Set by the worker while a queue run is in progress or an AniDB session is kept.
+    session_open: Arc<AtomicBool>,
+    /// Settings for looking after a kept session; see [`crate::session`].
+    queue: Arc<QueueControl>,
+    /// Dropped when the worker thread ends, which wakes `Worker::close`.
+    exit: Sender<()>,
 }
 
 fn run(
@@ -258,14 +609,44 @@ fn run(
     events: Sender<Event>,
     loads: Sender<Background>,
     flags: RunFlags,
+    limits: Arc<Limits>,
 ) {
     let RunFlags {
         cancel,
         pause,
         shutdown,
         pending,
+        session_open,
+        queue,
+        exit: _exit,
     } = flags;
-    while let Ok(job) = jobs.recv() {
+    // One limiter for the whole process: every queue run builds new clients, but they all take
+    // their send slots from here (and so does the cover thread), and the send times are saved
+    // so a restart keeps the spacing.
+    let network = Network::new(limits, session_open);
+    // What automatic rename last did per file, so a scan or a queue run never repeats a note or
+    // retries a failed move unchanged (see `animatic_core::auto_rename`).
+    let mut auto_rename_memory = AutoRenameMemory::default();
+    loop {
+        // Before waiting: do what a kept AniDB session needs now, and learn when it next needs
+        // something (a ping, a keep-alive command, the idle logout).
+        let wake = network.session.maintain(&db_path, &queue.anidb(), &events);
+        let received = match wake {
+            Some(wait) => jobs.recv_timeout(wait),
+            None => jobs
+                .recv()
+                .map_err(|_| crossbeam_channel::RecvTimeoutError::Disconnected),
+        };
+        let job = match received {
+            Ok(job) => job,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        };
         let _counted = PendingJob::of(&job, &pending);
         if shutdown.load(Ordering::Relaxed) {
             break;
@@ -289,74 +670,99 @@ fn run(
                 });
                 continue;
             }
+            Job::ExportHashes {
+                path,
+                template,
+                copy_length_as_minutes,
+            } => {
+                let _ = loads.send(Background::ExportHashes {
+                    path,
+                    template,
+                    copy_length_as_minutes,
+                });
+                continue;
+            }
+            Job::PlanRenames {
+                request,
+                pattern,
+                files,
+            } => {
+                let _ = loads.send(Background::PlanRenames {
+                    request,
+                    pattern,
+                    files,
+                });
+                continue;
+            }
             other => other,
         };
         // A cancel request applies to the job that is running when it is made. It is only
         // cleared here, when the next job starts, so a following `submit` cannot swallow it.
         cancel.store(false, Ordering::Relaxed);
         match job {
-            Job::Stop | Job::LoadLibrary { .. } | Job::ExportStatistics { .. } => {
+            Job::Stop
+            | Job::LoadLibrary { .. }
+            | Job::ExportStatistics { .. }
+            | Job::ExportHashes { .. }
+            | Job::PlanRenames { .. } => {
                 unreachable!("handled before dispatch")
             }
-            Job::Hash(paths) => {
-                let total = paths.len();
-                let _ = events.send(Event::Started {
-                    label: "Hashing files".into(),
-                    total,
-                });
-                for (index, path) in paths.into_iter().enumerate() {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let label = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned();
-                    let result = Db::open(&db_path).and_then(|db| {
-                        hash_and_register(
-                            &db,
-                            &path,
-                            Ed2kVariant::Red,
-                            &cancel,
-                            &pause,
-                            &mut |done, size| {
-                                let _ = events.send(Event::Progress {
-                                    label: label.clone(),
-                                    current: index + 1,
-                                    total,
-                                    fraction: done as f32 / size.max(1) as f32,
-                                });
-                            },
-                        )
-                    });
-                    match result {
-                        Ok((local_id, hashes)) => {
-                            let _ = events.send(Event::Hashed {
-                                path,
-                                local_id,
-                                size: hashes.size,
-                                ed2k: hashes.ed2k,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = events.send(Event::Error(format!("{}: {e}", path.display())));
-                        }
-                    }
-                }
-                let _ = events.send(Event::Finished);
+            Job::RenameFiles { items, managers } => {
+                run_renames(&db_path, items, &managers, &events, &cancel, &pause)
             }
-            Job::ProcessQueue(settings) => process_queue(&db_path, settings, &events, &cancel),
+            Job::AutoRename { managers, pattern } => run_auto_rename(
+                &db_path,
+                &managers,
+                &pattern,
+                &mut auto_rename_memory,
+                &events,
+                &cancel,
+                &pause,
+            ),
+            Job::Hash {
+                paths,
+                source,
+                pause_between,
+            } => hash_jobs::run_hash(
+                &db_path,
+                paths,
+                source,
+                pause_between,
+                &events,
+                &cancel,
+                &pause,
+            ),
+            Job::ResumeHashQueue {
+                retry_failed,
+                pause_between,
+            } => hash_jobs::run_resume(
+                &db_path,
+                retry_failed,
+                pause_between,
+                &events,
+                &cancel,
+                &pause,
+            ),
+            Job::ClearHashQueue => hash_jobs::run_clear(&db_path, &events),
+            Job::ReadMedia { ffprobe, scope } => {
+                crate::media::read_media(&db_path, &ffprobe, scope, &events, &cancel)
+            }
+            Job::ProcessQueue(settings) => {
+                process_queue(&db_path, settings, &events, &cancel, &network)
+            }
+            Job::AutoProcessQueue(settings) => {
+                process_auto_queue(&db_path, settings, &events, &cancel, &network)
+            }
             Job::QueueFullUpdate => {
                 let _ = events.send(Event::Started {
                     label: "Queueing full update".into(),
                     total: 0,
                 });
                 match queue_full_update(&db_path) {
-                    Ok(n) => {
+                    Ok(report) => {
                         let _ = events.send(Event::Synced {
-                            description: format!("Queued {n} commands for the full update"),
-                            changed: true,
+                            description: report.describe(),
+                            changed: report.queued > 0,
                         });
                     }
                     Err(e) => {
@@ -364,6 +770,12 @@ fn run(
                     }
                 }
                 let _ = events.send(Event::Finished);
+            }
+            Job::PreviewFullUpdate => {
+                let _ = events.send(match preview_full_update(&db_path) {
+                    Ok(report) => Event::FullUpdatePreview(report),
+                    Err(e) => Event::Error(format!("Full update preview failed: {e}")),
+                });
             }
             Job::Scan {
                 settings,
@@ -384,51 +796,33 @@ fn run(
                             continue;
                         }
                     };
+                // Files that may still be written wait for a later scan (roadmap M5.2).
+                let settled = animatic_core::file_manager::settle_scan(
+                    actions,
+                    settings.settle_delay(),
+                    std::time::SystemTime::now(),
+                    &mut |wait| animatic_core::file_manager::interruptible_sleep(wait, &cancel),
+                );
+                if !settled.deferred.is_empty() {
+                    let _ = events.send(Event::Info(deferred_note(&settled.deferred)));
+                }
+                let actions = settled.ready;
                 let total = actions.len();
                 let _ = events.send(Event::Started {
                     label: "Scanning managed folders".into(),
                     total,
                 });
-                for (index, action) in actions.into_iter().enumerate() {
+                // Files to hash join the persistent queue (M5.4) and are drained in order below, so
+                // a cancel or a quit leaves the rest queued.
+                let mut to_hash = Vec::new();
+                for action in actions {
                     if cancel.load(Ordering::Relaxed) {
                         break;
                     }
                     match action {
                         animatic_core::file_manager::ScanAction::Hash { path, .. }
                         | animatic_core::file_manager::ScanAction::Rehash { path, .. } => {
-                            let label = path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned();
-                            match hash_and_register(
-                                &db,
-                                &path,
-                                Ed2kVariant::Red,
-                                &cancel,
-                                &pause,
-                                &mut |done, size| {
-                                    let _ = events.send(Event::Progress {
-                                        label: label.clone(),
-                                        current: index + 1,
-                                        total,
-                                        fraction: done as f32 / size.max(1) as f32,
-                                    });
-                                },
-                            ) {
-                                Ok((local_id, hashes)) => {
-                                    let _ = events.send(Event::Hashed {
-                                        path,
-                                        local_id,
-                                        size: hashes.size,
-                                        ed2k: hashes.ed2k,
-                                    });
-                                }
-                                Err(e) => {
-                                    let _ = events
-                                        .send(Event::Error(format!("{}: {e}", path.display())));
-                                }
-                            }
+                            to_hash.push(path);
                         }
                         animatic_core::file_manager::ScanAction::RemoveMissing {
                             local_id,
@@ -444,6 +838,16 @@ fn run(
                                 let _ = events.send(Event::Error(e.to_string()));
                             }
                         },
+                    }
+                }
+                match hash_jobs::enqueue(&db, &to_hash, HashSource::Scan, &events) {
+                    Ok(()) => {
+                        hash_jobs::drain(&db, settings.file_pause(), &events, &cancel, &pause)
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!(
+                            "Could not queue scanned files for hashing: {e}"
+                        )));
                     }
                 }
                 let _ = events.send(Event::Finished);
@@ -465,27 +869,120 @@ fn run(
                 }
                 let _ = events.send(Event::Finished);
             }
-            Job::ImportLegacy { source, temp } => {
+            Job::BackupLibrary { dest } => {
+                let _ = events.send(Event::Started {
+                    label: "Backing up library".into(),
+                    total: 1,
+                });
+                match Db::open(&db_path).and_then(|db| maintenance::backup_to(&db, &dest)) {
+                    Ok(bytes) => {
+                        let _ = events.send(Event::LibraryBackedUp { path: dest, bytes });
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Backup failed: {e}")));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::ImportMylistExport { source } => {
+                let _ = events.send(Event::Started {
+                    label: "Importing MyList export".into(),
+                    total: 1,
+                });
+                match import_mylist_export(&db_path, &source, &cancel) {
+                    Ok(summary) => {
+                        let _ = events.send(Event::Imported { summary });
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(e));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::ValidateBackup { source } => {
+                let _ = events.send(Event::Started {
+                    label: "Checking backup file".into(),
+                    total: 1,
+                });
+                match maintenance::check_restore_source(&db_path, &source)
+                    .and_then(|()| maintenance::validate_backup(&source))
+                {
+                    Ok(info) => {
+                        let _ = events.send(Event::RestoreCandidate { source, info });
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!(
+                            "Restore refused, the current library was not changed: {e}"
+                        )));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::CheckLibrary => {
+                let _ = events.send(Event::Started {
+                    label: "Checking library".into(),
+                    total: 1,
+                });
+                match maintenance::check_file(&db_path) {
+                    Ok(report) => {
+                        let _ = events.send(Event::LibraryChecked(Box::new(report)));
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Library check failed: {e}")));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::CompactLibrary => {
+                let _ = events.send(Event::Started {
+                    label: "Compacting library".into(),
+                    total: 1,
+                });
+                match Db::open(&db_path).and_then(|db| maintenance::compact(&db)) {
+                    Ok(report) => {
+                        let _ = events.send(Event::LibraryCompacted(report));
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Compacting failed: {e}")));
+                    }
+                }
+                let _ = events.send(Event::Finished);
+            }
+            Job::ImportLegacy {
+                source,
+                temp_root,
+                confirmed,
+            } => {
+                let mut db = match open_for_legacy_import(&db_path, confirmed) {
+                    Ok(Some(db)) => db,
+                    Ok(None) => {
+                        let _ = events.send(Event::LegacyImportNeedsConfirmation { source });
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = events.send(Event::Error(format!("Legacy import failed: {e}")));
+                        let _ = events.send(Event::Finished);
+                        continue;
+                    }
+                };
                 let _ = events.send(Event::Started {
                     label: "Importing legacy databank".into(),
                     total: 1,
                 });
-                let result = Db::open(&db_path).and_then(|mut db| {
-                    animatic_core::legacy::import::import_databank(
-                        &mut db,
-                        &source,
-                        &temp,
-                        &mut |label, fraction| {
-                            let _ = events.send(Event::Progress {
-                                label: label.into(),
-                                current: 1,
-                                total: 1,
-                                fraction,
-                            });
-                            !cancel.load(Ordering::Relaxed)
-                        },
-                    )
-                });
+                let result = animatic_core::legacy::import::import_databank(
+                    &mut db,
+                    &source,
+                    &temp_root,
+                    &mut |label, fraction| {
+                        let _ = events.send(Event::Progress {
+                            label: label.into(),
+                            current: 1,
+                            total: 1,
+                            fraction,
+                        });
+                        !cancel.load(Ordering::Relaxed)
+                    },
+                );
                 match result {
                     Ok(report) => {
                         let records: usize = report.imported.iter().map(|(_, n)| *n).sum();
@@ -495,6 +992,10 @@ fn run(
                                 report.imported.len()
                             ),
                         });
+                        for warning in report.warnings {
+                            let _ = events
+                                .send(Event::Error(format!("Legacy import warning: {warning}")));
+                        }
                     }
                     Err(e) => {
                         let _ = events.send(Event::Error(format!("Legacy import failed: {e}")));
@@ -502,8 +1003,79 @@ fn run(
                 }
                 let _ = events.send(Event::Finished);
             }
+            Job::FindLegacyLeftovers { temp_root } => {
+                match animatic_core::legacy::workdir::find_leftover_workdirs(&temp_root) {
+                    Ok(folders) if !folders.is_empty() => {
+                        let _ = events.send(Event::LegacyLeftovers { temp_root, folders });
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("could not look for leftover import folders: {e}"),
+                }
+            }
+            Job::RemoveLegacyLeftovers { temp_root, folders } => {
+                let outcome =
+                    animatic_core::legacy::workdir::remove_leftover_workdirs(&temp_root, &folders);
+                if !outcome.removed.is_empty() {
+                    let _ = events.send(Event::Synced {
+                        description: format!(
+                            "Removed {} leftover import folder(s) from {}",
+                            outcome.removed.len(),
+                            temp_root.display()
+                        ),
+                        changed: false,
+                    });
+                }
+                for (folder, reason) in outcome.kept {
+                    let _ = events.send(Event::Error(format!(
+                        "Kept leftover import folder {}: {reason}",
+                        folder.display()
+                    )));
+                }
+            }
         }
     }
+    // The worker ends (the application closes, or the library is about to be replaced): leave
+    // AniDB politely, with a bounded wait.
+    network.session.logout_on_exit(&db_path, &queue.anidb());
+}
+
+/// Import the MyList export `source` into the library at `db_path`. The text of the error says
+/// that the library was not changed: every failure and a cancel happen before the one write
+/// transaction commits.
+fn import_mylist_export(
+    db_path: &Path,
+    source: &Path,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    let db = Db::open(db_path).map_err(|e| format!("MyList export not imported: {e}"))?;
+    match db.import_mylist_export(source, &ExportLimits::default(), cancel) {
+        Ok(report) => Ok(report.describe()),
+        Err(animatic_core::Error::Cancelled) => {
+            Err("MyList export import cancelled; the library was not changed".to_string())
+        }
+        Err(e) => Err(format!(
+            "MyList export not imported, the library was not changed: {e}"
+        )),
+    }
+}
+
+/// What the restore thread reports: the outcome, or why the library was not replaced.
+pub type RestoreResult = Result<maintenance::RestoreOutcome, String>;
+
+/// Replace the library file with the backup `source` on a thread of its own (it copies and
+/// validates whole databases). The caller must have stopped the worker and the projection
+/// thread and closed its own connection first: nothing may have `db_path` open meanwhile.
+/// If the thread dies without a result the receiver reports a disconnect.
+pub fn spawn_restore(db_path: PathBuf, source: PathBuf) -> Receiver<RestoreResult> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    std::thread::Builder::new()
+        .name("animatic-restore".into())
+        .spawn(move || {
+            let _ = tx
+                .send(maintenance::restore_database(&db_path, &source).map_err(|e| e.to_string()));
+        })
+        .expect("start restore thread");
+    rx
 }
 
 /// A request for the updater thread (see [`Updater`]).
@@ -782,9 +1354,19 @@ enum Background {
         username: String,
         format: StatFormat,
     },
+    ExportHashes {
+        path: PathBuf,
+        template: String,
+        copy_length_as_minutes: bool,
+    },
+    PlanRenames {
+        request: u64,
+        pattern: String,
+        files: Vec<Candidate>,
+    },
 }
 
-/// Serve library projections and statistics exports on a thread of their own so that an
+/// Serve library projections and the statistics and hash exports on a thread of their own so that an
 /// hours-long AniDB queue or a big hashing job never delays the UI. SQLite's WAL mode lets this
 /// connection read while the main worker writes. Of several pending loads only the newest runs;
 /// every export that was accepted runs, even during shutdown (`Background::Stop` is queued
@@ -815,12 +1397,283 @@ fn run_projections(
                     username,
                     format,
                 } => export_statistics(&db_path, &mut slot, &path, &username, format),
+                Background::ExportHashes {
+                    path,
+                    template,
+                    copy_length_as_minutes,
+                } => export_hashes(
+                    &db_path,
+                    &mut slot,
+                    &path,
+                    &template,
+                    copy_length_as_minutes,
+                ),
+                Background::PlanRenames {
+                    request,
+                    pattern,
+                    files,
+                } => plan_renames(&db_path, &mut slot, request, &pattern, &files),
             };
             let _ = events.send(event);
         }
         if stopping {
             return;
         }
+    }
+}
+
+/// Plan a batch rename on the projection thread. A library that cannot be opened blocks every
+/// row with that reason instead of leaving the UI waiting for an answer.
+fn plan_renames(
+    db_path: &Path,
+    slot: &mut Option<Db>,
+    request: u64,
+    pattern: &str,
+    files: &[Candidate],
+) -> Event {
+    let rows = match with_projection_db(db_path, slot, |db| {
+        Ok(animatic_core::rename::plan::plan_batch(db, pattern, files))
+    }) {
+        Ok(rows) => rows,
+        Err(e) => files
+            .iter()
+            .map(|file| BatchRow {
+                local_id: file.local_id,
+                old: file.path.clone(),
+                plan: Plan {
+                    errors: vec![format!("Unable to open the library: {e}")],
+                    ..Plan::default()
+                },
+            })
+            .collect(),
+    };
+    Event::RenamesPlanned { request, rows }
+}
+
+/// What `apply_renames` did.
+struct RenameTally {
+    renamed: usize,
+    not_renamed: usize,
+    /// Files that were not moved because the job was cancelled (they may be tried again).
+    cancelled: Vec<i64>,
+    /// The old paths of the files that were moved.
+    vacated: Vec<PathBuf>,
+}
+
+/// Rename apply (`Job::RenameFiles`): one `file_manager::move_file` per item, each reported, then
+/// `clear_empty_folders` for the folders those moves left empty.
+fn run_renames(
+    db_path: &Path,
+    items: Vec<RenameItem>,
+    managers: &FileManagerSettings,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+) {
+    let _ = events.send(Event::Started {
+        label: "Renaming files".into(),
+        total: items.len(),
+    });
+    let tally = apply_renames(db_path, items, events, cancel, pause);
+    clear_vacated_folders(managers, &tally.vacated, events);
+    let _ = events.send(Event::RenameSummary {
+        renamed: tally.renamed,
+        not_renamed: tally.not_renamed,
+    });
+    let _ = events.send(Event::Finished);
+}
+
+/// Automatic rename (`Job::AutoRename`): plan, log, and carry out the renames of the folders
+/// that are on through `apply_renames`, the same verified move as a manual rename (and the same
+/// `clear_empty_folders` afterwards). A job with nothing to log or move sends no events at all.
+fn run_auto_rename(
+    db_path: &Path,
+    managers: &FileManagerSettings,
+    pattern: &str,
+    memory: &mut AutoRenameMemory,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+) {
+    let pass =
+        Db::open(db_path).and_then(|db| auto_rename::plan_pass(&db, managers, pattern, memory));
+    let pass = match pass {
+        Ok(pass) => pass,
+        Err(e) => {
+            let _ = events.send(Event::Error(format!("Automatic rename failed: {e}")));
+            return;
+        }
+    };
+    for note in pass.notes {
+        let _ = events.send(Event::Info(note));
+    }
+    if pass.renames.is_empty() {
+        return;
+    }
+    let items: Vec<RenameItem> = pass
+        .renames
+        .into_iter()
+        .map(|r| RenameItem {
+            local_id: r.local_id,
+            old: r.old,
+            new: r.new,
+        })
+        .collect();
+    let _ = events.send(Event::Started {
+        label: "Renaming files automatically".into(),
+        total: items.len(),
+    });
+    let tally = apply_renames(db_path, items, events, cancel, pause);
+    for local_id in &tally.cancelled {
+        memory.forget(*local_id);
+    }
+    clear_vacated_folders(managers, &tally.vacated, events);
+    let _ = events.send(Event::Info(format!(
+        "Automatic rename finished: {} renamed, {} not renamed",
+        tally.renamed, tally.not_renamed
+    )));
+    let _ = events.send(Event::Finished);
+}
+
+/// Move each item in order, reporting a `Renamed` or `RenameFailed` event for every file.
+fn apply_renames(
+    db_path: &Path,
+    items: Vec<RenameItem>,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    pause: &AtomicBool,
+) -> RenameTally {
+    let total = items.len();
+    let db = Db::open(db_path);
+    let mut tally = RenameTally {
+        renamed: 0,
+        not_renamed: 0,
+        cancelled: Vec::new(),
+        vacated: Vec::new(),
+    };
+    for (index, item) in items.into_iter().enumerate() {
+        let RenameItem { local_id, old, new } = item;
+        let fail = |message: String| Event::RenameFailed {
+            local_id,
+            old: old.clone(),
+            new: new.clone(),
+            message,
+        };
+        // `Err((message, cancelled))`
+        let result = match &db {
+            _ if cancel.load(Ordering::Relaxed) => Err(("Skipped: cancelled".to_string(), true)),
+            Err(e) => Err((format!("Unable to open the library: {e}"), false)),
+            Ok(db) => {
+                let label = old
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                move_file(
+                    db,
+                    local_id,
+                    &old,
+                    &new,
+                    MoveControl {
+                        cancel,
+                        pause,
+                        progress: &mut |done, bytes| {
+                            let _ = events.send(Event::Progress {
+                                label: label.clone(),
+                                current: index + 1,
+                                total,
+                                fraction: done as f32 / bytes.max(1) as f32,
+                            });
+                        },
+                    },
+                )
+                .map_err(|e| match e {
+                    animatic_core::error::Error::Cancelled => (
+                        "Cancelled; the file and its library entry are unchanged".to_string(),
+                        true,
+                    ),
+                    e => (e.to_string(), false),
+                })
+            }
+        };
+        match result {
+            Ok(outcome) => {
+                tally.renamed += 1;
+                tally.vacated.push(old.clone());
+                let _ = events.send(Event::Renamed {
+                    local_id,
+                    old: old.clone(),
+                    new: new.clone(),
+                    copied: outcome.method == MoveMethod::Copied,
+                    note: outcome.source_left,
+                });
+            }
+            Err((message, cancelled)) => {
+                tally.not_renamed += 1;
+                if cancelled {
+                    tally.cancelled.push(local_id);
+                }
+                let _ = events.send(fail(message));
+            }
+        }
+    }
+    tally
+}
+
+/// `clear_empty_folders` for the files a rename job moved away: removed folders are reported to
+/// the activity log, failures only to the log file.
+fn clear_vacated_folders(
+    managers: &FileManagerSettings,
+    vacated: &[PathBuf],
+    events: &Sender<Event>,
+) {
+    let mut removed = 0;
+    for old in vacated {
+        let cleared = clear_emptied_folders(managers, old);
+        removed += cleared.removed.len();
+        for error in cleared.errors {
+            log::warn!("could not remove an emptied folder: {error}");
+        }
+    }
+    if removed > 0 {
+        let _ = events.send(Event::Info(format!(
+            "Removed {removed} empty folder{}",
+            if removed == 1 { "" } else { "s" }
+        )));
+    }
+}
+
+/// Run `export` on the projection thread's connection and keep that connection afterwards.
+fn with_projection_db<T>(
+    db_path: &Path,
+    slot: &mut Option<Db>,
+    export: impl FnOnce(&Db) -> animatic_core::error::Result<T>,
+) -> animatic_core::error::Result<T> {
+    let db = match slot.take() {
+        Some(db) => db,
+        None => Db::open(db_path)?,
+    };
+    let result = export(&db);
+    *slot = Some(db);
+    result
+}
+
+fn export_hashes(
+    db_path: &Path,
+    slot: &mut Option<Db>,
+    path: &Path,
+    template: &str,
+    copy_length_as_minutes: bool,
+) -> Event {
+    let result = with_projection_db(db_path, slot, |db| {
+        db.export_local_hashes(path, template, copy_length_as_minutes)
+    });
+    match result {
+        Ok(count) => Event::Synced {
+            description: format!("Exported {count} hashes to {}", path.display()),
+            changed: false,
+        },
+        Err(e) => Event::Error(format!("Hash export failed: {e}")),
     }
 }
 
@@ -831,17 +1684,10 @@ fn export_statistics(
     username: &str,
     format: StatFormat,
 ) -> Event {
-    let db = match slot.take() {
-        Some(db) => db,
-        None => match Db::open(db_path) {
-            Ok(db) => db,
-            Err(e) => return Event::Error(format!("Statistics export failed: {e}")),
-        },
-    };
-    let result = db
-        .library_stats()
-        .and_then(|stats| stats.write(path, username, format));
-    *slot = Some(db);
+    let result = with_projection_db(db_path, slot, |db| {
+        db.library_stats()
+            .and_then(|stats| stats.write(path, username, format))
+    });
     match result {
         Ok(()) => Event::Synced {
             description: format!("Exported statistics to {}", path.display()),
@@ -913,7 +1759,7 @@ fn describe_wait(seconds: i64) -> String {
 }
 
 /// Persist a cooldown so it also holds after a restart, and tell the UI.
-fn start_cooldown(
+pub(crate) fn start_cooldown(
     db: &Db,
     wait: Duration,
     reason: &str,
@@ -947,6 +1793,17 @@ fn fail_command(
                 // Ban: keep the entry, stop everything for the cooldown.
                 db.queue_deferred(id, &error.message)?;
                 start_cooldown(db, wait, &error.message, events)?;
+            } else if command.uses_http() {
+                // The HTTP API refused the client registration: only HTTP commands depend on
+                // it, so the UDP commands behind them keep running.
+                let n = db.queue_block_http(&error.message)?;
+                let _ = events.send(Event::Blocked {
+                    description: format!(
+                        "{n} queued HTTP commands blocked: {}. Check the HTTP client in Options.",
+                        error.message
+                    ),
+                });
+                return Ok(true);
             } else {
                 // Rejected credentials / outdated client: nothing can succeed until corrected.
                 let n = db.queue_block_all(&error.message)?;
@@ -990,12 +1847,85 @@ fn fail_command(
     }
 }
 
-/// Run the AniDB command queue until it is empty, cancelled, blocked or put on cooldown.
+/// What outlives one queue run in the worker: the limiter every client of every run draws its
+/// send slots from, the reply timeout of the UDP clients, and the AniDB session that is kept
+/// between runs while automatic runs are on (see [`crate::session`]).
+struct Network {
+    limits: Arc<Limits>,
+    udp_timeout: Duration,
+    session: SessionSlot,
+}
+
+impl Network {
+    /// `session_open` is set while a queue run is in progress or a session is kept.
+    fn new(limits: Arc<Limits>, session_open: Arc<AtomicBool>) -> Network {
+        Network {
+            limits,
+            udp_timeout: UdpConfig::default().timeout,
+            session: SessionSlot::new(session_open),
+        }
+    }
+
+    fn udp_config(&self, settings: &AnidbSettings) -> UdpConfig {
+        UdpConfig {
+            server: settings.udp_server.clone(),
+            local_port: settings.local_port,
+            client: UDP_CLIENT.into(),
+            client_version: UDP_CLIENT_VERSION,
+            username: settings.username.clone(),
+            password: settings.password.clone(),
+            api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
+            timeout: self.udp_timeout,
+        }
+    }
+}
+
+/// Run the AniDB command queue until it is empty, cancelled, blocked or put on cooldown: the
+/// user's run (**Synchronize now**, **Run command queue**), which sends every runnable command.
 fn process_queue(
     db_path: &Path,
     settings: AnidbSettings,
     events: &Sender<Event>,
     cancel: &AtomicBool,
+    network: &Network,
+) {
+    run_queue(
+        db_path,
+        settings,
+        events,
+        cancel,
+        network,
+        QueueScope::Manual,
+    );
+}
+
+/// An automatic run (roadmap M5.5): like [`process_queue`], but it never sends `MylistDelete`,
+/// which stays queued until the user runs the queue, and it says nothing when there is nothing
+/// for it to do.
+fn process_auto_queue(
+    db_path: &Path,
+    settings: AnidbSettings,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    network: &Network,
+) {
+    run_queue(
+        db_path,
+        settings,
+        events,
+        cancel,
+        network,
+        QueueScope::Automatic,
+    );
+}
+
+fn run_queue(
+    db_path: &Path,
+    settings: AnidbSettings,
+    events: &Sender<Event>,
+    cancel: &AtomicBool,
+    network: &Network,
+    scope: QueueScope,
 ) {
     if settings.offline {
         let _ = events.send(Event::Error(
@@ -1026,23 +1956,32 @@ fn process_queue(
             return;
         }
     }
+    if scope == QueueScope::Automatic {
+        // Another run, or the user, may have emptied the queue since it was submitted.
+        match db.queue_peek_in(scope) {
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(e) => {
+                let _ = events.send(Event::Error(e.to_string()));
+                return;
+            }
+        }
+    }
     let _ = events.send(Event::Started {
-        label: "Synchronizing with AniDB".into(),
+        label: match scope {
+            QueueScope::Manual => "Synchronizing with AniDB".into(),
+            QueueScope::Automatic => "Synchronizing with AniDB (automatic run)".into(),
+        },
         total: 0,
     });
-    let mut udp = UdpClient::new(UdpConfig {
-        server: settings.udp_server.clone(),
-        local_port: settings.local_port,
-        client: settings.client_name.clone(),
-        client_version: settings.client_version,
-        username: settings.username.clone(),
-        password: settings.password.clone(),
-        api_key: (!settings.api_key.is_empty()).then(|| settings.api_key.clone()),
-        ..Default::default()
-    });
-    let mut http = HttpClient::new(&settings.client_name, settings.client_version);
+    // The session of an earlier run is reused when it is kept (automatic runs on).
+    let keep_session = settings.auto_run_queue;
+    let mut udp = network
+        .session
+        .take(network.udp_config(&settings), &network.limits);
+    let mut http = HttpClient::new(HTTP_CLIENT, HTTP_CLIENT_VERSION, network.limits.clone());
     while !cancel.load(Ordering::Relaxed) {
-        let next = match db.queue_peek() {
+        let next = match db.queue_peek_in(scope) {
             Ok(v) => v,
             Err(e) => {
                 let _ = events.send(Event::Error(e.to_string()));
@@ -1078,103 +2017,157 @@ fn process_queue(
             }
         }
     }
-    let _ = udp.logout();
+    // The image host of this login, so covers can be fetched later without one.
+    if let Some(host) = &udp.image_server
+        && let Err(e) = db.remember_image_server(host)
+    {
+        log::warn!("could not save the image server: {e}");
+    }
+    // Logs out and drops the client, unless the session is kept for the next run.
+    network.session.finish(udp, keep_session);
     let _ = events.send(Event::Finished);
 }
 
-/// Queue the commands of a full update (`--full-update`): the titles dump plus every anime and
-/// file known from hashed local files.
-fn queue_full_update(db_path: &Path) -> animatic_core::Result<usize> {
+/// Open the database for a legacy import, or return `None` when the user must confirm first:
+/// the import replaces rows that share an id with a databank row, so a database that already
+/// holds data is only written after confirmation. An empty database needs none.
+fn open_for_legacy_import(db_path: &Path, confirmed: bool) -> animatic_core::Result<Option<Db>> {
     let db = Db::open(db_path)?;
+    if !confirmed && !db.is_empty()? {
+        return Ok(None);
+    }
+    Ok(Some(db))
+}
+
+/// What a full update queued, and what AniDB's limits left out of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FullUpdateReport {
+    /// Commands queued (or, in a preview, that would be queued now): the ones below that are
+    /// not in the queue already.
+    pub queued: usize,
+    /// Of `queued`, the title dump (0 or 1), file and anime commands.
+    pub new_titles_dump: usize,
+    pub new_files: usize,
+    pub new_anime: usize,
+    /// The title dump is not requested again before this epoch second.
+    pub titles_dump_after: Option<i64>,
+    /// Anime left out because they were requested less than a day ago.
+    pub recent_anime: usize,
+    /// Files left out because they were requested less than seven days ago.
+    pub recent_files: usize,
+}
+
+impl FullUpdateReport {
+    /// What AniDB's limits keep out of the update, or `None` when nothing is left out.
+    pub fn left_out(&self) -> Option<String> {
+        let mut left_out = Vec::new();
+        if let Some(until) = self.titles_dump_after {
+            left_out.push(format!(
+                "the title dump (allowed again after {})",
+                format::datetime_local(until)
+            ));
+        }
+        if self.recent_anime > 0 {
+            left_out.push(format!(
+                "{} anime requested within the last day",
+                self.recent_anime
+            ));
+        }
+        if self.recent_files > 0 {
+            left_out.push(format!(
+                "{} files requested within the last {} days",
+                self.recent_files,
+                KNOWN_FILE_MIN_AGE.as_secs() / 86_400
+            ));
+        }
+        (!left_out.is_empty()).then(|| left_out.join(", "))
+    }
+
+    pub fn describe(&self) -> String {
+        let mut text = format!("Queued {} commands for the full update", self.queued);
+        if let Some(left_out) = self.left_out() {
+            text.push_str(&format!(
+                "; left out because AniDB's limits do not allow them yet: {left_out}"
+            ));
+        }
+        text
+    }
+}
+
+/// Work out the commands of a full update (`--full-update`): the titles dump plus every anime
+/// and file known from hashed local files, except what AniDB's limits do not allow yet (the
+/// title dump once a day, an anime a day, a known file seven days after the last attempt) and
+/// what the queue holds already. Reads only.
+fn plan_full_update(db: &Db) -> animatic_core::Result<(Vec<Command>, FullUpdateReport)> {
+    let now = format::now();
     let mut fids = BTreeSet::new();
     let mut aids = BTreeSet::new();
     for file in db.local_files()? {
         fids.extend(file.fid);
         aids.extend(file.aid);
     }
+    let (files_known, anime_known) = (fids.len(), aids.len());
+    let recent_files = db.recent_requests(RequestKind::File, now)?;
+    let recent_anime = db.recent_requests(RequestKind::Anime, now)?;
+    fids.retain(|fid| !recent_files.contains(fid));
+    aids.retain(|aid| !recent_anime.contains(aid));
+    let titles_dump_after = db.titles_dump_next_allowed(now)?;
+    let mut report = FullUpdateReport {
+        titles_dump_after,
+        recent_anime: anime_known - aids.len(),
+        recent_files: files_known - fids.len(),
+        ..Default::default()
+    };
     let mut commands = Vec::with_capacity(1 + fids.len() + aids.len());
-    commands.push(Command::TitlesDump);
+    if titles_dump_after.is_none() {
+        commands.push(Command::TitlesDump);
+    }
     commands.extend(fids.into_iter().map(|fid| Command::FetchFile { fid }));
     commands.extend(aids.into_iter().map(|aid| Command::FetchAnime { aid }));
-    db.queue_push_many(&commands)
+    let queued: Vec<Command> = db
+        .queue_list()?
+        .into_iter()
+        .filter_map(|e| e.command)
+        .collect();
+    commands.retain(|c| !queued.contains(c));
+    report.new_titles_dump = commands
+        .iter()
+        .filter(|c| matches!(c, Command::TitlesDump))
+        .count();
+    report.new_files = commands
+        .iter()
+        .filter(|c| matches!(c, Command::FetchFile { .. }))
+        .count();
+    report.new_anime = commands.len() - report.new_titles_dump - report.new_files;
+    report.queued = commands.len();
+    Ok((commands, report))
+}
+
+/// What a full update would queue now; nothing is queued.
+fn preview_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> {
+    Ok(plan_full_update(&Db::open(db_path)?)?.1)
+}
+
+/// Queue the commands of a full update (`--full-update`), as planned by `plan_full_update`.
+fn queue_full_update(db_path: &Path) -> animatic_core::Result<FullUpdateReport> {
+    let db = Db::open(db_path)?;
+    let (commands, mut report) = plan_full_update(&db)?;
+    report.queued = db.queue_push_many(&commands)?;
+    Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{SocketAddr, UdpSocket};
+    use std::net::SocketAddr;
     use std::sync::atomic::AtomicUsize;
-    use std::thread::JoinHandle;
     use std::time::Instant;
 
+    use animatic_anidb::limits::Clock;
+    use animatic_anidb::testing::{ManualClock, UdpFixture as Fixture};
+    use animatic_core::hash::Ed2kVariant;
+    use parking_lot::Mutex;
+
     use super::*;
-
-    /// Local stand-in for the AniDB UDP server. `reply(n, request)` is the reply (without tag)
-    /// to the n-th packet; the fixture echoes the request tag like the real server.
-    ///
-    /// The receive loop blocks without a read timeout: Windows documents a socket whose blocking
-    /// receive timed out as indeterminate, and a 25 ms polling timeout intermittently lost the
-    /// one request a test sends. `Drop` wakes the loop with an empty datagram instead.
-    struct Fixture {
-        addr: SocketAddr,
-        packets: Arc<AtomicUsize>,
-        stop: Arc<AtomicBool>,
-        handle: Option<JoinHandle<()>>,
-    }
-
-    impl Fixture {
-        fn start(reply: impl Fn(usize, &str) -> String + Send + 'static) -> Fixture {
-            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-            let addr = socket.local_addr().unwrap();
-            let packets = Arc::new(AtomicUsize::new(0));
-            let stop = Arc::new(AtomicBool::new(false));
-            let (p, s) = (packets.clone(), stop.clone());
-            let handle = std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                loop {
-                    let received = socket.recv_from(&mut buf);
-                    if s.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    // Errors such as a Windows connection reset from an earlier reply are
-                    // reported once per receive; the next receive is unaffected.
-                    let Ok((n, from)) = received else {
-                        continue;
-                    };
-                    let index = p.fetch_add(1, Ordering::SeqCst);
-                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let tag = request
-                        .rsplit_once("&tag=")
-                        .map(|(_, t)| t.trim().to_string())
-                        .unwrap_or_default();
-                    let _ = socket
-                        .send_to(format!("{tag} {}", reply(index, &request)).as_bytes(), from);
-                }
-            });
-            Fixture {
-                addr,
-                packets,
-                stop,
-                handle: Some(handle),
-            }
-        }
-
-        fn packets(&self) -> usize {
-            self.packets.load(Ordering::SeqCst)
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(h) = self.handle.take() {
-                // Wake the blocking receive; the loop sees `stop` and exits.
-                if let Ok(waker) = UdpSocket::bind("127.0.0.1:0") {
-                    let _ = waker.send_to(&[], self.addr);
-                }
-                let _ = h.join();
-            }
-        }
-    }
 
     struct TempDb {
         dir: PathBuf,
@@ -1208,18 +2201,39 @@ mod tests {
         AnidbSettings {
             username: "synthetic-user".into(),
             password: "synthetic-password".into(),
-            client_name: "syntheticclient".into(),
             udp_server: server.to_string(),
             local_port: 0,
             ..Default::default()
         }
     }
 
-    /// Run the queue once as a fresh job (new clients every time) and return its events.
-    fn run_queue(db: &TempDb, settings: &AnidbSettings) -> Vec<Event> {
+    /// The worker's network state for a test: the real limiter code over `db`, on a clock that
+    /// moves only when the limiter sleeps, so spacing is exact and the test does not wait.
+    fn network_for(db: &TempDb, clock: &Arc<ManualClock>) -> Network {
+        Network {
+            limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
+            udp_timeout: Duration::from_secs(5),
+            session: SessionSlot::new(Arc::default()),
+        }
+    }
+
+    fn run_queue_with(db: &TempDb, settings: &AnidbSettings, network: &Network) -> Vec<Event> {
         let (tx, rx) = crossbeam_channel::unbounded();
-        process_queue(&db.path, settings.clone(), &tx, &AtomicBool::new(false));
+        process_queue(
+            &db.path,
+            settings.clone(),
+            &tx,
+            &AtomicBool::new(false),
+            network,
+        );
         rx.try_iter().collect()
+    }
+
+    /// Run the queue once as a fresh job (new clients and, as after a restart, a new limiter
+    /// over the saved state) and return its events.
+    fn run_queue(db: &TempDb, settings: &AnidbSettings) -> Vec<Event> {
+        let network = network_for(db, &Arc::new(ManualClock::default()));
+        run_queue_with(db, settings, &network)
     }
 
     fn queue_two(db: &Db) {
@@ -1353,6 +2367,73 @@ mod tests {
     }
 
     #[test]
+    fn the_image_host_of_a_login_is_saved_for_later_cover_requests() {
+        let fixture = Fixture::start(|n, _| {
+            if n == 0 {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED\nimg7.example.test".into()
+            } else {
+                "999 NOT A REAL REPLY".into()
+            }
+        });
+        let db = TempDb::new();
+        queue_two(&db.open());
+        assert_eq!(db.open().image_server().unwrap(), None);
+        run_queue(&db, &settings(fixture.addr));
+        assert_eq!(
+            db.open().image_server().unwrap().as_deref(),
+            Some("img7.example.test")
+        );
+    }
+
+    #[test]
+    fn the_worker_answers_cover_requests_from_the_cache_and_offline_without_a_request() {
+        let db = TempDb::new();
+        let dir = animatic_core::covers::covers_dir(&db.path);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(6, 4, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(dir.join("100.png"), png.into_inner()).unwrap();
+        db.open(); // creates the schema
+        let worker = Worker::spawn(db.path.clone());
+        let job = |picname: &str| CoverJob {
+            aid: 100,
+            picname: picname.into(),
+            image_server: "cdn.example.test".into(),
+            download: true,
+            offline: true,
+        };
+
+        worker.load_cover(job("100.png"));
+        let Event::CoverLoaded { picname, outcome } =
+            wait_for(&worker, |e| matches!(e, Event::CoverLoaded { .. }))
+        else {
+            unreachable!()
+        };
+        assert_eq!(picname, "100.png");
+        let CoverOutcome::Ready { image, .. } = outcome else {
+            panic!("{outcome:?}")
+        };
+        assert_eq!((image.width, image.height), (6, 4));
+
+        // Not cached and offline: no cover, and nothing was attempted.
+        worker.load_cover(job("101.png"));
+        let Event::CoverLoaded { outcome, .. } =
+            wait_for(&worker, |e| matches!(e, Event::CoverLoaded { .. }))
+        else {
+            unreachable!()
+        };
+        assert!(matches!(&outcome, CoverOutcome::Unavailable(why) if why.contains("offline")));
+        assert!(
+            db.open()
+                .request_last_attempt(RequestKind::Cover, 100)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn offline_mode_leaves_the_queue_alone() {
         let fixture = Fixture::start(|_, _| "555 BANNED".into());
         let db = TempDb::new();
@@ -1376,6 +2457,401 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    fn register_media(db: &Db, path: &Path, data: &[u8]) -> i64 {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, data).unwrap();
+        let hashes = animatic_core::hash::hash_bytes(data, Ed2kVariant::Red);
+        db.add_local_file(&path.to_string_lossy(), &hashes, 0)
+            .unwrap()
+    }
+
+    fn recorded(db: &Db, id: i64) -> String {
+        db.local_file_record(id).unwrap().unwrap().0
+    }
+
+    #[test]
+    fn a_rename_job_moves_each_file_and_reports_every_outcome() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let (a, b, c) = (
+            register_media(&library, &media.join("a.mkv"), b"synthetic a"),
+            register_media(&library, &media.join("b.mkv"), b"synthetic b"),
+            register_media(&library, &media.join("c.mkv"), b"synthetic c"),
+        );
+        std::fs::write(media.join("taken.mkv"), b"someone else's file").unwrap();
+        let item = |id, from: &str, to: &str| RenameItem {
+            local_id: id,
+            old: media.join(from),
+            new: media.join(to),
+        };
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::RenameFiles {
+            items: vec![
+                item(a, "a.mkv", "Show 01.mkv"),
+                item(c, "c.mkv", "taken.mkv"),
+                item(b, "b.mkv", "sub/Show 02.mkv"),
+            ],
+            managers: FileManagerSettings::default(),
+        });
+        let mut renamed = Vec::new();
+        let mut failed = Vec::new();
+        let mut summary = None;
+        wait_for(&worker, |e| {
+            match e {
+                Event::Renamed { local_id, .. } => renamed.push(*local_id),
+                Event::RenameFailed {
+                    local_id, message, ..
+                } => failed.push((*local_id, message.clone())),
+                Event::RenameSummary {
+                    renamed,
+                    not_renamed,
+                } => summary = Some((*renamed, *not_renamed)),
+                _ => {}
+            }
+            matches!(e, Event::Finished)
+        });
+
+        assert_eq!(renamed, [a, b]);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, c);
+        assert!(failed[0].1.contains("already exists"), "{failed:?}");
+        assert_eq!(summary, Some((2, 1)));
+        let library = db.open();
+        assert_eq!(
+            recorded(&library, a),
+            media.join("Show 01.mkv").to_string_lossy()
+        );
+        assert_eq!(
+            recorded(&library, b),
+            media.join("sub/Show 02.mkv").to_string_lossy()
+        );
+        assert_eq!(recorded(&library, c), media.join("c.mkv").to_string_lossy());
+        assert!(media.join("c.mkv").exists());
+        assert_eq!(
+            std::fs::read(media.join("taken.mkv")).unwrap(),
+            b"someone else's file"
+        );
+    }
+
+    #[test]
+    fn a_rename_job_removes_the_folders_it_emptied_only_when_the_managed_folder_asks_for_it() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let managers = |clear_empty_folders| FileManagerSettings {
+            managers: vec![animatic_core::settings::FileManager {
+                path: media.to_string_lossy().into_owned(),
+                clear_empty_folders,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let worker = Worker::spawn(db.path.clone());
+        for (clear, name) in [(false, "kept"), (true, "cleared")] {
+            let old = media.join(name).join("season 1/ep.mkv");
+            let id = register_media(&library, &old, name.as_bytes());
+            worker.submit(Job::RenameFiles {
+                items: vec![RenameItem {
+                    local_id: id,
+                    old,
+                    new: media.join(format!("{name}.mkv")),
+                }],
+                managers: managers(clear),
+            });
+            wait_for(&worker, |e| matches!(e, Event::Finished));
+            assert!(media.join(format!("{name}.mkv")).is_file());
+            assert_eq!(media.join(name).exists(), !clear, "{name}");
+        }
+        assert!(media.is_dir(), "the managed folder itself stays");
+    }
+
+    #[test]
+    fn a_cancelled_rename_job_changes_nothing_and_accounts_for_every_file() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let a = register_media(&library, &media.join("a.mkv"), b"synthetic a");
+        let b = register_media(&library, &media.join("b.mkv"), b"synthetic b");
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let items = vec![
+            RenameItem {
+                local_id: a,
+                old: media.join("a.mkv"),
+                new: media.join("Show A.mkv"),
+            },
+            RenameItem {
+                local_id: b,
+                old: media.join("b.mkv"),
+                new: media.join("Show B.mkv"),
+            },
+        ];
+
+        run_renames(
+            &db.path,
+            items,
+            &FileManagerSettings::default(),
+            &tx,
+            &AtomicBool::new(true),
+            &AtomicBool::new(false),
+        );
+
+        let events: Vec<Event> = rx.try_iter().collect();
+        let skipped = events
+            .iter()
+            .filter(|e| matches!(e, Event::RenameFailed { message, .. } if message.contains("cancelled")))
+            .count();
+        assert_eq!(skipped, 2);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::RenameSummary {
+                renamed: 0,
+                not_renamed: 2
+            }
+        )));
+        assert!(matches!(events.last(), Some(Event::Finished)));
+        assert!(media.join("a.mkv").exists() && media.join("b.mkv").exists());
+        assert!(!media.join("Show A.mkv").exists() && !media.join("Show B.mkv").exists());
+        assert_eq!(
+            recorded(&db.open(), a),
+            media.join("a.mkv").to_string_lossy()
+        );
+    }
+
+    const AUTO_PATTERN: &str = "A.Name + ' ' + E.EpisodeNo + '.mkv'";
+
+    /// An identified, hashed file at `media/name` (anime and episode cached) as episode `episode`.
+    fn identified_media(db: &Db, media: &Path, name: &str, episode: u32) -> i64 {
+        use animatic_anidb::commands::{EpNo, FileInfo};
+        let data = format!("synthetic {name}");
+        let local_id = register_media(db, &media.join(name), data.as_bytes());
+        let hashes = animatic_core::hash::hash_bytes(data.as_bytes(), Ed2kVariant::Red);
+        db.store_file_info(&FileInfo {
+            fid: local_id,
+            aid: 2,
+            eid: 20 + i64::from(episode),
+            size: hashes.size as i64,
+            ed2k: Some(hashes.ed2k),
+            anime_romaji: Some("Synthetic Show".into()),
+            epno: EpNo {
+                kind: 1,
+                number: episode,
+            },
+            ..FileInfo::default()
+        })
+        .unwrap();
+        local_id
+    }
+
+    fn folders(media: &Path, mode: animatic_core::settings::AutoRename) -> FileManagerSettings {
+        let mut settings = FileManagerSettings::default();
+        settings
+            .managers
+            .push(animatic_core::settings::FileManager {
+                name: "Synthetic".into(),
+                path: media.to_string_lossy().into_owned(),
+                auto_rename: mode,
+                ..Default::default()
+            });
+        settings
+    }
+
+    /// One automatic pass against `db`, with its events.
+    fn auto_pass(
+        db: &TempDb,
+        settings: &FileManagerSettings,
+        memory: &mut AutoRenameMemory,
+        cancel: bool,
+    ) -> Vec<Event> {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        run_auto_rename(
+            &db.path,
+            settings,
+            AUTO_PATTERN,
+            memory,
+            &tx,
+            &AtomicBool::new(cancel),
+            &AtomicBool::new(false),
+        );
+        rx.try_iter().collect()
+    }
+
+    #[test]
+    fn automatic_rename_on_renames_through_the_verified_job_and_then_stays_quiet() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let id = identified_media(&library, &media, "episode.mkv", 3);
+        let settings = folders(&media, AutoRename::On);
+        let mut memory = AutoRenameMemory::default();
+
+        let events = auto_pass(&db, &settings, &mut memory, false);
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Renamed { local_id, .. } if *local_id == id)),
+            "{events:?}"
+        );
+        assert!(matches!(events.last(), Some(Event::Finished)));
+        assert!(!media.join("episode.mkv").exists());
+        assert!(media.join("Synthetic Show 3.mkv").exists());
+        assert_eq!(
+            recorded(&db.open(), id),
+            media.join("Synthetic Show 3.mkv").to_string_lossy()
+        );
+        assert!(
+            auto_pass(&db, &settings, &mut memory, false).is_empty(),
+            "a renamed file is already named: nothing to log or move"
+        );
+    }
+
+    #[test]
+    fn automatic_rename_dry_run_logs_the_plan_once_and_moves_nothing() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        identified_media(&library, &media, "episode.mkv", 3);
+        let settings = folders(&media, AutoRename::DryRun);
+        let mut memory = AutoRenameMemory::default();
+
+        let events = auto_pass(&db, &settings, &mut memory, false);
+
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(
+            matches!(&events[0], Event::Info(text) if text.contains("dry run") && text.contains("Synthetic Show 3.mkv")),
+            "{events:?}"
+        );
+        assert!(media.join("episode.mkv").exists());
+        assert!(!media.join("Synthetic Show 3.mkv").exists());
+        assert!(auto_pass(&db, &settings, &mut memory, false).is_empty());
+    }
+
+    #[test]
+    fn automatic_rename_off_does_nothing_and_a_collision_is_skipped_never_overwritten() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let id = identified_media(&library, &media, "episode.mkv", 3);
+        std::fs::write(media.join("Synthetic Show 3.mkv"), b"someone else's file").unwrap();
+        let mut memory = AutoRenameMemory::default();
+
+        let off = auto_pass(&db, &folders(&media, AutoRename::Off), &mut memory, false);
+        assert!(off.is_empty());
+
+        let settings = folders(&media, AutoRename::On);
+        let events = auto_pass(&db, &settings, &mut memory, false);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(
+            matches!(&events[0], Event::Info(text) if text.contains("skipped") && text.contains("already exists")),
+            "{events:?}"
+        );
+        assert!(media.join("episode.mkv").exists());
+        assert_eq!(
+            std::fs::read(media.join("Synthetic Show 3.mkv")).unwrap(),
+            b"someone else's file"
+        );
+        assert_eq!(
+            recorded(&db.open(), id),
+            media.join("episode.mkv").to_string_lossy()
+        );
+        assert!(auto_pass(&db, &settings, &mut memory, false).is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_automatic_rename_is_tried_again_by_the_next_pass() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        identified_media(&library, &media, "episode.mkv", 3);
+        let settings = folders(&media, AutoRename::On);
+        let mut memory = AutoRenameMemory::default();
+
+        let cancelled = auto_pass(&db, &settings, &mut memory, true);
+        assert!(cancelled.iter().any(
+            |e| matches!(e, Event::RenameFailed { message, .. } if message.contains("cancelled"))
+        ));
+        assert!(media.join("episode.mkv").exists());
+
+        let retried = auto_pass(&db, &settings, &mut memory, false);
+        assert!(retried.iter().any(|e| matches!(e, Event::Renamed { .. })));
+        assert!(media.join("Synthetic Show 3.mkv").exists());
+    }
+
+    #[test]
+    fn an_automatic_rename_job_submitted_while_idle_runs_on_the_worker() {
+        use animatic_core::settings::AutoRename;
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        identified_media(&library, &media, "episode.mkv", 3);
+        let worker = Worker::spawn(db.path.clone());
+
+        assert!(worker.submit_if_idle(Job::AutoRename {
+            managers: folders(&media, AutoRename::On),
+            pattern: AUTO_PATTERN.into(),
+        }));
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+
+        assert!(media.join("Synthetic Show 3.mkv").exists());
+    }
+
+    #[test]
+    fn batch_planning_answers_from_the_projection_thread_without_job_events() {
+        use animatic_anidb::commands::{EpNo, FileInfo};
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        library
+            .store_file_info(&FileInfo {
+                fid: 1,
+                aid: 2,
+                eid: 21,
+                size: 1000,
+                ed2k: Some("ab".repeat(16)),
+                anime_romaji: Some("Synthetic Show".into()),
+                epno: EpNo { kind: 1, number: 1 },
+                ..FileInfo::default()
+            })
+            .unwrap();
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::PlanRenames {
+            request: 5,
+            pattern: "A.Name + ' ' + E.EpisodeNo + '.mkv'".into(),
+            files: vec![
+                Candidate {
+                    local_id: 1,
+                    path: media.join("one.mkv"),
+                    fid: Some(1),
+                    base_path: String::new(),
+                },
+                Candidate {
+                    local_id: 2,
+                    path: media.join("two.mkv"),
+                    fid: None,
+                    base_path: String::new(),
+                },
+            ],
+        });
+
+        match wait_for(&worker, |e| matches!(e, Event::RenamesPlanned { .. })) {
+            Event::RenamesPlanned { request, rows } => {
+                assert_eq!(request, 5);
+                assert_eq!(rows.len(), 2);
+                assert!(rows[0].plan.can_apply(), "{:?}", rows[0]);
+                assert!(!rows[1].plan.can_apply() && !rows[1].plan.errors.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(worker.is_idle(), "planning never occupies the main worker");
     }
 
     #[test]
@@ -1441,6 +2917,195 @@ mod tests {
         );
     }
 
+    /// A managed folder with `names` as small synthetic media files, and settings that hash it.
+    fn media_folder(db: &TempDb, names: &[&str]) -> (PathBuf, FileManagerSettings) {
+        let root = db.dir.join("media");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in names {
+            std::fs::write(root.join(name), name.as_bytes()).unwrap();
+        }
+        let settings = FileManagerSettings {
+            action_delay_ms: 0,
+            managers: vec![animatic_core::settings::FileManager {
+                name: "Synthetic media".into(),
+                path: root.to_string_lossy().into_owned(),
+                auto_hash: true,
+                include_subdirs: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        (root, settings)
+    }
+
+    #[test]
+    fn scan_pauses_between_hashed_files_but_not_after_the_last() {
+        let db = TempDb::new();
+        drop(db.open());
+        let (_, mut settings) = media_folder(&db, &["a.mkv", "b.mkv", "c.mkv"]);
+        settings.sleep_time_ms = 400;
+        let worker = Worker::spawn(db.path.clone());
+        let started = Instant::now();
+
+        worker.submit(Job::Scan {
+            settings,
+            extensions: "mkv".into(),
+        });
+        let mut hashed = Vec::new();
+        wait_for(&worker, |e| {
+            if matches!(e, Event::Hashed { .. }) {
+                hashed.push(Instant::now());
+            }
+            matches!(e, Event::Finished)
+        });
+
+        assert_eq!(hashed.len(), 3);
+        for pair in hashed.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= Duration::from_millis(300),
+                "files are paced: {:?}",
+                pair[1] - pair[0]
+            );
+        }
+        let total = started.elapsed();
+        assert!(
+            total < Duration::from_millis(400 * 2 + 1500),
+            "no pause after the last file: {total:?}"
+        );
+    }
+
+    #[test]
+    fn scan_defers_a_file_modified_within_the_settle_delay_until_a_later_scan() {
+        let db = TempDb::new();
+        drop(db.open());
+        let (_, mut settings) = media_folder(&db, &["still-copying.mkv"]);
+        settings.action_delay_ms = 600_000;
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::Scan {
+            settings: settings.clone(),
+            extensions: "mkv".into(),
+        });
+        let mut hashed = false;
+        let mut notice = None;
+        wait_for(&worker, |e| {
+            match e {
+                Event::Hashed { .. } => hashed = true,
+                Event::Info(text) => notice = Some(text.clone()),
+                _ => {}
+            }
+            matches!(e, Event::Finished)
+        });
+        assert!(!hashed, "a file written moments ago must not be hashed yet");
+        assert!(notice.is_some_and(|n| n.contains("deferred 1 file")));
+        assert_eq!(db.open().local_files().unwrap().len(), 0);
+
+        // Once it counts as settled (no settle delay), the next scan hashes it.
+        settings.action_delay_ms = 0;
+        worker.submit(Job::Scan {
+            settings,
+            extensions: "mkv".into(),
+        });
+        wait_for(&worker, |e| matches!(e, Event::Hashed { .. }));
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        assert_eq!(db.open().local_files().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn requested_scan_runs_on_the_worker_once_nothing_blocks_it() {
+        let db = TempDb::new();
+        drop(db.open());
+        let (_, settings) = media_folder(&db, &["scheduled.mkv"]);
+        let mut worker = Worker::spawn(db.path.clone());
+        let extensions = vec!["mkv".to_string()];
+        worker
+            .scan_control()
+            .sync(&settings, &extensions, Some("an import is waiting"));
+        worker.scan_control().request_scan();
+
+        wait_for(
+            &worker,
+            |e| matches!(e, Event::Info(text) if text.contains("postponed")),
+        );
+        assert!(db.open().local_files().unwrap().is_empty());
+
+        worker.scan_control().sync(&settings, &extensions, None);
+        wait_for(&worker, |e| matches!(e, Event::Hashed { .. }));
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        assert_eq!(db.open().local_files().unwrap().len(), 1);
+
+        let stopping = Instant::now();
+        worker.stop_and_join();
+        assert!(stopping.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn library_backup_check_validation_and_restore_work_end_to_end() {
+        use animatic_core::sync::Command;
+        let db = TempDb::new();
+        let live = db.open();
+        live.queue_push(&Command::TitlesDump).unwrap();
+        let backup = db.dir.join("backup.sqlite3");
+        let mut worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::BackupLibrary {
+            dest: backup.clone(),
+        });
+        match wait_for(&worker, |e| {
+            matches!(e, Event::LibraryBackedUp { .. } | Event::Error(_))
+        }) {
+            Event::LibraryBackedUp { path, bytes } => {
+                assert_eq!(path, backup);
+                assert_eq!(bytes, std::fs::metadata(&backup).unwrap().len());
+            }
+            other => panic!("backup failed: {other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        live.queue_push(&Command::MylistStats).unwrap();
+
+        worker.submit(Job::CheckLibrary);
+        match wait_for(&worker, |e| matches!(e, Event::LibraryChecked(_))) {
+            Event::LibraryChecked(report) => assert!(report.is_ok(), "{report:?}"),
+            other => panic!("{other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+
+        let garbage = db.dir.join("garbage.sqlite3");
+        std::fs::write(&garbage, b"synthetic garbage ".repeat(300)).unwrap();
+        worker.submit(Job::ValidateBackup { source: garbage });
+        match wait_for(&worker, |e| {
+            matches!(e, Event::RestoreCandidate { .. } | Event::Error(_))
+        }) {
+            Event::Error(message) => assert!(message.contains("not changed"), "{message}"),
+            other => panic!("a damaged file must be refused: {other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        worker.submit(Job::ValidateBackup {
+            source: backup.clone(),
+        });
+        match wait_for(&worker, |e| {
+            matches!(e, Event::RestoreCandidate { .. } | Event::Error(_))
+        }) {
+            Event::RestoreCandidate { source, info } => {
+                assert_eq!(source, backup);
+                assert_eq!(info.queued_commands, 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+
+        // What the confirmed restore does: stop the threads, close every connection, swap.
+        worker.stop_and_join();
+        drop(live);
+        let outcome = spawn_restore(db.path.clone(), backup)
+            .recv_timeout(Duration::from_secs(20))
+            .expect("restore thread reports")
+            .expect("restore succeeds");
+        assert_eq!(db.open().queue_len().unwrap(), 1, "the backup's queue");
+        let previous = outcome.previous_copy.expect("the replaced library is kept");
+        assert_eq!(Db::open(&previous).unwrap().queue_len().unwrap(), 2);
+    }
+
     #[test]
     fn manual_statistics_export_runs_in_the_background_without_progress_events() {
         let db = TempDb::new();
@@ -1460,6 +3125,52 @@ mod tests {
             "{event:?}"
         );
         assert!(target.exists());
+        assert!(worker.events.try_recv().is_err());
+    }
+
+    #[test]
+    fn hash_export_runs_in_the_background_and_a_failure_keeps_the_previous_file() {
+        let db = TempDb::new();
+        db.open()
+            .conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/synthetic/animatic-test-user/a.mkv');",
+            )
+            .unwrap();
+        let target = db.dir.join("hashes.txt");
+        let worker = Worker::spawn(db.path.clone());
+        worker.submit(Job::ExportHashes {
+            path: target.clone(),
+            template: "%filename%".into(),
+            copy_length_as_minutes: false,
+        });
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::Synced { .. } | Event::Error(_))
+        });
+        assert!(
+            matches!(&event, Event::Synced { changed: false, description } if description.contains("Exported 1 hashes")),
+            "{event:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "a.mkv\r\n");
+
+        // A directory cannot be replaced by a file: the export reports it and the old file stays.
+        let blocked = db.dir.join("blocked.txt");
+        std::fs::create_dir(&blocked).unwrap();
+        worker.submit(Job::ExportHashes {
+            path: blocked.clone(),
+            template: "%filename%".into(),
+            copy_length_as_minutes: false,
+        });
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::Synced { .. } | Event::Error(_))
+        });
+        assert!(
+            matches!(&event, Event::Error(m) if m.starts_with("Hash export failed")),
+            "{event:?}"
+        );
+        assert!(blocked.is_dir());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "a.mkv\r\n");
         assert!(worker.events.try_recv().is_err());
     }
 
@@ -1493,12 +3204,558 @@ mod tests {
             )
             .unwrap();
         // TitlesDump + files 10 and 11 + anime 100; the duplicate and unidentified files add nothing.
-        assert_eq!(queue_full_update(&db.path).unwrap(), 4);
+        assert_eq!(queue_full_update(&db.path).unwrap().queued, 4);
         assert_eq!(
-            queue_full_update(&db.path).unwrap(),
+            queue_full_update(&db.path).unwrap().queued,
             0,
             "queueing is idempotent"
         );
         assert_eq!(db.open().queue_len().unwrap(), 4);
     }
+
+    #[test]
+    fn full_update_preview_counts_what_is_then_queued() {
+        use animatic_core::limits::RequestKind;
+        let db = TempDb::new();
+        let d = db.open();
+        d.conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1),(2,'bb',1),(3,'cc',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/s/1'),(2,2,'/s/2'),(3,3,'/s/3');
+                 INSERT INTO file(fid, aid, ed2k, size) VALUES (10,100,'aa',1),(11,101,'bb',1),(12,102,'cc',1);",
+            )
+            .unwrap();
+        let now = format::now();
+        d.record_titles_dump_attempt(now - 60).unwrap();
+        d.record_request_attempt(RequestKind::Anime, 100, now - 60)
+            .unwrap();
+        d.record_request_attempt(RequestKind::File, 10, now - 60)
+            .unwrap();
+        // One of the commands is queued already and is not counted again.
+        d.queue_push(&Command::FetchFile { fid: 11 }).unwrap();
+
+        let preview = preview_full_update(&db.path).unwrap();
+        assert_eq!(d.queue_len().unwrap(), 1, "a preview queues nothing");
+        assert_eq!(
+            (
+                preview.new_titles_dump,
+                preview.new_files,
+                preview.new_anime
+            ),
+            (0, 1, 2)
+        );
+        assert_eq!((preview.recent_files, preview.recent_anime), (1, 1));
+        assert!(preview.titles_dump_after.is_some());
+
+        let queued = queue_full_update(&db.path).unwrap();
+        assert_eq!(queued.queued, preview.queued);
+        assert_eq!(d.queue_len().unwrap(), 1 + preview.queued as i64);
+        let commands: Vec<Command> = d
+            .queue_list()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| e.command)
+            .collect();
+        assert!(!commands.contains(&Command::FetchFile { fid: 10 }));
+        assert!(!commands.contains(&Command::FetchAnime { aid: 100 }));
+        assert!(!commands.contains(&Command::TitlesDump));
+        assert_eq!(preview_full_update(&db.path).unwrap().queued, 0);
+    }
+
+    /// A synthetic databank folder: one plain SQLite collection, which the importer accepts as
+    /// an already decrypted copy and imports as zero records.
+    fn synthetic_databank(db: &TempDb) -> PathBuf {
+        let kowai = db.dir.join("animatic-test-root").join("kowai");
+        std::fs::create_dir_all(&kowai).unwrap();
+        drop(Db::open(&kowai.join("mylist.data")).unwrap());
+        kowai
+    }
+
+    fn import_job(db: &TempDb, kowai: &Path, confirmed: bool) -> Job {
+        Job::ImportLegacy {
+            source: kowai.to_path_buf(),
+            temp_root: db.dir.join("temp"),
+            confirmed,
+        }
+    }
+
+    #[test]
+    fn full_update_leaves_out_what_the_limits_do_not_allow_yet() {
+        use animatic_core::limits::{KNOWN_FILE_MIN_AGE, RequestKind};
+        let db = TempDb::new();
+        let d = db.open();
+        d.conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1),(2,'bb',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/s/1'),(2,2,'/s/2');
+                 INSERT INTO file(fid, aid, ed2k, size) VALUES (10,100,'aa',1),(11,101,'bb',1);",
+            )
+            .unwrap();
+        let now = format::now();
+        d.record_titles_dump_attempt(now - 3600).unwrap();
+        d.record_request_attempt(RequestKind::Anime, 100, now - 3600)
+            .unwrap();
+        d.record_request_attempt(RequestKind::File, 10, now - 86_400)
+            .unwrap();
+
+        // Recently requested: the title dump, anime 100 and file 10 stay out of the queue.
+        let report = queue_full_update(&db.path).unwrap();
+        assert_eq!(report.queued, 2, "{report:?}");
+        assert_eq!(report.recent_anime, 1);
+        assert_eq!(report.recent_files, 1);
+        assert_eq!(report.titles_dump_after, Some(now - 3600 + 86_400));
+        let text = report.describe();
+        assert!(
+            text.contains("title dump") && text.contains("1 anime") && text.contains("1 files"),
+            "{text}"
+        );
+        let queued: Vec<Command> = d
+            .queue_list()
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| e.command)
+            .collect();
+        assert_eq!(
+            queued,
+            [
+                Command::FetchFile { fid: 11 },
+                Command::FetchAnime { aid: 101 }
+            ]
+        );
+
+        // Once the intervals have passed, everything is queued again.
+        d.queue_clear().unwrap();
+        d.record_titles_dump_attempt(now - 86_400 - 1).unwrap();
+        d.record_request_attempt(RequestKind::Anime, 100, now - 86_400 - 1)
+            .unwrap();
+        let week = KNOWN_FILE_MIN_AGE.as_secs() as i64;
+        d.record_request_attempt(RequestKind::File, 10, now - week - 1)
+            .unwrap();
+        let report = queue_full_update(&db.path).unwrap();
+        assert_eq!(report.queued, 5, "{report:?}");
+        assert_eq!(report.titles_dump_after, None);
+        assert!(!report.describe().contains("left out"));
+    }
+
+    /// Reply script of a server that accepts the login and answers every MYLIST request with
+    /// "no such entry", noting when (on `clock`) each packet arrived.
+    fn accepting_server(clock: &Arc<ManualClock>, arrivals: &Arc<Mutex<Vec<i64>>>) -> Fixture {
+        let (clock, arrivals) = (clock.clone(), arrivals.clone());
+        Fixture::start(move |_, request| {
+            arrivals.lock().push(clock.now_ms());
+            if request.starts_with("AUTH") {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else if request.starts_with("MYLIST ") {
+                "321 NO SUCH ENTRY".into()
+            } else {
+                "203 LOGGED OUT".into()
+            }
+        })
+    }
+
+    fn push_refreshes(db: &TempDb, lids: &[i64]) {
+        for lid in lids {
+            db.open()
+                .queue_push(&Command::MylistRefresh { lid: *lid })
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn importing_into_a_populated_database_waits_for_confirmation() {
+        let db = TempDb::new();
+        db.open()
+            .conn()
+            .execute_batch(
+                "INSERT INTO local_hash(id, ed2k, size) VALUES (1,'aa',1);
+                 INSERT INTO local_file(id, hash_id, path) VALUES (1,1,'/s/1');",
+            )
+            .unwrap();
+        let kowai = synthetic_databank(&db);
+        let source_before = std::fs::read(kowai.join("mylist.data")).unwrap();
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(import_job(&db, &kowai, false));
+        let event = wait_for(&worker, |e| {
+            matches!(
+                e,
+                Event::LegacyImportNeedsConfirmation { .. } | Event::Started { .. }
+            )
+        });
+        assert!(
+            matches!(&event, Event::LegacyImportNeedsConfirmation { source } if *source == kowai),
+            "{event:?}"
+        );
+        assert!(
+            db.open().meta("legacy_import_source").unwrap().is_none(),
+            "nothing was imported"
+        );
+        assert!(
+            !db.dir.join("temp").exists(),
+            "no decrypted copy was started"
+        );
+
+        worker.submit(import_job(&db, &kowai, true));
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::Imported { .. } | Event::Error(_))
+        });
+        assert!(matches!(event, Event::Imported { .. }), "{event:?}");
+        assert!(db.open().meta("legacy_import_source").unwrap().is_some());
+        assert_eq!(
+            std::fs::read(kowai.join("mylist.data")).unwrap(),
+            source_before,
+            "the databank is only read"
+        );
+    }
+
+    #[test]
+    fn importing_into_an_empty_database_needs_no_confirmation() {
+        let db = TempDb::new();
+        drop(db.open());
+        let kowai = synthetic_databank(&db);
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(import_job(&db, &kowai, false));
+        let event = wait_for(&worker, |e| {
+            matches!(
+                e,
+                Event::Imported { .. }
+                    | Event::LegacyImportNeedsConfirmation { .. }
+                    | Event::Error(_)
+            )
+        });
+        assert!(matches!(event, Event::Imported { .. }), "{event:?}");
+    }
+
+    #[test]
+    fn the_gate_opens_only_for_empty_or_confirmed_targets() {
+        let db = TempDb::new();
+        assert!(open_for_legacy_import(&db.path, false).unwrap().is_some());
+        db.open()
+            .conn()
+            .execute_batch("INSERT INTO anime(aid) VALUES (1);")
+            .unwrap();
+        assert!(open_for_legacy_import(&db.path, false).unwrap().is_none());
+        assert!(open_for_legacy_import(&db.path, true).unwrap().is_some());
+    }
+
+    #[test]
+    fn leftover_import_folders_are_reported_and_only_marked_ones_removed() {
+        use animatic_core::legacy::workdir::{WORKDIR_MARKER, WORKDIR_PREFIX};
+        let db = TempDb::new();
+        drop(db.open());
+        let temp_root = db.dir.join("temp");
+        let marked = temp_root.join(format!("{WORKDIR_PREFIX}synthetic"));
+        let unmarked = temp_root.join(format!("{WORKDIR_PREFIX}unmarked"));
+        let unrelated = temp_root.join("unrelated.txt");
+        std::fs::create_dir_all(&marked).unwrap();
+        std::fs::create_dir_all(&unmarked).unwrap();
+        std::fs::write(marked.join(WORKDIR_MARKER), b"").unwrap();
+        std::fs::write(marked.join("animes.sqlite"), b"synthetic").unwrap();
+        std::fs::write(&unrelated, b"keep").unwrap();
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::FindLegacyLeftovers {
+            temp_root: temp_root.clone(),
+        });
+        let event = wait_for(&worker, |e| matches!(e, Event::LegacyLeftovers { .. }));
+        let Event::LegacyLeftovers { folders, .. } = event else {
+            unreachable!()
+        };
+        assert_eq!(folders, vec![marked.clone()]);
+
+        // Even when asked to remove more, only the marked folder goes.
+        worker.submit(Job::RemoveLegacyLeftovers {
+            temp_root: temp_root.clone(),
+            folders: vec![marked.clone(), unmarked.clone(), unrelated.clone()],
+        });
+        let event = wait_for(&worker, |e| matches!(e, Event::Synced { .. }));
+        assert!(
+            matches!(&event, Event::Synced { description, changed: false } if description.contains("Removed 1")),
+            "{event:?}"
+        );
+        assert!(!marked.exists());
+        assert!(unmarked.is_dir());
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep");
+
+        worker.submit(Job::FindLegacyLeftovers { temp_root });
+        worker.submit(Job::QueueFullUpdate);
+        let event = wait_for(&worker, |e| {
+            matches!(e, Event::LegacyLeftovers { .. } | Event::Finished)
+        });
+        assert!(
+            matches!(event, Event::Finished),
+            "no leftovers are reported once removed"
+        );
+    }
+
+    #[test]
+    fn consecutive_runs_and_a_restart_keep_the_long_term_spacing() {
+        let clock = Arc::new(ManualClock::default());
+        let arrivals = Arc::new(Mutex::new(Vec::new()));
+        let fixture = accepting_server(&clock, &arrivals);
+        let db = TempDb::new();
+        let s = settings(fixture.addr);
+        let process = network_for(&db, &clock);
+
+        // Two runs of one process: each builds new clients, but the burst allowance is shared.
+        push_refreshes(&db, &[1, 2]);
+        run_queue_with(&db, &s, &process);
+        push_refreshes(&db, &[3, 4]);
+        run_queue_with(&db, &s, &process);
+        assert_eq!(fixture.packets(), 8, "login, two requests, logout, twice");
+        // A restart: a new process reads the saved send time and cannot know the burst size.
+        push_refreshes(&db, &[5]);
+        run_queue_with(&db, &s, &network_for(&db, &clock));
+
+        let arrivals = arrivals.lock().clone();
+        let gaps: Vec<i64> = arrivals.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(
+            gaps,
+            [2000, 2000, 2000, 2000, 4000, 4000, 4000, 4000, 4000, 4000]
+        );
+        let saved = db
+            .open()
+            .meta(animatic_core::limits::UDP_LAST_SEND_KEY)
+            .unwrap();
+        assert_eq!(saved, Some(arrivals.last().unwrap().to_string()));
+    }
+
+    #[test]
+    fn the_send_time_is_saved_before_the_packet_leaves() {
+        let clock = Arc::new(ManualClock::default());
+        let db = TempDb::new();
+        let (path, at) = (db.path.clone(), clock.clone());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        // The server never answers: the process "dies" with the packet in flight.
+        let fixture = Fixture::start(move |_, _| {
+            let saved = Db::open(&path)
+                .unwrap()
+                .meta(animatic_core::limits::UDP_LAST_SEND_KEY)
+                .unwrap();
+            log.lock().push((saved, at.now_ms()));
+            String::new()
+        });
+        push_refreshes(&db, &[1]);
+        let network = Network {
+            limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
+            udp_timeout: Duration::from_millis(300),
+            session: SessionSlot::new(Arc::default()),
+        };
+        run_queue_with(&db, &settings(fixture.addr), &network);
+        let seen = seen.lock().clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            seen[0].0,
+            Some(seen[0].1.to_string()),
+            "saved when the packet arrived"
+        );
+    }
+
+    #[test]
+    fn a_busy_local_port_stops_the_run_with_an_error_naming_the_setting() {
+        let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let fixture = Fixture::start(|_, _| "200 session 127.0.0.1:1 LOGIN ACCEPTED".into());
+        let db = TempDb::new();
+        queue_two(&db.open());
+        let mut s = settings(fixture.addr);
+        s.local_port = port;
+        let events = run_queue(&db, &s);
+        assert!(has_error(&events, "anidb.local_port"), "{events:?}");
+        assert_eq!(fixture.packets(), 0, "no packet came from another port");
+        let d = db.open();
+        assert_eq!(
+            d.queue_blocked_len().unwrap(),
+            0,
+            "the commands wait for a free port"
+        );
+        assert!(d.sync_cooldown().unwrap().is_some());
+        assert!(
+            d.meta(animatic_core::limits::UDP_LAST_SEND_KEY)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_refused_client_version_blocks_the_queue_until_animatic_is_updated() {
+        let fixture = Fixture::start(|_, _| "504 CLIENT VERSION BANNED".into());
+        let db = TempDb::new();
+        queue_two(&db.open());
+        let s = settings(fixture.addr);
+        let events = run_queue(&db, &s);
+        assert!(has_error(&events, "refuses"), "{events:?}");
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Blocked { description } if description.contains("refuses"))
+        ));
+        let d = db.open();
+        assert_eq!(
+            d.queue_blocked_len().unwrap(),
+            2,
+            "every runnable row is blocked"
+        );
+        assert!(
+            d.sync_cooldown().unwrap().is_none(),
+            "no timed ban: only a correction helps"
+        );
+        assert_eq!(fixture.packets(), 1);
+        run_queue(&db, &s);
+        assert_eq!(fixture.packets(), 1, "nothing is eligible, nothing is sent");
+    }
+
+    #[test]
+    fn an_unanswered_login_backs_off_in_growing_steps_that_a_login_resets() {
+        let clock = Arc::new(ManualClock::default());
+        let answer = Arc::new(AtomicBool::new(false));
+        let on = answer.clone();
+        let fixture = Fixture::start(move |_, request| {
+            if !on.load(Ordering::SeqCst) {
+                String::new()
+            } else if request.starts_with("AUTH") {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else if request.starts_with("MYLIST ") {
+                "321 NO SUCH ENTRY".into()
+            } else {
+                "203 LOGGED OUT".into()
+            }
+        });
+        let db = TempDb::new();
+        let s = settings(fixture.addr);
+        push_refreshes(&db, &[1]);
+        // One run on a new limiter each time (a restart), and the wait is "over" afterwards.
+        let run = |expect_wait: Option<i64>| {
+            let network = Network {
+                limits: animatic_core::limits::open_limits_with_clock(&db.path, clock.clone()),
+                udp_timeout: Duration::from_millis(300),
+                session: SessionSlot::new(Arc::default()),
+            };
+            let started = format::now();
+            let events = run_queue_with(&db, &s, &network);
+            let d = db.open();
+            let cooldown = d.sync_cooldown().unwrap();
+            d.clear_sync_cooldown().unwrap();
+            match expect_wait {
+                Some(secs) => {
+                    let (until, reason) = cooldown.expect("a cooldown");
+                    assert!(
+                        (started + secs..=started + secs + 3).contains(&until),
+                        "wait {secs}s, got {}s",
+                        until - started
+                    );
+                    assert!(reason.contains("no reply to the AniDB login"), "{reason}");
+                    assert!(has_error(&events, "AUTH"));
+                    assert_eq!(d.queue_blocked_len().unwrap(), 0, "the command waits");
+                    assert_eq!(
+                        d.queue_list().unwrap()[0].tries,
+                        0,
+                        "not the command's fault"
+                    );
+                }
+                None => assert!(cooldown.is_none()),
+            }
+        };
+        for secs in [30, 120, 300, 600, 1800, 7200, 7200] {
+            run(Some(secs));
+        }
+        assert_eq!(
+            fixture.packets(),
+            7,
+            "one AUTH per run, no retry inside a run"
+        );
+        assert_eq!(
+            db.open()
+                .meta(animatic_core::limits::AUTH_BACKOFF_STEP_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("6"),
+            "the step stays at the last value"
+        );
+
+        answer.store(true, Ordering::SeqCst);
+        run(None);
+        assert_eq!(
+            db.open().queue_len().unwrap(),
+            0,
+            "the login worked and the command ran"
+        );
+        assert_eq!(
+            db.open()
+                .meta(animatic_core::limits::AUTH_BACKOFF_STEP_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("0"),
+            "a successful AUTH resets the backoff"
+        );
+
+        answer.store(false, Ordering::SeqCst);
+        push_refreshes(&db, &[2]);
+        run(Some(30));
+    }
+
+    #[test]
+    fn a_known_file_is_requested_at_most_every_seven_days_by_the_queue() {
+        let fixture = Fixture::start(|_, request| {
+            if request.starts_with("AUTH") {
+                "200 session 127.0.0.1:1 LOGIN ACCEPTED".into()
+            } else if request.starts_with("FILE ") {
+                "320 NO SUCH FILE".into()
+            } else {
+                "203 LOGGED OUT".into()
+            }
+        });
+        let db = TempDb::new();
+        let s = settings(fixture.addr);
+        db.open()
+            .queue_push(&Command::FetchFile { fid: 5 })
+            .unwrap();
+        run_queue(&db, &s);
+        let sent = fixture.packets();
+        assert_eq!(sent, 3, "login, FILE, logout");
+
+        // Queued again inside the week: completed as skipped, with no packet and no failure.
+        db.open()
+            .queue_push(&Command::FetchFile { fid: 5 })
+            .unwrap();
+        let events = run_queue(&db, &s);
+        assert_eq!(
+            fixture.packets(),
+            sent,
+            "nothing was sent, not even a login"
+        );
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Synced { description, changed: false } if description.contains("File 5 skipped") && description.contains("allowed after"))
+        ), "{events:?}");
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            Event::Error(_) | Event::Blocked { .. } | Event::Cooldown { .. }
+        )));
+        let d = db.open();
+        assert_eq!(d.queue_len().unwrap(), 0, "the skipped command is removed");
+        assert!(d.sync_cooldown().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_queued_title_dump_inside_the_window_is_completed_as_skipped() {
+        let fixture = Fixture::start(|_, _| "555 BANNED".into());
+        let db = TempDb::new();
+        let d = db.open();
+        d.record_titles_dump_attempt(format::now() - 60).unwrap();
+        d.queue_push(&Command::TitlesDump).unwrap();
+        let events = run_queue(&db, &settings(fixture.addr));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Synced { description, .. } if description.contains("Title dump skipped") && description.contains("allowed after"))
+        ), "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Error(_) | Event::Blocked { .. }))
+        );
+        assert_eq!(d.queue_len().unwrap(), 0);
+        assert_eq!(fixture.packets(), 0);
+    }
 }
+
+#[cfg(test)]
+mod session_tests;

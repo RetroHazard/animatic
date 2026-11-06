@@ -6,7 +6,9 @@
 use std::time::Duration;
 
 use animatic_anidb::AnidbError;
-use animatic_anidb::commands::{self, FileRef, MylistAddResult, MylistEdit};
+use animatic_anidb::commands::{
+    self, FileRef, MylistAddResult, MylistEdit, MylistExportCancelReply, MylistExportReply,
+};
 use animatic_anidb::error::TRANSIENT_COOLDOWN;
 use animatic_anidb::http::{HttpClient, TitlesLimits};
 use animatic_anidb::udp::UdpClient;
@@ -17,6 +19,10 @@ use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::format;
 use crate::library::MylistEntry;
+use crate::limits::{
+    MYLIST_EXPORT_ID, RequestKind, anime_wait_message, file_wait_message,
+    mylist_export_wait_message, titles_dump_wait_message,
+};
 use crate::settings::FileManager;
 
 /// A command that failed this many times (counting only failures its own fault can explain,
@@ -35,6 +41,35 @@ pub struct QueueEntry {
     pub last_error: Option<String>,
     /// Permanently failed or out of attempts: skipped by the worker until retried.
     pub blocked: bool,
+}
+
+/// Which queued commands a run may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueScope {
+    /// Every runnable command: what the user starts with **Synchronize now**.
+    Manual,
+    /// What an automatic run may send: everything except `MylistDelete`. Removals from
+    /// MyList are destructive on AniDB, so they stay queued until the user runs the queue.
+    Automatic,
+}
+
+impl QueueScope {
+    /// SQL that narrows `WHERE blocked = 0` to this scope. A queued command is its serde JSON
+    /// (externally tagged), so a delete starts with its variant name; a test pins the shape.
+    fn filter(self) -> &'static str {
+        match self {
+            QueueScope::Manual => "",
+            QueueScope::Automatic => " AND payload NOT LIKE '{\"MylistDelete\":%'",
+        }
+    }
+}
+
+/// What the runnable part of the queue looks like: see [`Db::queue_pending`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuePending {
+    pub count: i64,
+    /// Highest id among them, 0 when there are none.
+    pub newest: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -76,6 +111,12 @@ pub enum Command {
     },
     MylistStats,
     TitlesDump,
+    /// Ask AniDB to prepare a full MyList export (`MYLISTEXPORT`, user-initiated, never
+    /// scheduled). The file itself is downloaded from AniDB's web export page and imported
+    /// through [`crate::mylist_export`].
+    MylistExport,
+    /// Cancel the queued MyList export (`MYLISTEXPORT cancel=1`).
+    MylistExportCancel,
 }
 
 impl Command {
@@ -101,6 +142,8 @@ impl Command {
             Command::FetchFile { fid } => format!("Fetch file {fid}"),
             Command::MylistStats => "Fetch mylist statistics".into(),
             Command::TitlesDump => "Download anime title list".into(),
+            Command::MylistExport => "Request MyList export from AniDB".into(),
+            Command::MylistExportCancel => "Cancel the queued MyList export".into(),
         }
     }
 
@@ -114,7 +157,11 @@ impl Command {
             Command::FetchFile { .. }
             | Command::FetchEpisode { .. }
             | Command::FetchGroup { .. } => 2,
-            Command::FetchAnime { .. } | Command::MylistStats | Command::TitlesDump => 3,
+            Command::FetchAnime { .. }
+            | Command::MylistStats
+            | Command::TitlesDump
+            | Command::MylistExport
+            | Command::MylistExportCancel => 3,
             Command::MylistRefresh { .. } => 4,
         }
     }
@@ -162,6 +209,10 @@ pub enum Outcome {
     Updated(String),
     Stats(commands::MylistStats),
     NotFound(String),
+    /// The command was completed without a request because AniDB's limits do not allow it yet
+    /// (title dump once a day, minimum age per anime and per file). The text says when it is
+    /// allowed again. It is not a failure and counts no attempt.
+    Skipped(String),
 }
 
 impl Outcome {
@@ -180,15 +231,18 @@ impl Outcome {
                 "{} anime, {} episodes, {} files in mylist",
                 s.animes, s.episodes, s.files
             ),
-            Outcome::NotFound(s) => s.clone(),
+            Outcome::NotFound(s) | Outcome::Skipped(s) => s.clone(),
         }
     }
 
-    /// True when the change affects what the library views display.
+    /// True when the change affects what the library views display. Account statistics are
+    /// stored for the overview, so they count.
     pub fn changes_library(&self) -> bool {
+        // Account statistics are stored for the overview, so they count; a command skipped by a
+        // request guard changed nothing.
         !matches!(
             self,
-            Outcome::Stats(_) | Outcome::Unknown | Outcome::NotFound(_)
+            Outcome::Unknown | Outcome::NotFound(_) | Outcome::Skipped(_)
         )
     }
 }
@@ -537,14 +591,19 @@ impl Db {
     /// Next runnable command: lowest priority value, oldest first; blocked rows are skipped.
     /// A row this version cannot read is blocked with an error (never deleted) and skipped.
     pub fn queue_peek(&self) -> Result<Option<(i64, Command, i64)>> {
+        self.queue_peek_in(QueueScope::Manual)
+    }
+
+    /// [`Db::queue_peek`] among the commands `scope` may run.
+    pub fn queue_peek_in(&self, scope: QueueScope) -> Result<Option<(i64, Command, i64)>> {
+        let sql = format!(
+            "SELECT id, payload, tries FROM command_queue WHERE blocked = 0{} ORDER BY priority, id LIMIT 1",
+            scope.filter()
+        );
         loop {
             let row: Option<(i64, String, i64)> = self
                 .conn()
-                .query_row(
-                    "SELECT id, payload, tries FROM command_queue WHERE blocked = 0 ORDER BY priority, id LIMIT 1",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
+                .query_row(&sql, [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
                 .optional()?;
             let Some((id, payload, tries)) = row else {
                 return Ok(None);
@@ -557,6 +616,22 @@ impl Db {
                 }
             }
         }
+    }
+
+    /// How many runnable commands `scope` may run, and the id of the newest. Blocked rows do
+    /// not count. Ids are never reused, so a newer id (or a higher count) than before means
+    /// commands arrived, or were unblocked, since.
+    pub fn queue_pending(&self, scope: QueueScope) -> Result<QueuePending> {
+        let sql = format!(
+            "SELECT count(*), coalesce(max(id), 0) FROM command_queue WHERE blocked = 0{}",
+            scope.filter()
+        );
+        Ok(self.conn().query_row(&sql, [], |r| {
+            Ok(QueuePending {
+                count: r.get(0)?,
+                newest: r.get(1)?,
+            })
+        })?)
     }
 
     /// Acknowledge a finished command. Does nothing when `id` was superseded or cleared in
@@ -606,6 +681,31 @@ impl Db {
             "UPDATE command_queue SET last_error = ?1, blocked = 1 WHERE blocked = 0",
             [err],
         )?)
+    }
+
+    /// Block every runnable command that goes through the HTTP API (see [`Command::uses_http`]),
+    /// for a rejected HTTP client registration. Returns how many were blocked.
+    pub fn queue_block_http(&self, err: &str) -> Result<usize> {
+        self.write_tx(|| {
+            let ids: Vec<i64> = self
+                .conn()
+                .prepare("SELECT id, payload FROM command_queue WHERE blocked = 0")?
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|(_, payload)| {
+                    serde_json::from_str::<Command>(payload).is_ok_and(|c| c.uses_http())
+                })
+                .map(|(id, _)| id)
+                .collect();
+            for id in &ids {
+                self.conn().execute(
+                    "UPDATE command_queue SET last_error = ?2, blocked = 1 WHERE id = ?1",
+                    params![id, err],
+                )?;
+            }
+            Ok(ids.len())
+        })
     }
 
     /// Put blocked commands back in the queue with fresh attempts. Edits of one mylist entry
@@ -892,6 +992,14 @@ pub fn execute(
             }
         },
         Command::FetchAnime { aid } => {
+            let now = format::now();
+            if let Some(until) = db.request_next_allowed(RequestKind::Anime, *aid, now)? {
+                return Ok(Outcome::Skipped(anime_wait_message(*aid, until)));
+            }
+            // A request that cannot be sent (no client name) is not an attempt.
+            http.check_client()?;
+            // Saved before the request leaves: a failure, crash or restart cannot allow a repeat.
+            db.record_request_attempt(RequestKind::Anime, *aid, now)?;
             let xml = http.anime(*aid)?;
             db.store_anime_xml(&xml)?;
             Ok(Outcome::Updated(format!("anime {aid} updated")))
@@ -910,20 +1018,74 @@ pub fn execute(
             }
             None => Ok(Outcome::NotFound(format!("no group {gid}"))),
         },
-        Command::FetchFile { fid } => match commands::file_by_fid(udp, *fid)? {
-            Some(info) => {
-                db.store_file_info(&info)?;
-                Ok(Outcome::Updated(format!("file {fid} updated")))
+        Command::FetchFile { fid } => {
+            let now = format::now();
+            if let Some(until) = db.request_next_allowed(RequestKind::File, *fid, now)? {
+                return Ok(Outcome::Skipped(file_wait_message(*fid, until)));
             }
-            None => Ok(Outcome::NotFound(format!("no file {fid}"))),
-        },
-        Command::MylistStats => Ok(Outcome::Stats(commands::mylist_stats(udp)?)),
+            // Log in first: a login that fails (wrong password, no reply) sent no FILE request.
+            udp.ensure_login()?;
+            db.record_request_attempt(RequestKind::File, *fid, now)?;
+            match commands::file_by_fid(udp, *fid)? {
+                Some(info) => {
+                    db.store_file_info(&info)?;
+                    Ok(Outcome::Updated(format!("file {fid} updated")))
+                }
+                None => Ok(Outcome::NotFound(format!("no file {fid}"))),
+            }
+        }
+        Command::MylistStats => {
+            let stats = commands::mylist_stats(udp)?;
+            db.store_mylist_stats(&stats, format::now())?;
+            Ok(Outcome::Stats(stats))
+        }
+        Command::MylistExport => {
+            let now = format::now();
+            if let Some(until) =
+                db.request_next_allowed(RequestKind::MylistExport, MYLIST_EXPORT_ID, now)?
+            {
+                return Ok(Outcome::Skipped(mylist_export_wait_message(until)));
+            }
+            // Log in first: a login that fails sent no export request, so it is no attempt.
+            udp.ensure_login()?;
+            // Saved before the request leaves: a failure, crash or restart cannot allow a repeat.
+            db.record_request_attempt(RequestKind::MylistExport, MYLIST_EXPORT_ID, now)?;
+            Ok(
+                match commands::mylist_export(udp, commands::MYLIST_EXPORT_TEMPLATE)? {
+                    MylistExportReply::Queued => Outcome::Updated(
+                        "MyList export requested: AniDB announces it as a message when it is ready (up to 24 hours); download it from the export page and use File > Import MyList export"
+                            .into(),
+                    ),
+                    // An export is already on its way: report it, never retry or fail.
+                    MylistExportReply::AlreadyQueued => Outcome::Skipped(
+                        "A MyList export is already queued on AniDB; wait for its message, then download it from the export page"
+                            .into(),
+                    ),
+                },
+            )
+        }
+        Command::MylistExportCancel => Ok(match commands::mylist_export_cancel(udp)? {
+            MylistExportCancelReply::Cancelled => {
+                Outcome::Updated("The queued MyList export was cancelled".into())
+            }
+            MylistExportCancelReply::NothingToCancel => {
+                Outcome::Skipped("AniDB has no MyList export queued or being prepared".into())
+            }
+        }),
         Command::TitlesDump => {
+            if let Some(until) = db.titles_dump_next_allowed(format::now())? {
+                return Ok(Outcome::Skipped(titles_dump_wait_message(until)));
+            }
             // The download is spooled outside the library database; it is only written to
             // (in one short transaction) once the whole dump has been validated.
             let limits = TitlesLimits::default();
-            let import =
-                db.import_title_dump::<CommandError>(|sink| http.titles_dump(&limits, sink))?;
+            let import = db.import_title_dump::<CommandError>(|sink| {
+                // Saved before the request leaves (and after the local spool was set up, so a
+                // local failure is not an attempt): a failed or truncated download, a crash or
+                // a restart cannot allow a second request inside the interval.
+                db.record_titles_dump_attempt(format::now())?;
+                http.titles_dump(&limits, sink)
+            })?;
             Ok(Outcome::Updated(format!(
                 "{} titles downloaded ({} new)",
                 import.titles, import.added
@@ -1041,6 +1203,103 @@ mod tests {
     }
 
     #[test]
+    fn an_automatic_scope_goes_on_past_a_mylist_delete_and_leaves_it_queued() {
+        let db = Db::memory().unwrap();
+        db.queue_push(&Command::MylistRefresh { lid: 6 }).unwrap();
+        let delete = db.queue_push(&Command::MylistDelete { lid: 5 }).unwrap();
+        db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+
+        // The user's run takes the delete first (priority 0) ...
+        let (id, cmd, _) = db.queue_peek().unwrap().unwrap();
+        assert_eq!((id, cmd), (delete, Command::MylistDelete { lid: 5 }));
+        // ... an automatic run takes everything else, in the usual order, and then stops.
+        let mut taken = Vec::new();
+        while let Some((id, cmd, _)) = db.queue_peek_in(QueueScope::Automatic).unwrap() {
+            taken.push(cmd);
+            db.queue_remove(id).unwrap();
+        }
+        assert_eq!(
+            taken,
+            [
+                Command::FetchAnime { aid: 1 },
+                Command::MylistRefresh { lid: 6 }
+            ]
+        );
+        assert_eq!(db.queue_len().unwrap(), 1, "the delete is still queued");
+        assert_eq!(db.queue_peek().unwrap().unwrap().0, delete);
+    }
+
+    #[test]
+    fn pending_counts_show_new_and_unblocked_commands_but_not_deletes_or_blocked_rows() {
+        let db = Db::memory().unwrap();
+        let none = QueuePending {
+            count: 0,
+            newest: 0,
+        };
+        assert_eq!(db.queue_pending(QueueScope::Automatic).unwrap(), none);
+        assert_eq!(db.queue_pending(QueueScope::Manual).unwrap(), none);
+
+        let first = db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+        db.queue_push(&Command::MylistDelete { lid: 5 }).unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap(),
+            QueuePending {
+                count: 1,
+                newest: first
+            },
+            "a delete is not work for an automatic run"
+        );
+        assert_eq!(db.queue_pending(QueueScope::Manual).unwrap().count, 2);
+
+        let second = db.queue_push(&Command::FetchAnime { aid: 2 }).unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap(),
+            QueuePending {
+                count: 2,
+                newest: second
+            }
+        );
+        db.queue_block(second, "synthetic failure").unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap(),
+            QueuePending {
+                count: 1,
+                newest: first
+            },
+            "a blocked row waits for an explicit retry"
+        );
+        db.queue_retry_failed().unwrap();
+        assert_eq!(db.queue_pending(QueueScope::Automatic).unwrap().count, 2);
+    }
+
+    #[test]
+    fn only_a_mylist_delete_matches_the_automatic_filter() {
+        // The filter reads the JSON of the stored command; pin the shape it relies on.
+        let payload = serde_json::to_string(&Command::MylistDelete { lid: 1 }).unwrap();
+        assert!(payload.starts_with("{\"MylistDelete\":"), "{payload}");
+        let db = Db::memory().unwrap();
+        for command in [
+            Command::MylistRefresh { lid: 1 },
+            Command::MylistEdit {
+                lid: 1,
+                edit: watched(1_700_000_000),
+            },
+            Command::MylistStats,
+            Command::TitlesDump,
+            Command::FetchFile { fid: 3 },
+        ] {
+            db.queue_push(&command).unwrap();
+        }
+        assert_eq!(db.queue_pending(QueueScope::Automatic).unwrap().count, 5);
+        db.queue_push(&Command::MylistDelete { lid: 1 }).unwrap();
+        assert_eq!(
+            db.queue_pending(QueueScope::Automatic).unwrap().count,
+            4,
+            "queueing the delete of an entry also drops its queued edit"
+        );
+    }
+
+    #[test]
     fn failed_command_keeps_its_place_and_blocks_after_bounded_tries() {
         let db = Db::memory().unwrap();
         db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
@@ -1109,6 +1368,33 @@ mod tests {
         let (first, _, tries) = db.queue_peek().unwrap().unwrap();
         assert_eq!((first, tries), (id, 0));
         assert_eq!(db.queue_blocked_len().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_rejected_http_client_blocks_only_http_commands() {
+        let db = Db::memory().unwrap();
+        db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+        db.queue_push(&Command::FetchFile { fid: 7 }).unwrap();
+        db.queue_push(&Command::FetchAnime { aid: 2 }).unwrap();
+        db.queue_push(&Command::MylistStats).unwrap();
+
+        let message = "authentication: HTTP API rejected the client registration";
+        assert_eq!(db.queue_block_http(message).unwrap(), 2);
+
+        let mut runnable = Vec::new();
+        while let Some((id, command, _)) = db.queue_peek().unwrap() {
+            runnable.push(command);
+            db.queue_remove(id).unwrap();
+        }
+        assert_eq!(
+            runnable,
+            [Command::FetchFile { fid: 7 }, Command::MylistStats]
+        );
+        assert_eq!(
+            db.queue_blocked_len().unwrap(),
+            2,
+            "anime fetches wait for a fixed client"
+        );
     }
 
     #[test]
@@ -1717,5 +2003,259 @@ mod tests {
         .unwrap();
         let e = db.mylist_entry(1).unwrap().unwrap();
         assert_eq!((e.viewed, e.viewdate, e.state), (false, 0, 3));
+    }
+
+    #[test]
+    fn entry_editor_edits_merge_clear_fields_and_keep_the_view_date() {
+        let db = Db::memory().unwrap();
+        db.upsert_mylist(&MylistEntry {
+            lid: 1,
+            fid: 2,
+            storage: Some("Shelf".into()),
+            source: Some("Retail".into()),
+            other: Some("Note".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        // Checked and empty clears the field; unchecked fields stay out of the edit.
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                storage: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // A watched date edit merges with the pending storage edit instead of replacing it.
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                state: Some(2),
+                viewed: Some(true),
+                viewdate: Some(1_700_000_000),
+                other: Some("Revised".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (_, edit) = sole_edit(&db, 1);
+        assert_eq!(
+            edit,
+            MylistEdit {
+                state: Some(2),
+                viewed: Some(true),
+                viewdate: Some(1_700_000_000),
+                storage: Some(String::new()),
+                source: None,
+                other: Some("Revised".into()),
+            }
+        );
+        let local = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!(local.storage.as_deref(), Some(""));
+        assert_eq!(local.source.as_deref(), Some("Retail"), "left unchanged");
+        assert_eq!(local.other.as_deref(), Some("Revised"));
+        assert_eq!((local.viewed, local.viewdate), (true, 1_700_000_000));
+
+        // Correcting only the date of an entry that is watched keeps it watched.
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                viewed: Some(true),
+                viewdate: Some(1_700_100_000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(sole_edit(&db, 1).1.viewdate, Some(1_700_100_000));
+        assert_eq!(db.mylist_entry(1).unwrap().unwrap().viewdate, 1_700_100_000);
+
+        // Marking it unwatched drops the date locally and in the queued edit.
+        db.queue_edit_mylist(1, &unwatched()).unwrap();
+        let (_, edit) = sole_edit(&db, 1);
+        assert_eq!((edit.viewed, edit.viewdate), (Some(false), None));
+        let local = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!((local.viewed, local.viewdate), (false, 0));
+        assert_eq!(edit.storage.as_deref(), Some(""), "earlier fields survive");
+    }
+
+    #[test]
+    fn queued_add_survives_a_restart_and_is_not_queued_twice() {
+        let path = temp_db_path("add-restart");
+        let add = Command::MylistAdd {
+            file: FileRef::Hash {
+                size: 1234,
+                ed2k: "00112233445566778899aabbccddeeff".into(),
+            },
+            edit: MylistEdit {
+                state: Some(1),
+                viewed: Some(true),
+                viewdate: Some(10),
+                storage: Some("Shelf".into()),
+                other: Some(String::new()),
+                ..Default::default()
+            },
+        };
+        let id = {
+            let db = Db::open(&path).unwrap();
+            let id = db.queue_push(&add).unwrap();
+            assert_ne!(id, 0);
+            assert_eq!(
+                db.queue_push(&add).unwrap(),
+                0,
+                "an identical add is skipped"
+            );
+            id
+        };
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.queue_peek().unwrap(), Some((id, add.clone(), 0)));
+        assert_eq!(db.queue_len().unwrap(), 1);
+        // An add runs before lookups and bulk refreshes.
+        db.queue_push(&Command::FetchAnime { aid: 1 }).unwrap();
+        assert_eq!(db.queue_peek().unwrap().unwrap().1, add);
+        drop(db);
+        remove_db_files(&path);
+    }
+
+    #[test]
+    fn removal_keeps_the_row_until_the_acknowledgement_and_a_blocked_one_stays_queued() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        let delete = db.queue_push(&Command::MylistDelete { lid: 1 }).unwrap();
+        assert!(
+            db.mylist_entry(1).unwrap().is_some(),
+            "queueing the removal leaves the local row"
+        );
+        // The command fails: it is blocked, still listed, and the row is untouched.
+        db.queue_block(delete, "synthetic failure").unwrap();
+        assert!(db.mylist_entry(1).unwrap().is_some());
+        let listed = db.queue_list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].blocked);
+        assert_eq!(listed[0].last_error.as_deref(), Some("synthetic failure"));
+        // Only the acknowledgement removes the row.
+        assert_eq!(
+            mylist_deleted_on_anidb(&db, delete, 1).unwrap(),
+            Outcome::MylistDeleted
+        );
+        assert!(db.mylist_entry(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_edit_after_an_in_flight_removal_wins_in_queue_order() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        let delete = db.queue_push(&Command::MylistDelete { lid: 1 }).unwrap();
+        // Still queued: the removal is the latest intent and refuses the edit.
+        assert_eq!(db.queue_edit_mylist(1, &state(2)).unwrap(), 0);
+        // The removal left the queue (cleared while in flight), then the user edited again.
+        db.queue_clear().unwrap();
+        let edit = db.queue_edit_mylist(1, &state(2)).unwrap();
+        assert!(edit > delete);
+        let outcome = mylist_deleted_on_anidb(&db, delete, 1).unwrap();
+        assert!(matches!(outcome, Outcome::Updated(_)));
+        assert_eq!(
+            db.mylist_entry(1).unwrap().unwrap().state,
+            2,
+            "the newer edit keeps the entry and its local state"
+        );
+        assert_eq!(sole_edit(&db, 1), (edit, state(2)));
+    }
+
+    #[test]
+    fn refresh_commands_are_queued_once_and_never_count_as_local_intent() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        let commands = [
+            Command::MylistRefresh { lid: 1 },
+            Command::FetchEpisode { eid: 10 },
+            Command::FetchGroup { gid: 7 },
+        ];
+        assert_eq!(db.queue_push_many(&commands).unwrap(), 3);
+        assert_eq!(db.queue_push_many(&commands).unwrap(), 0);
+        let listed: Vec<_> = db
+            .queue_list()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.description)
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                "Fetch episode 10",
+                "Fetch group 7",
+                "Refresh mylist entry 1"
+            ]
+        );
+        assert!(!db.mylist_has_pending_intent(1).unwrap());
+    }
+
+    #[test]
+    fn refreshed_entry_data_replaces_the_cache_but_keeps_pending_edits() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        db.queue_edit_mylist(
+            1,
+            &MylistEdit {
+                state: Some(3),
+                storage: Some("Mine".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        db.queue_push(&Command::MylistRefresh { lid: 1 }).unwrap();
+        db.store_api_mylist(&animatic_anidb::commands::MylistEntry {
+            lid: 1,
+            fid: 101,
+            state: 1,
+            storage: Some("Old".into()),
+            source: Some("Fresh source".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let e = db.mylist_entry(1).unwrap().unwrap();
+        assert_eq!(e.state, 3, "pending state edit wins");
+        assert_eq!(e.storage.as_deref(), Some("Mine"));
+        assert_eq!(
+            e.source.as_deref(),
+            Some("Fresh source"),
+            "the rest is refreshed"
+        );
+    }
+
+    #[test]
+    fn account_statistics_are_stored_with_their_time_and_reload_after_a_restart() {
+        let path = temp_db_path("stats");
+        let stats = commands::MylistStats {
+            animes: 12,
+            episodes: 345,
+            files: 678,
+            size_mb: 9_000,
+            viewed_episodes: 300,
+            ..Default::default()
+        };
+        {
+            let db = Db::open(&path).unwrap();
+            assert_eq!(db.mylist_stats_snapshot().unwrap(), None);
+            db.store_mylist_stats(&commands::MylistStats::default(), 1)
+                .unwrap();
+            db.store_mylist_stats(&stats, 1_700_000_000).unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let stored = db.mylist_stats_snapshot().unwrap().unwrap();
+        assert_eq!(
+            stored.fetched, 1_700_000_000,
+            "the latest result replaces the old one"
+        );
+        assert_eq!(stored.stats, stats);
+        // An unreadable value is no statistics, not a failure of the whole library view.
+        db.set_meta(crate::store::MYLIST_STATS_KEY, "not json")
+            .unwrap();
+        assert_eq!(db.mylist_stats_snapshot().unwrap(), None);
+        assert!(
+            Outcome::Stats(stats).changes_library(),
+            "the library view reloads to show them"
+        );
+        drop(db);
+        remove_db_files(&path);
     }
 }

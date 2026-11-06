@@ -10,24 +10,35 @@ source has changed since.
 
 Know the limits before you rely on a recovery path:
 
-- **No backup or repair tooling.** There is no backup, restore, integrity-check or repair
-  command in the application or the command line. There is no automatic database backup and
-  no rotation. The only automatic copy is the single settings backup (`settings.json.bak`),
-  described under [Settings problems](Backups-and-Recovery.md#settings-problems).
+- **Backups are manual and there is no repair.** **File → Back up library…**, **File → Restore
+  library…**, **Tools → Check library** and **Tools → Compact library…** exist (see
+  [Back up and restore inside Animatic](Backups-and-Recovery.md#back-up-and-restore-inside-animatic)),
+  but nothing backs the database up automatically, there is no rotation and no repair command
+  in the application or the command line. A library backup does not include the settings. The
+  only automatic copy is the single settings backup (`settings.json.bak`), described under
+  [Settings problems](Backups-and-Recovery.md#settings-problems).
 - **No checksums or verification of copies.** Nothing records or checks a checksum of your
   database, settings or any backup you make.
-- **Plain-text secrets.** The settings file and its backup hold your AniDB password, API key
-  and AVDump key in plain text. Nothing is encrypted at rest.
+- **Credentials.** The password, API key and AVDump key are kept in the operating-system keystore
+  when one is available; if Options shows the settings-file notice, the settings file and its
+  backup hold them in plain text instead. The database and backups are not encrypted.
 - **Personal data in the database.** The SQLite library holds your viewing history, file
   paths, hashes and queued edits.
-- **No media deletion, no trash.** Animatic never deletes media files, and the interface has
-  no recycle-bin or trash workflow. A rename moves a file inside the filesystem (see
-  [Rename problems](File-and-Import-Problems.md#rename-problems)); there is no undo.
-- **No full-account import.** Animatic does not download your complete AniDB MyList (see
+- **No media deletion, no trash.** Animatic never deletes a media file on its own account, and
+  the interface has no recycle-bin or trash workflow. A rename moves a file inside the
+  filesystem; when the destination is on another drive it copies the file, verifies the copy
+  and only then removes the original, which is the one case where a file is deleted (see
+  [Rename problems](File-and-Import-Problems.md#rename-problems)); there is no undo. The only
+  folders Animatic removes are completely empty ones that a rename emptied inside a managed folder
+  whose **Remove emptied folders** is on (off by default).
+- **No direct account download.** Animatic does not fetch your complete AniDB MyList entry by
+  entry; you request a MyList export from AniDB and import the file you download (see
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed
-  folders**, the queue runs only from **Tools → Run command queue** or **Synchronize now**,
-  and renaming is never automatic. The one automatic action is the optional startup
+  folders**, the queue runs from **Tools → Run command queue** or **Synchronize now** (or by
+  itself only if you switch on **Run the command queue automatically**, off by default, see
+  [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)),
+  and renaming is automatic only in a managed folder you set to **Auto rename: On**. The one unasked action is the optional startup
   *check* for a newer Animatic release on GitHub (`updates.auto_check`); it downloads and
   installs nothing. See [Update problems](Network-and-Sync-Problems.md#update-problems).
 - **No logging backend.** Diagnostics are the in-memory **Log** page and the status bar. See
@@ -48,7 +59,7 @@ replies follow the source code, not a recorded run.
 | "AniDB sync paused until …" | [Cooldowns and bans](Network-and-Sync-Problems.md#cooldowns-and-bans) |
 | Red **N blocked** counter, **Blocked** rows, **Retry failed** | [Queue states](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved) |
 | "NOT saved yet", "database is busy" | [Database busy and unsaved commands](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands) |
-| "login failed", "client version outdated", "no AniDB client name configured" | [Credentials and client registration](Network-and-Sync-Problems.md#credentials-and-client-registration) |
+| "login failed", "client version outdated", "AniDB refuses Animatic's built-in client registration" | [Credentials and client registration](Network-and-Sync-Problems.md#credentials-and-client-registration) |
 | Timeouts, "cannot resolve", "no IPv4 address" | [Network and firewall](Network-and-Sync-Problems.md#network-and-firewall) |
 | Files not hashed or scan hashes nothing | [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders) |
 | Records disappeared after a scan; a drive was unplugged | [Offline drives and automatic removal](File-and-Import-Problems.md#offline-drives-and-automatic-removal) |
@@ -87,7 +98,7 @@ Files you may find next to them:
 | `animatic.sqlite3-wal`, `animatic.sqlite3-shm` | SQLite write-ahead-log companions. They exist while the database is open and may remain after exit |
 | `settings.json.bak` | Copy of the previous valid settings, made on a save |
 | `settings.json.tmp`, `settings.json.bak.tmp` | Transient files during a save |
-| `import-temp/` (in the database's folder) | Decrypted intermediates during an AOM databank import |
+| `animatic-legacy-import-*/` (system temporary folder) | Decrypted intermediates during an AOM databank import; a marker file inside identifies it, and Animatic offers to remove leftovers at the next start |
 
 The backup and temporary names replace the settings file's extension: for
 `ANIMATIC_SETTINGS=/x/custom.cfg` they are `/x/custom.json.bak` and `/x/custom.json.tmp`.
@@ -126,8 +137,8 @@ error. If double-clicking appears to do nothing, run it from a terminal to read 
 
 Permission checklist for the folders involved:
 
-1. The database folder must allow creating and writing files (the database, `-wal`, `-shm`
-   and the `import-temp` folder are created there).
+1. The database folder must allow creating and writing files (the database, `-wal` and `-shm`
+   are created there); the system temporary folder must allow creating the import's work folder.
 2. The settings folder must allow creating `settings.json.tmp`, `settings.json.bak.tmp`,
    `settings.json.bak` and `settings.json`, and renaming over existing files.
 3. Security software with folder protection can block writes to profile folders; allow
