@@ -147,6 +147,12 @@ the generated line for that pull request's squash commit.
   files and the Overview show the queue with Resume hashing, Retry failed and Clear hash queue.
   **Start hashing automatically** resumes the queue at start. The hashing thread priority setting
   is kept only for AOM compatibility and has no effect.
+- Optional media properties through FFmpeg's `ffprobe` (Options → Media properties, off by
+  default, disabled until `ffprobe` is found): duration, resolution, frame rate, codecs, sample
+  rate and bitrates of hashed files fill the hash export's media tokens. **Install ffprobe…**
+  downloads a pinned LGPL build after you confirm its size, license and source, verifies its
+  SHA-256 and keeps only `ffprobe` and its license next to the database; nothing is bundled in the
+  release archives.
 
 ### Changed
 

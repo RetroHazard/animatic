@@ -93,7 +93,7 @@ flowchart LR
 | M7.2 | Saved window, columns and sorting | Done |
 | M7.3 | Status row colours and system theme | Done |
 | M7.4 | Player open and enqueue actions | Done |
-| M7.5 | Opt-in media properties through `ffprobe` | Research |
+| M7.5 | Opt-in media properties through `ffprobe` | Done |
 | M8.1 | Credentials in the operating-system keystore | Done |
 | M8.2 | Shell integration (user toggle) and single-instance handoff | Done |
 | M8.3 | System tray, best effort | Done |
