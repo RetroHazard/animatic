@@ -11,6 +11,9 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+- About Animatic credits the developer and has buttons for the source code repository and the
+  documentation; View license shows the license inside the app instead of asking Windows which
+  program opens the extensionless `LICENSE` file.
 ### Added
 
 - Calendar versioning (`YYYY.M.PATCH`, Cargo-compatible) for the workspace, internal

@@ -22,9 +22,20 @@ pub fn escape_closes<R>(ctx: &egui::Context, shown: Option<&InnerResponse<R>>) -
     if ctx.text_edit_focused()
         || ctx.any_popup_open()
         || ctx.memory(|m| m.top_modal_layer().is_some())
-        || ctx.top_layer_id() != Some(shown.response.layer_id)
+        || topmost_window(ctx) != Some(shown.response.layer_id)
     {
         return false;
     }
     ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+}
+
+/// The front-most window that is still shown. `Context::top_layer_id` would also count a
+/// window closed a moment ago, whose layer stays in the order list, and so block Escape for
+/// the window underneath it.
+fn topmost_window(ctx: &egui::Context) -> Option<egui::LayerId> {
+    ctx.memory(|m| {
+        m.layer_ids()
+            .filter(|layer| layer.order == egui::Order::Middle && m.areas().is_visible(layer))
+            .last()
+    })
 }

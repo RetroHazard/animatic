@@ -565,6 +565,8 @@ pub struct AnimaticApp {
     selected_aid: Option<i64>,
     settings_open: bool,
     about_open: bool,
+    /// The license text window opened from About.
+    license_open: bool,
     /// Ctrl+F asked for the page's search field to take the keyboard focus.
     focus_search: bool,
     /// The status line holds an error that stays until the next message replaces it.
@@ -708,6 +710,7 @@ impl AnimaticApp {
             selected_player: None,
             settings_open: false,
             about_open: false,
+            license_open: false,
             focus_search: false,
             status_error: false,
             options_page: OptionsPage::Account,
@@ -2118,6 +2121,97 @@ impl AnimaticApp {
             });
         if !open || dialog::escape_closes(ctx, shown.as_ref()) {
             self.pattern_editor.reference_open = false;
+        }
+    }
+
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let repository = env!("CARGO_PKG_REPOSITORY");
+        let mut open = true;
+        let shown = dialog::window(ctx, "About Animatic")
+            .open(&mut open)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("Animatic")
+                        .text_style(egui::TextStyle::Heading)
+                        .color(style::accent(ui.visuals())),
+                );
+                ui.label("Hash, identify, rename and track your anime library with AniDB.");
+                ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak());
+                ui.label(format!(
+                    "Created by {}",
+                    env!("CARGO_PKG_AUTHORS").replace(':', ", ")
+                ));
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (label, url) in [
+                        ("Source code", repository.to_string()),
+                        ("Documentation", format!("{repository}/wiki")),
+                        ("AniDB website", "https://anidb.net/".to_string()),
+                    ] {
+                        if ui.button(label).on_hover_text(&url).clicked()
+                            && let Err(e) = open::that(&url)
+                        {
+                            self.error(format!("Could not open {url}: {e}"));
+                        }
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("View license").clicked() {
+                        self.license_open = true;
+                    }
+                    let notices = self
+                        .executable_path()
+                        .and_then(Path::parent)
+                        .and_then(|dir| {
+                            bundled_document(
+                                dir,
+                                "THIRD-PARTY-NOTICES",
+                                "html",
+                                env!("CARGO_PKG_VERSION"),
+                            )
+                        });
+                    if ui
+                        .add_enabled(notices.is_some(), egui::Button::new("Third-party notices"))
+                        .on_hover_text("Opens in your web browser")
+                        .on_disabled_hover_text(
+                            "No THIRD-PARTY-NOTICES.html file found next to the program",
+                        )
+                        .clicked()
+                        && let Some(path) = notices
+                    {
+                        let _ = open::that(path);
+                    }
+                });
+            });
+        if !open || dialog::escape_closes(ctx, shown.as_ref()) {
+            self.about_open = false;
+        }
+    }
+
+    /// Animatic's own license, shown in the app. The text is the one this build was made with,
+    /// so it needs no file next to the program and no program to open an extensionless file.
+    fn license_window(&mut self, ctx: &egui::Context) {
+        const LICENSE: &str = include_str!("../../../LICENSE");
+        if !self.license_open {
+            return;
+        }
+        let mut open = true;
+        let shown = dialog::window(ctx, "Animatic license")
+            .open(&mut open)
+            .default_width(560.0)
+            .max_height(ctx.content_rect().height() * 0.8)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new(LICENSE).monospace()).selectable(true));
+                });
+            });
+        if !open || dialog::escape_closes(ctx, shown.as_ref()) {
+            self.license_open = false;
         }
     }
 
@@ -5532,57 +5626,8 @@ impl eframe::App for AnimaticApp {
         self.batch_rename_window(&ctx);
         self.auto_rename_enable_window(&ctx);
         self.media_install_window(&ctx);
-        if self.about_open {
-            let mut open = true;
-            let shown = dialog::window(&ctx, "About Animatic")
-                .open(&mut open)
-                .resizable(false)
-                .show(&ctx, |ui| {
-                    ui.label(
-                        RichText::new("Animatic")
-                            .text_style(egui::TextStyle::Heading)
-                            .color(style::accent(ui.visuals())),
-                    );
-                    ui.label("Hash, identify, rename and track your anime library with AniDB.");
-                    ui.label(
-                        RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak(),
-                    );
-                    ui.hyperlink_to("AniDB website", "https://anidb.net/");
-                    if let Some(dir) = self.executable_path().and_then(Path::parent) {
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            let version = env!("CARGO_PKG_VERSION");
-                            let license = bundled_document(dir, "LICENSE", "", version);
-                            if ui
-                                .add_enabled(license.is_some(), egui::Button::new("View license"))
-                                .on_disabled_hover_text("No LICENSE file found next to the program")
-                                .clicked()
-                                && let Some(path) = license
-                            {
-                                let _ = open::that(path);
-                            }
-                            let notices =
-                                bundled_document(dir, "THIRD-PARTY-NOTICES", "html", version);
-                            if ui
-                                .add_enabled(
-                                    notices.is_some(),
-                                    egui::Button::new("Third-party notices"),
-                                )
-                                .on_disabled_hover_text(
-                                    "No THIRD-PARTY-NOTICES.html file found next to the program",
-                                )
-                                .clicked()
-                                && let Some(path) = notices
-                            {
-                                let _ = open::that(path);
-                            }
-                        });
-                    }
-                });
-            if !open || dialog::escape_closes(&ctx, shown.as_ref()) {
-                self.about_open = false;
-            }
-        }
+        self.about_window(&ctx);
+        self.license_window(&ctx);
         // Worker events are only seen while frames run, so poll while anything is in flight.
         // A job the scheduler thread started (autostart, scheduled scan) has no UI action that
         // triggers a frame, so the worker's own pending count keeps the polling going too.

@@ -20,7 +20,7 @@ and tables, and the menus. The individual pages are described in [Library pages]
   "Restore library", "Restoring library", "Library unavailable" and "Compact library" dialogs
   (modal: nothing else can be used while one is open), the
   [Software updates](Updating-Animatic.md) window and "About Animatic" (the build's version from
-  `Cargo.toml`, an AniDB link and the license buttons). Windows open centred and have no collapse
+  `Cargo.toml`, the developer, links and the license buttons). Windows open centred and have no collapse
   triangle; **Esc** closes the topmost one (see [Keyboard shortcuts](#keyboard-shortcuts)).
 
 The window opens with the size, position and maximized state it had when you last used
@@ -186,7 +186,7 @@ uncolored unless you set a color for them.
 | Help | AniDB website | Opens `https://anidb.net/`. |
 | Help | Keyboard shortcuts ▸ | Lists the [shortcuts](#keyboard-shortcuts). |
 | Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
-| Help | About Animatic | Version and link, plus **View license** and **Third-party notices** buttons that open the license documents next to the program: the versioned `LICENSE-vVERSION` / `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `LICENSE` / `THIRD-PARTY-NOTICES.html`. A button is disabled when neither file exists (for example a bare executable copied out of an archive). |
+| Help | About Animatic | Version and developer (RetroHazard), buttons that open the source code repository, the documentation (the repository wiki) and the AniDB website in your browser, plus **View license** and **Third-party notices**. **View license** shows Animatic's MIT license inside the app (the text built into this version), so it works without a file next to the program. **Third-party notices** opens the notices next to the program in your browser: the versioned `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `THIRD-PARTY-NOTICES.html`; it is disabled when neither exists (for example a bare executable copied out of an archive). |
 
 Items that cannot be used at the moment are greyed out and say why when you hover them. Separators
 group the items; the Tools menu starts with Options…, then the command-queue items.

@@ -61,9 +61,9 @@ overwritten; an identical file is fine. Everything else is left alone:
 - Your database, settings, backups, profiles, queue, media and any files you have hashed are
   never touched; an update replaces the program only.
 - The new version's licenses are the versioned files next to the executable. After the next
-  start, **About Animatic → View license / Third-party notices** opens the versioned file for the
-  version you run (`LICENSE-vVERSION`, `THIRD-PARTY-NOTICES-vVERSION.html`) and falls back to the
-  older bundled copy only when that file does not exist.
+  start, **About Animatic → View license** shows the license built into the version you run, and
+  **Third-party notices** opens `THIRD-PARTY-NOTICES-vVERSION.html` for that version, falling back
+  to the older bundled copy only when that file does not exist.
 - Installing also creates an empty `.animatic-update.lock` file next to the executable. The
   operating system holds an advisory lock on it only while an install runs, so two Animatic
   processes cannot install at once; the file is harmless, may remain afterwards and can be
