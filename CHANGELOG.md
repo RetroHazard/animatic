@@ -13,6 +13,8 @@ the generated line for that pull request's squash commit.
 
 ### Added
 
+- Browse anime by genre: clicking a genre on the Genres page, or in an anime's detail window,
+  lists the anime of that genre on the Anime page, with a button that clears the genre filter.
 - About Animatic credits the developer and has buttons for the source code repository, the
   documentation and the AniDB website; **View license** and **Third-party notices** show the
   license and the third-party notices inside the app (the texts built into the executable, not

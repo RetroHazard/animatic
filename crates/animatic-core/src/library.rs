@@ -869,7 +869,7 @@ impl Db {
         Ok(v)
     }
 
-    /// aid -> genre ids, for search filters.
+    /// aid -> genre ids (the Anime page's genre filter).
     pub fn anime_genre_map(&self) -> Result<HashMap<i64, Vec<i64>>> {
         let mut map: HashMap<i64, Vec<i64>> = HashMap::new();
         let mut st = self
@@ -1292,6 +1292,8 @@ pub struct LibraryProjection {
     pub groups: Vec<Group>,
     /// (genre id, name, anime count)
     pub genres: Vec<(i64, String, i64)>,
+    /// Genre ids of each anime (aid -> ids), for browsing anime by genre.
+    pub anime_genres: HashMap<i64, Vec<i64>>,
     pub queue: Vec<crate::sync::QueueEntry>,
     /// Active sync cooldown as (epoch seconds until, reason).
     pub cooldown: Option<(i64, String)>,
@@ -1319,11 +1321,13 @@ impl LibraryProjection {
         let cooldown = db.sync_cooldown()?;
         let account_stats = db.mylist_stats_snapshot()?;
         let hash_queue = db.hash_queue_view()?;
+        let anime_genres = db.anime_genre_map()?;
         drop(tx);
         let mut projection = Self::assemble(
             anime, mylist, states, local, groups, genres, queue, cooldown,
         );
         projection.account_stats = account_stats;
+        projection.anime_genres = anime_genres;
         projection.hash_queue = hash_queue;
         Ok(projection)
     }
@@ -1379,6 +1383,7 @@ impl LibraryProjection {
             local,
             groups,
             genres,
+            anime_genres: HashMap::new(),
             queue,
             cooldown,
             account_stats: None,
