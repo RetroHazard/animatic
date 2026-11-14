@@ -11,11 +11,11 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+### Added
+
 - About Animatic credits the developer and has buttons for the source code repository and the
   documentation; View license shows the license inside the app instead of asking Windows which
   program opens the extensionless `LICENSE` file.
-### Added
-
 - Calendar versioning (`YYYY.M.PATCH`, Cargo-compatible) for the workspace, internal
   dependency pins and `Cargo.lock`, starting with `2026.11.0`.
 - Release automation: `scripts/release.py` bumps the workspace version, internal
