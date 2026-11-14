@@ -52,7 +52,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `hash` | One-pass ED2K (red/blue), CRC32, MD5, SHA-1; hash-export template expansion |
 | `file_manager` | Side-effect-free scan planning, hash-and-register, `move_file` (same-volume rename or verified cross-volume copy), missing-record removal |
 | `legacy` | Databank discovery, page decryption, record decoding, per-collection import |
-| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`) |
+| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`), built-in naming conventions with a fictitious sample file (`presets`) and the in-application pattern reference (`reference`) |
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
 | `ui_state` | Pure rules for the saved window geometry, per-table column layout and sorting, and status row colours; no window code, so they are unit-tested |
 | `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |

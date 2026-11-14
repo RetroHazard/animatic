@@ -109,9 +109,9 @@ automatically (Dry run only logs), and its skipped files and collisions are expl
 | `The selected file is no longer in the list` / `The selected file is not identified by AniDB` | The preview needs the file's AniDB identification. Run identification online first |
 | `Rename not possible: <problem>` | The pattern or the data produced an error. The window shows details |
 | `Rename blocked: the renaming pattern reported warnings` | Evaluation warnings block **Rename file**. Use **Edit pattern in Options** |
-| `The renaming pattern is empty. …` | Use **Use stable default** or write a pattern |
+| `The renaming pattern is empty. …` | Choose a naming convention or write a pattern |
 | `The renaming pattern has a syntax error: …` | Fix the pattern; **Validate on selected file** in Options dry-runs it |
-| `The stable default needs the anime title, which has not been fetched yet. …` / `… needs the episode number, which is not known yet. …` | The default pattern needs fetched title and episode data. Use the anime detail window's **Refresh from AniDB**, make sure the file is identified, and run the queue online, then retry |
+| `The built-in naming convention needs the anime title, which has not been fetched yet. …` / `… needs the episode number, which is not known yet. …` | The built-in conventions need fetched title and episode data. Use the anime detail window's **Refresh from AniDB**, make sure the file is identified, and run the queue online, then retry |
 | `The pattern ended with the truth value "…" instead of a file name. …` | The last expression must evaluate to the new name |
 | `The pattern produced an empty file name; nothing would be renamed. …` | Same cause; an empty target is an error, never a silent no-op |
 | `Renaming "<old>" to "<new>" would result in an invalid file name (<why>); rename skipped!` | A path component contains one of `<>:"\|?*` or a control character, is empty, is longer than 255 (UTF-16 units on Windows, UTF-8 bytes elsewhere), or is a reserved device name such as `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Trailing dots and spaces are trimmed first. The rules apply on every platform |

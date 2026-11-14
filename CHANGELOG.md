@@ -174,6 +174,18 @@ the generated line for that pull request's squash commit.
   `http_client_name` or `http_client_version` load normally; the keys are ignored and dropped on
   the next save. A refused client (replies 503/504, or an HTTP client rejection) now says to update
   Animatic or report it, and the automatic queue run no longer waits for a client name.
+- Naming conventions for renaming: **Tools → Options → Renaming pattern** now has a **Naming
+  convention** list instead of only a pattern editor. Choose the default
+  (`Title - 06v2 - Episode title [Group](CRC)`), the fansub style `[Group] Title - 06v2 [CRC]`,
+  `Title - 06 - Episode title`, or `Title - S01E06 - Episode title` for media servers, and see
+  an example name at once. Every convention names all AniDB episode types: specials `S15`,
+  credits (openings and endings) `C05`, trailers `T08v2`, parodies and other episodes, with the
+  release version. **Custom pattern** opens the editor, starting from the selected convention,
+  with a live example and a **Pattern reference** window: how a pattern works, the values and
+  functions most patterns need, recipes (including openings and endings as `OP01`/`ED01`) and
+  common mistakes, each with its result for a sample file and a **Copy** button. Only the
+  pattern text is stored, so existing settings and saved custom patterns are unchanged; choosing
+  a convention over a custom pattern can be undone with **Restore my custom pattern**.
 
 ### Changed
 

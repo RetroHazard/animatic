@@ -201,7 +201,7 @@ file Animatic hashed itself they read `0`, `0.0`, empty or `False`.
 | Property | Type | Value |
 |---|---|---|
 | `Id` | Int | Row id |
-| `Crc32`, `Md5`, `Sha1`, `Ed2k` | AStr | Hash texts; `Crc32` is what the stable default prefers over `F.Crc` |
+| `Crc32`, `Md5`, `Sha1`, `Ed2k` | AStr | Hash texts; `Crc32` is what the built-in conventions prefer over `F.Crc` |
 | `Size` | Int64 | Bytes |
 | `FPS`, `Length` | Double | Frames per second; length (a `Double`, so it cannot be passed to string functions) |
 | `VideoFourCC`, `VideoCompression`, `VideoCodec` | AStr | Video identifiers |

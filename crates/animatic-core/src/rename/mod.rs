@@ -9,6 +9,8 @@ pub mod eval;
 pub mod objects;
 pub mod parser;
 pub mod plan;
+pub mod presets;
+pub mod reference;
 pub mod value;
 
 use std::path::{Path, PathBuf};

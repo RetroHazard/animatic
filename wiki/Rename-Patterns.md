@@ -158,10 +158,10 @@ Each item below follows from the implementation.
 
 | Where it appears | Text (abridged) | Cause | Fix |
 |---|---|---|---|
-| Editor and preview | `The renaming pattern is empty. …` | Blank pattern | Write a pattern or use **Use stable default** |
+| Editor and preview | `The renaming pattern is empty. …` | Blank pattern | Write a pattern or choose a naming convention |
 | Editor and preview | `The renaming pattern has a syntax error: …` | See [Compile errors](Rename-Language.md#compile-errors) | Fix the construct near the quoted position |
-| Preview | `The stable default needs the anime title, which has not been fetched yet. …` | Title missing or the stand-in | Fetch the anime from AniDB |
-| Preview | `The stable default needs the episode number, which is not known yet. …` | Episode number 0 or unknown | Fetch the episode |
+| Preview | `The built-in naming convention needs the anime title, which has not been fetched yet. …` | Title missing or the stand-in | Fetch the anime from AniDB |
+| Preview | `The built-in naming convention needs the episode number, which is not known yet. …` | Episode number 0 or unknown | Fetch the episode |
 | Preview | `The renaming pattern failed to run: <message>` | Hard error (division by zero, bad conversion, unbound object, …) | Fix the expression; guard optional objects |
 | Preview | `The pattern ended with the truth value "True"/"False" instead of a file name. …` | The whole value is a Boolean | Make the last line the name |
 | Preview | `The pattern produced an empty file name; nothing would be renamed. …` | Empty result | Make the last line produce the name |
@@ -176,7 +176,7 @@ These patterns do not depend on the selected file's metadata. Paste one into the
 editor, choose an AniDB-identified hashed file and press **Validate on selected file**. The
 expected values come from reading the implementation. **Pasting replaces your pattern in the
 live settings**, and a normal exit saves them, so copy your own pattern text somewhere first
-and put it back (or use **Restore previous text** if you pressed **Use stable default**)
+and put it back (or use **Restore my custom pattern** if you chose a built-in convention)
 before closing the application.
 
 | Pattern | Expected result | Plan |
@@ -232,10 +232,10 @@ Expected `ab.mkv`.
 
 1. Open **Hashed files** and select a file that AniDB has identified (an identified file with
    its anime, episode and file rows in the library). Anime and episode details must be
-   fetched for the stable default to be usable.
-2. Open **Tools → Options → Renaming pattern**. The status line shows whether the text is
-   Empty, Stable default or Custom, and a red syntax error appears while the text does not
-   compile.
+   fetched for a built-in convention to be usable.
+2. Open **Tools → Options → Renaming pattern** and choose **Custom pattern**. The example
+   line shows the name for a fictitious file as you type, and a red syntax error appears while
+   the text does not compile.
 3. Press **Validate on selected file**. It runs the same planning as **Rename…** without
    touching any file: the evaluated result, red errors, yellow warnings, and, when the plan
    could be applied or the file already has that name, `The pattern is valid for this file.`

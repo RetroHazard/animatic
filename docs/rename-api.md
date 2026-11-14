@@ -17,6 +17,8 @@ the source-level entry points are:
 | `PatternKind`, `classify`, `check_pattern`, `Plan`, `plan`, `plan_local_file`, `Candidate`, `BatchRow`, `plan_batch` | [plan.rs](../crates/animatic-core/src/rename/plan.rs) |
 | `file_manager::{move_file, move_file_with, MoveControl, MoveOutcome, MoveMethod}` | [file_manager.rs](../crates/animatic-core/src/file_manager.rs) |
 | `DEFAULT_RENAME_PATTERN` | [settings.rs](../crates/animatic-core/src/settings.rs) and [default_pattern.txt](../crates/animatic-core/src/rename/default_pattern.txt) |
+| `Preset`, `PRESETS`, `preset_for`, `sample_plan`, `sample_value` (built-in naming conventions and the fictitious sample file) | [presets.rs](../crates/animatic-core/src/rename/presets.rs) |
+| `SECTIONS`, `Section`, `Entry` (the in-application pattern reference) | [reference.rs](../crates/animatic-core/src/rename/reference.rs) |
 
 ## Example: plan a rename against fixed objects
 

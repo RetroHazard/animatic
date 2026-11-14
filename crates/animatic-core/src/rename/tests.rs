@@ -128,7 +128,7 @@ fn custom_unpadded_and_unicode_patterns_are_unaffected() {
 fn built_in_defaults_are_recognized_but_custom_patterns_are_not() {
     assert_eq!(
         classify(&include_str!("default_pattern.txt").replace('\n', "\r\n")),
-        PatternKind::StableDefault
+        PatternKind::Preset(&super::presets::PRESETS[0])
     );
     assert_eq!(classify(" \r\n\t"), PatternKind::Empty);
     let edited = include_str!("default_pattern.txt").replace("'v'", "'ver'");

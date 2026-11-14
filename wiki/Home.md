@@ -42,7 +42,7 @@ Coming from AOM? Read [Migrating from AOM](Migrating-from-AOM.md) before the fir
 | [Settings files](Settings-Files.md) | Loading, saving, backup recovery, credentials in the system keystore and the AOM settings import |
 | [Rename language](Rename-Language.md) | Syntax, values and coercion, variables and user functions |
 | [Rename functions and objects](Rename-Functions-and-Objects.md) | Every built-in function and object property |
-| [Rename targets and apply](Rename-Targets-and-Apply.md) | How a result becomes a path, blocking rules and the stable default pattern |
+| [Rename targets and apply](Rename-Targets-and-Apply.md) | How a result becomes a path, blocking rules and the built-in naming conventions |
 | [Rename patterns](Rename-Patterns.md) | Worked patterns, pitfalls, diagnostics and how to verify a pattern |
 
 ## Troubleshooting

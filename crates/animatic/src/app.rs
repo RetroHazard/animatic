@@ -10,6 +10,7 @@ use animatic_core::format;
 use animatic_core::hash_queue::HashSource;
 use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
+use animatic_core::rename::{presets, reference};
 use animatic_core::secrets::{CredentialStorage, Credentials};
 use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
 use animatic_core::ui_state::{
@@ -486,10 +487,19 @@ struct PatternEditor {
     /// Pattern text the diagnostics below were computed for.
     checked: Option<String>,
     syntax_error: Option<String>,
-    /// Text replaced by "Use stable default", kept so the replacement can be undone.
+    /// What the checked text names the fictitious sample file.
+    sample: Option<Plan>,
+    /// "Custom pattern" was chosen while the text still equals a built-in convention, so the
+    /// editor stays open for the user to change it.
+    custom: bool,
+    /// Custom text replaced by choosing a built-in convention, kept so it can be restored.
     replaced: Option<String>,
     /// Outcome of "Validate on selected file" for the text in `checked`.
     test: Option<Result<RenamePreview, String>>,
+    /// The pattern reference window is shown.
+    reference_open: bool,
+    /// Sample results of the reference's code, per section and entry; computed once.
+    reference_values: Vec<Vec<Result<String, String>>>,
 }
 
 pub struct AnimaticApp {
@@ -1838,72 +1848,125 @@ impl AnimaticApp {
         }
     }
 
-    /// Options section of the renaming pattern: diagnostics, the stable default and a dry run.
+    /// Options section of the renaming pattern: a built-in naming convention or a custom
+    /// pattern, a live example, the reference and a dry run on the selected file.
     fn pattern_editor_ui(&mut self, ui: &mut egui::Ui) {
         let kind = plan::classify(&self.settings.renaming_pattern);
-        match kind {
-            PatternKind::StableDefault => {
-                ui.label(
-                    "Stable built-in default: episode numbers always have at least two digits \
-                     (01, 02, … 100), whatever the cached episode counts.",
-                );
+        let preset = match kind {
+            PatternKind::Preset(preset) if !self.pattern_editor.custom => Some(preset),
+            _ => None,
+        };
+        let mut chosen = None;
+        ui.horizontal(|ui| {
+            ui.label("Naming convention");
+            egui::ComboBox::from_id_salt("naming-convention")
+                .selected_text(preset.map_or("Custom pattern", |p| p.name))
+                .width(340.0)
+                .show_ui(ui, |ui| {
+                    for p in presets::PRESETS {
+                        if ui
+                            .selectable_label(preset == Some(p), p.name)
+                            .on_hover_text(p.description)
+                            .clicked()
+                        {
+                            chosen = Some(Some(p));
+                        }
+                    }
+                    if ui
+                        .selectable_label(preset.is_none(), "Custom pattern")
+                        .on_hover_text("Write your own pattern in Animatic's renaming language")
+                        .clicked()
+                    {
+                        chosen = Some(None);
+                    }
+                });
+        });
+        match chosen {
+            Some(Some(p)) if preset != Some(p) => {
+                let old = std::mem::replace(&mut self.settings.renaming_pattern, p.source.into());
+                if plan::classify(&old) == PatternKind::Custom {
+                    self.pattern_editor.replaced = Some(old);
+                }
+                self.pattern_editor.custom = false;
             }
-            PatternKind::Custom => {
-                ui.label(
-                    "Custom pattern: kept exactly as written. \"Use stable default\" would \
-                     replace it with the built-in pattern, whose episode numbers have a fixed \
-                     two-digit minimum.",
-                );
+            // Start from the convention that was selected; editing it makes it custom.
+            Some(None) => self.pattern_editor.custom = true,
+            _ => {}
+        }
+        let preset = match plan::classify(&self.settings.renaming_pattern) {
+            PatternKind::Preset(preset) if !self.pattern_editor.custom => Some(preset),
+            _ => None,
+        };
+        match preset {
+            Some(p) => {
+                ui.label(p.description);
             }
-            PatternKind::Empty => {
-                ui.colored_label(
-                    Color32::LIGHT_RED,
-                    "The pattern is empty, so no file can be renamed.",
+            None => {
+                ui.label(
+                    "Your own pattern in Animatic's renaming language, kept exactly as written. \
+                     The reference explains how to write one; a built-in convention is a good \
+                     starting point.",
                 );
             }
         }
-        let mut use_stable = false;
+        if self.pattern_editor.checked.as_deref() != Some(self.settings.renaming_pattern.as_str()) {
+            self.pattern_editor.syntax_error =
+                plan::check_pattern(&self.settings.renaming_pattern).err();
+            self.pattern_editor.sample =
+                Some(presets::sample_plan(&self.settings.renaming_pattern));
+            self.pattern_editor.checked = Some(self.settings.renaming_pattern.clone());
+            self.pattern_editor.test = None;
+        }
+        if let Some(sample) = &self.pattern_editor.sample
+            && !sample.result.is_empty()
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Example:")
+                    .on_hover_text("A fictitious episode 6, release version 2, by a group");
+                ui.monospace(&sample.result);
+            });
+        }
         let mut restore = false;
         let mut validate = false;
         ui.horizontal_wrapped(|ui| {
-            use_stable = ui
-                .add_enabled(
-                    kind != PatternKind::StableDefault,
-                    egui::Button::new("Use stable default"),
-                )
-                .on_hover_text(
-                    "Replace the text below with the built-in default. Its episode numbers use a \
-                     fixed two-digit minimum instead of the width of the cached episode total. \
-                     Nothing is stored until you press Save options.",
-                )
-                .clicked();
+            if preset.is_none()
+                && ui
+                    .button("Pattern reference")
+                    .on_hover_text("Values, functions and recipes for writing a pattern")
+                    .clicked()
+            {
+                self.pattern_editor.reference_open = true;
+            }
             if self.pattern_editor.replaced.is_some() {
-                restore = ui.button("Restore previous text").clicked();
+                restore = ui
+                    .button("Restore my custom pattern")
+                    .on_hover_text("Put back the custom pattern the convention replaced")
+                    .clicked();
             }
             validate = ui
                 .button("Validate on selected file")
                 .on_hover_text("Run the pattern on the file selected on the Hashed files page")
                 .clicked();
         });
-        if use_stable {
-            let old = std::mem::replace(
-                &mut self.settings.renaming_pattern,
-                animatic_core::settings::DEFAULT_RENAME_PATTERN.to_string(),
-            );
-            self.pattern_editor.replaced = Some(old);
-        } else if restore && let Some(old) = self.pattern_editor.replaced.take() {
+        if restore && let Some(old) = self.pattern_editor.replaced.take() {
             self.settings.renaming_pattern = old;
+            self.pattern_editor.custom = true;
         }
-        ui.add(
-            egui::TextEdit::multiline(&mut self.settings.renaming_pattern)
-                .font(egui::TextStyle::Monospace)
-                .desired_rows(12),
-        );
-        if self.pattern_editor.checked.as_deref() != Some(self.settings.renaming_pattern.as_str()) {
-            self.pattern_editor.syntax_error =
-                plan::check_pattern(&self.settings.renaming_pattern).err();
-            self.pattern_editor.checked = Some(self.settings.renaming_pattern.clone());
-            self.pattern_editor.test = None;
+        if preset.is_none() {
+            ui.add(
+                egui::TextEdit::multiline(&mut self.settings.renaming_pattern)
+                    // A fixed id: the example line above appears and disappears while typing,
+                    // which would otherwise change the automatic id and drop the focus.
+                    .id_salt("renaming-pattern")
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(12),
+            );
+            if let Some(error) = &self.pattern_editor.syntax_error {
+                ui.colored_label(Color32::LIGHT_RED, error);
+            } else if let Some(sample) = &self.pattern_editor.sample {
+                show_plan(ui, sample);
+            }
         }
         if validate {
             let test = match self.selected_local {
@@ -1915,9 +1978,6 @@ impl AnimaticApp {
                 Some(id) => self.preview_rename(id, &self.settings.renaming_pattern),
             };
             self.pattern_editor.test = Some(test);
-        }
-        if let Some(error) = &self.pattern_editor.syntax_error {
-            ui.colored_label(Color32::LIGHT_RED, error);
         }
         match &self.pattern_editor.test {
             Some(Err(e)) => {
@@ -1934,6 +1994,76 @@ impl AnimaticApp {
                 }
             }
             None => {}
+        }
+    }
+
+    /// How to write a custom pattern, with every sample's result for the fictitious file.
+    fn pattern_reference_window(&mut self, ctx: &egui::Context) {
+        if !self.pattern_editor.reference_open {
+            return;
+        }
+        if self.pattern_editor.reference_values.is_empty() {
+            self.pattern_editor.reference_values = reference::SECTIONS
+                .iter()
+                .map(|s| {
+                    s.entries
+                        .iter()
+                        .map(|e| presets::sample_value(e.code))
+                        .collect()
+                })
+                .collect();
+        }
+        let mut open = true;
+        egui::Window::new("Renaming pattern reference")
+            .open(&mut open)
+            .default_width(720.0)
+            .default_height(560.0)
+            .vscroll(true)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Results are for a fictitious file: episode 6 of \"Reibun no Tabi\", \
+                     release version 2, by the group ExGroup.",
+                );
+                ui.hyperlink_to(
+                    "Complete language reference (wiki)",
+                    "https://github.com/RetroHazard/animatic/wiki/Rename-Language",
+                );
+                for (index, section) in reference::SECTIONS.iter().enumerate() {
+                    egui::CollapsingHeader::new(section.title)
+                        .default_open(index == 0)
+                        .show(ui, |ui| {
+                            for note in section.notes {
+                                ui.label(format!("• {note}"));
+                            }
+                            for (entry, value) in section
+                                .entries
+                                .iter()
+                                .zip(&self.pattern_editor.reference_values[index])
+                            {
+                                ui.separator();
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(entry.meaning).strong());
+                                    if ui
+                                        .small_button("Copy")
+                                        .on_hover_text("Copy the code to the clipboard")
+                                        .clicked()
+                                    {
+                                        ui.ctx().copy_text(entry.code.to_string());
+                                    }
+                                });
+                                ui.add(egui::Label::new(RichText::new(entry.code).monospace()));
+                                match value {
+                                    Ok(v) => {
+                                        ui.label(RichText::new(format!("→ {v}")).monospace().weak())
+                                    }
+                                    Err(e) => ui.colored_label(Color32::LIGHT_RED, e),
+                                };
+                            }
+                        });
+                }
+            });
+        if !open {
+            self.pattern_editor.reference_open = false;
         }
     }
 
@@ -4647,6 +4777,7 @@ impl eframe::App for AnimaticApp {
         });
         self.legacy_settings_review_window(&ctx);
         self.settings_window(&ctx);
+        self.pattern_reference_window(&ctx);
         self.update_window(&ctx);
         self.settings_notice_window(&ctx);
         self.legacy_import_confirm_window(&ctx);

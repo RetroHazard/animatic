@@ -22,7 +22,7 @@ Linux-specific statements are reading of the code.
 | Capability | Status |
 |---|---|
 | Rename one selected, AniDB-identified hashed file after a preview and explicit confirmation (**Hashed files → Rename…**) | Implemented |
-| Edit the pattern, reset it to the stable default, restore the replaced text and validate it on the selected file (**Tools → Options → Renaming pattern**) | Implemented |
+| Choose a built-in naming convention or write a custom pattern with an in-app reference and a live example, restore the replaced custom text and validate it on the selected file (**Tools → Options → Renaming pattern**) | Implemented |
 | Per-folder rename destination (`base_path`, shown as **Rename destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
 | Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
 | Automatic renaming during or after a scan | **Opt-in per managed folder** (Options > Managed folders > **Auto rename**: Off, Dry run, On; off by default). Dry run only logs the plans; On renames identified files through the same verified worker job, and choosing On first shows a dry-run list to confirm. Collisions and blocked plans are skipped and logged, never overwritten. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). |
@@ -206,7 +206,7 @@ the context decoration `In "<31 characters around the position>..." near "<next 
 
 In the application the text is shown as `The renaming pattern has a syntax error: <message>`
 with line breaks normalized. A blank pattern is reported separately as
-`The renaming pattern is empty. Use the stable default, or write a pattern whose last
+`The renaming pattern is empty. Choose a naming convention, or write a pattern whose last
 expression is the new file name.`
 
 ## Values, truthiness and coercion
@@ -385,14 +385,14 @@ Deliberate differences stated in the source and project rules:
 
 - Strings are Unicode throughout, with no ANSI round trips.
 - A relative result resolves against the **file's own folder**.
-- The stable default uses a fixed two-digit counter; counts stored in the database do not
+- The built-in conventions use a fixed two-digit counter; counts stored in the database do not
   influence it.
 - Empty results, Boolean-only results, hard errors and any evaluation warning block the rename
   instead of producing or guessing a name.
 - File-name validity uses the strictest rules on every platform (Windows reserved characters
   and device names including `¹ ² ³`), with a length unit that depends on the build platform.
-- The stable default needs fetched title and episode data; a pending-title stand-in is never
-  used to name a file with it.
+- The built-in conventions need fetched title and episode data; a pending-title stand-in is
+  never used to name a file with them.
 - Renaming is manual and confirmed, except for a managed folder you explicitly set to **On**
   (opt-in per folder, off by default, never implicit; collisions are skipped, never overwritten).
 

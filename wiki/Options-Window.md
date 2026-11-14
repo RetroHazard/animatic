@@ -35,7 +35,7 @@ written with the settings.
 | External player | Per player: Name, Executable, Open/Play/Enqueue arguments, Default player, Remove player; Add player | Active; see [External tools](External-Tools.md) |
 | AVDump | Enable, Executable, Arguments, API key | Active |
 | Media properties | The detected `ffprobe` (version, where it came from, path), *ffprobe path* + **Detect**, *Read media properties after hashing* (disabled until `ffprobe` is found), **Install ffprobe…** (confirmation with size, license and source), **Read missing properties now** | Active, off by default; see [External tools](External-Tools.md#media-properties-ffprobe) |
-| Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
+| Renaming pattern | Naming convention list (four built-in conventions or Custom pattern), live example, custom pattern editor, Pattern reference window, Restore my custom pattern, Validate on selected file | Active, see [Choosing how files are named](Renaming-Files.md#choosing-how-files-are-named) |
 | Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
 Not in Options (JSON only): UDP server, local port, image server (the fallback host for covers),
