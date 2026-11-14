@@ -42,6 +42,8 @@ the generated line for that pull request's squash commit.
   the next time Options opens, like every other way of closing it.
 - The startup error dialog (Animatic started from Explorer) shows "Animatic could not start"
   once instead of twice.
+- The bug report form's example status-bar text matches the application (`N blocked commands`,
+  `N commands not saved yet`).
 
 ## 2026.11.0-rc.1 - 2026-11-14
 

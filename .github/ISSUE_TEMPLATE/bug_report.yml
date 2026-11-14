@@ -92,7 +92,7 @@ body:
     id: actual
     attributes:
       label: What happened
-      description: Keep exact message wording and status-bar indicators (for example **N blocked**, **N commands NOT saved yet**).
+      description: Keep exact message wording and status-bar indicators (for example **N blocked commands**, **N commands not saved yet**).
     validations:
       required: true
   - type: textarea
