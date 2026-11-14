@@ -48,8 +48,8 @@ the generated line for that pull request's squash commit.
 - Explicit in-app updates from published GitHub releases (Windows and Linux x86_64): **Help →
   Check for updates…** and an optional startup check (**Check for updates at startup**,
   `updates.auto_check`, on by default, skipped while *Work offline* is on or after settings
-  recovery) find the highest stable CalVer release that is newer than the running version, never a
-  draft, prerelease, equal or lower version. **Download and verify** fetches the platform archive and
+  recovery) find the highest CalVer release that is newer than the running version and eligible
+  on the selected channel (never a draft, equal or lower version). **Download and verify** fetches the platform archive and
   `SHA256SUMS` with size limits, cancellation and timeouts on a dedicated updater thread, checks
   the SHA-256 and stages the executable; **Install** needs a confirmation, replaces only the
   executable (via `self-replace`, no elevation) and adds `LICENSE-vVERSION` and
@@ -222,8 +222,8 @@ the generated line for that pull request's squash commit.
   optional) and no other prerelease form is accepted. Each beta gets its own changelog section; a
   stable section folds in the betas since the previous stable. The **Prepare release** workflow
   takes a `stream` input, and **Release** publishes a beta as a prerelease (not the latest release)
-  and a stable as the latest release. The in-app updater still offers only stable releases, so
-  betas are downloaded manually from the release page.
+  and a stable as the latest release only when it is the newest published stable. The in-app
+  updater offers betas only on the Beta update channel.
 - User-interface refinement pass. The sidebar groups the pages under LIBRARY
   (MyList, Anime, Advanced search, Hashed files, Groups, Genres) and ACTIVITY (Queue, Log) below
   Overview, shows the pending (or red blocked) count on Queue, and ends with `N anime` and
@@ -244,7 +244,7 @@ the generated line for that pull request's squash commit.
   and tools, Exports, Updates) with a pinned footer holding **Close** and **Save options**; the
   theme applies at once and the UI scale when the slider is released. **Edit pattern** buttons open
   the Renaming category.
-- Status bar: a clickable **● Online** / **● Offline** button toggles *Work offline*; blocked
+- Status bar: a clickable Online / Offline button (with a status dot) toggles *Work offline*; blocked
   commands are a link to the Queue; `N commands not saved yet` (was `NOT saved yet`); errors are
   shown in red as `⚠ message`, stay until the next message and open the Log.
 - Hashed files: the toolbar wraps and is grouped, buttons say why they are disabled, **Select all
@@ -304,8 +304,8 @@ the generated line for that pull request's squash commit.
 - The status bar's Online/Offline dot and the sidebar's Options gear are centred on their text.
 - About Animatic shows its three link buttons on one row, and the license window opens wide
   enough that the license's lines do not wrap.
-- Options labels the API key as optional, and the Updates page says that update checks read
-  Animatic's GitHub releases page and links to it.
+- Options labels the API key as optional, and the Updates page says that checks go to GitHub
+  anonymously, that nothing installs without asking, and links to the releases page.
 - Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
   nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
   pattern that loops or recurses without end, or builds an enormous text, now fails with an

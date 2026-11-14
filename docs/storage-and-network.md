@@ -985,8 +985,8 @@ restart by itself. Failures in steps 1-4 happen before the executable is touched
 files placed in step 4 may remain after a later failure and are harmless. The staged files live in the
 temporary directory until the `VerifiedUpdate` is dropped.
 
-The desktop About window prefers the versioned third-party notices for the running version and shows
-Animatic's own license from the texts built into the executable (`NOTICES` and `LICENSE`); the versioned files beside the executable are only for the user. The updater thread
+The desktop About window shows the third-party notices and Animatic's own license from the texts built
+into the executable (`NOTICES` and `LICENSE`); the versioned files beside the executable are only for the user. The updater thread
 owns the install, so a quit waits for it (see [Architecture](architecture.md#updater-thread)).
 
 **Tests.** Automated tests use synthetic archives and loopback servers only; they never contact GitHub or

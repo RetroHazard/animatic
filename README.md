@@ -14,9 +14,13 @@ and imports user-supplied AOM databanks without modifying the originals.
   checklist and a **Needs attention** list, searchable library views, anime details, local-file
   identification and MyList editing (state, watched, view date, storage, source and other,
   removal after confirmation).
+- Browse by genre: filter the Anime page by one or several genres, or open a genre from the
+  Genres page or an anime's detail window. Descriptions and reviews show AniDB's formatting
+  (bold, links, quotes, spoilers, lists); pictures are never downloaded.
 - Keyboard shortcuts (`Ctrl+O`, `Ctrl+F`, `Ctrl+,`, `F5`, `Ctrl+Shift+S`, `Ctrl+1` … `Ctrl+9`,
-  `Esc`), a dark, light or system theme with a UI scale, and optional status colours for table
-  rows (soft tint or solid, as in AOM).
+  `Esc`), a dark, light or system theme with a UI scale, six colour schemes (Sakura, Ocean,
+  Forest, Sunset, Wisteria, Graphite), and optional status colours for table rows (soft tint or
+  solid, as in AOM) that you can customize per status.
 - Durable synchronization queue with latest-intent edits, retained failures and
   restart-persistent cooldowns; AniDB's request spacing and once-a-day limits hold across
   runs and restarts.

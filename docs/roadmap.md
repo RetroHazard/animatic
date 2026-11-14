@@ -486,6 +486,8 @@ activity, and runs on the worker (rules 1, 2, 8 and 15).
 - **Shipped as:** Options → Appearance has **Tint table rows by status** and a **Row color
   style**: *Soft* (default; a light tint plus a coloured marker at the start of the row) or
   *Solid* (the whole row in the status colour, as in AOM).
+  **Customize status colors** edits each status's background and optional text colour
+  (`ui.colors`) with a live sample; the colour scheme (`ui.color_scheme`) is separate.
 
 ### M7.4 Player open and enqueue actions
 
