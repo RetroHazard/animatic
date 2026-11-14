@@ -203,12 +203,14 @@ fn recovery_notice(settings_path: &Path) -> String {
 }
 
 /// Release archives carry no signature; this is shown wherever an install can be started.
-const UNSIGNED_WARNING: &str = "Release archives are not code-signed. Animatic compares the \
+const UNSIGNED_WARNING: &str = "Releases are not code-signed. The checksum only catches a \
+     damaged download.";
+const UNSIGNED_DETAIL: &str = "Release archives are not code-signed. Animatic compares the \
      downloaded archive with the SHA-256 checksum published in the same GitHub release. That \
      detects a damaged or mismatched download, but it does not prove who published the release. \
      Install only if you trust the release on GitHub.";
-const UPDATE_PRIVACY: &str = "Checking contacts github.com. GitHub sees your IP address and \
-     the Animatic version; no AniDB credentials and no library data are sent.";
+const UPDATE_PRIVACY: &str = "Contacts github.com only. GitHub sees your IP address and the \
+     Animatic version. No AniDB credentials and no library data are sent.";
 
 /// Where the update flow stands. Only the check can start by itself; downloading and \
 /// installing each need an explicit action, and installing a confirmation as well.
@@ -5065,6 +5067,7 @@ impl AnimaticApp {
         let blocker = self.update_blocker();
         let restart_blocker = self.restart_blocker();
         let stage = self.update.stage.clone();
+        let channel = self.settings.updates.channel.label();
         let mut action = None;
         let mut open = true;
         let shown = dialog::window(ctx, "Software updates")
@@ -5072,12 +5075,24 @@ impl AnimaticApp {
             .resizable(false)
             .default_width(460.0)
             .show(ctx, |ui| {
-                ui.label(format!("Installed version: {}", env!("CARGO_PKG_VERSION")));
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Installed version: {}", env!("CARGO_PKG_VERSION")))
+                            .strong(),
+                    );
+                    if Platform::current().is_some() {
+                        ui.label(RichText::new(format!("Channel: {channel}")).weak())
+                            .on_hover_text(
+                                "Decides which releases are offered. Change it in \
+                                 Tools → Options… → Updates.",
+                            );
+                    }
+                });
                 if Platform::current().is_none() {
                     ui.label("Updates are only available for 64-bit Windows and Linux builds.");
                     return;
                 }
-                ui.add_space(4.0);
+                ui.add_space(6.0);
                 if let Some(error) = &self.update.error {
                     ui.colored_label(style::error(ui.visuals()), error);
                     ui.add_space(4.0);
@@ -5085,14 +5100,22 @@ impl AnimaticApp {
                 let version = self.update.release.as_ref().map(|r| r.version.as_str());
                 match stage {
                     UpdateStage::Idle => {
-                        if ui.button("Check now").clicked() {
+                        // After a failed check the error above says what happened.
+                        let failed = self.update.error.is_some();
+                        if !failed {
+                            ui.label(RichText::new("Not checked yet.").weak());
+                        }
+                        if ui
+                            .button(if failed { "Try again" } else { "Check now" })
+                            .clicked()
+                        {
                             action = Some(UpdateAction::Check);
                         }
                     }
                     UpdateStage::Checking { cancelling, .. } => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Checking GitHub for a newer release…");
+                            ui.label("Checking GitHub…");
                         });
                         if ui
                             .add_enabled(!cancelling, egui::Button::new("Cancel"))
@@ -5102,26 +5125,45 @@ impl AnimaticApp {
                         }
                     }
                     UpdateStage::UpToDate => {
-                        ui.label("Animatic is up to date.");
+                        ui.colored_label(style::ok(ui.visuals()), "Animatic is up to date.");
                         if ui.button("Check again").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
                     UpdateStage::Available => {
                         if let Some(release) = &self.update.release {
-                            ui.label(format!(
-                                "Version {} is available ({} download).",
-                                release.version,
-                                format::size_short(
-                                    i64::try_from(release.archive_size).unwrap_or(i64::MAX)
-                                )
-                            ));
-                            ui.hyperlink_to("Release notes on GitHub", &release.page_url);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Version {} is available",
+                                        release.version
+                                    ))
+                                    .strong(),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "({} download)",
+                                        format::size_short(
+                                            i64::try_from(release.archive_size).unwrap_or(i64::MAX)
+                                        )
+                                    ))
+                                    .weak(),
+                                );
+                                ui.hyperlink_to("Release notes", &release.page_url);
+                            });
                         }
                         ui.add_space(4.0);
-                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING);
+                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING)
+                            .on_hover_text(UNSIGNED_DETAIL);
                         ui.add_space(4.0);
-                        if ui.button("Download and verify").clicked() {
+                        if ui
+                            .button("Download and verify")
+                            .on_hover_text(
+                                "Downloads the archive and checks it against the release's \
+                                 SHA-256 checksum. Nothing is installed yet.",
+                            )
+                            .clicked()
+                        {
                             action = Some(UpdateAction::Download);
                         }
                     }
@@ -5144,28 +5186,46 @@ impl AnimaticApp {
                     }
                     UpdateStage::Ready { confirming } => {
                         if let Some(update) = &self.update.ready {
-                            ui.label(format!(
-                                "Version {} was downloaded and matches the published checksum.",
-                                update.version()
-                            ));
+                            ui.label(
+                                RichText::new(format!(
+                                    "Version {} downloaded. Checksum matches.",
+                                    update.version()
+                                ))
+                                .strong(),
+                            )
+                            .on_hover_text(
+                                "The archive's SHA-256 matches the checksum published in the \
+                                 same release.",
+                            );
                             ui.horizontal(|ui| {
-                                ui.label("SHA-256:");
-                                ui.label(RichText::new(update.sha256()).monospace());
+                                ui.label(RichText::new("SHA-256:").weak());
+                                ui.label(RichText::new(update.sha256()).monospace().weak());
                             });
                         }
                         ui.add_space(4.0);
-                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING);
+                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING)
+                            .on_hover_text(UNSIGNED_DETAIL);
                         ui.add_space(4.0);
                         if confirming {
                             ui.label(match self.executable_path() {
-                                Some(path) => format!(
-                                    "Animatic will replace {} with the new version. Your \
-                                     database, settings, profiles and media are not touched; \
-                                     the new license files are added next to the program.",
-                                    path.display()
-                                ),
+                                Some(path) => {
+                                    format!("Replace {} with the new version?", path.display())
+                                }
                                 None => "Animatic cannot tell where it is installed.".into(),
-                            });
+                            })
+                            .on_hover_text(
+                                "Only the program is replaced. Your database, settings, \
+                                 profiles and media are not touched. New license files are \
+                                 added next to the program; the bundled docs stay at the old \
+                                 version.",
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Your data stays as it is. Bundled docs stay at the old \
+                                     version.",
+                                )
+                                .weak(),
+                            );
                             ui.horizontal(|ui| {
                                 if ui
                                     .add_enabled(
@@ -5200,10 +5260,13 @@ impl AnimaticApp {
                         }
                     }
                     UpdateStage::InstallFailed => {
+                        ui.colored_label(
+                            style::error(ui.visuals()),
+                            "The installation did not finish.",
+                        );
                         ui.label(
-                            "The installation did not finish. The program files may be in an \
-                             unknown state, so Animatic will not update or restart itself in \
-                             this session.",
+                            "The program files may be in an unknown state, so Animatic will \
+                             not update or restart itself in this session.",
                         );
                         ui.label(match self.executable_path() {
                             Some(path) => format!(
@@ -5226,10 +5289,14 @@ impl AnimaticApp {
                         });
                     }
                     UpdateStage::Installed => {
-                        ui.label(format!(
-                            "Version {} is installed. Restart Animatic to start using it.",
-                            self.update.installed_version.as_deref().unwrap_or("?")
-                        ));
+                        ui.colored_label(
+                            style::ok(ui.visuals()),
+                            format!(
+                                "Version {} is installed.",
+                                self.update.installed_version.as_deref().unwrap_or("?")
+                            ),
+                        );
+                        ui.label(RichText::new("Restart Animatic to start using it.").weak());
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(
@@ -5250,8 +5317,20 @@ impl AnimaticApp {
                         }
                     }
                 }
-                ui.add_space(6.0);
-                ui.label(RichText::new(UPDATE_PRIVACY).weak());
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(
+                            "Checks GitHub only, anonymously. Nothing installs without asking.",
+                        )
+                        .weak(),
+                    )
+                    .on_hover_text(UPDATE_PRIVACY);
+                    ui.hyperlink_to(
+                        "Releases",
+                        format!("{}/releases", env!("CARGO_PKG_REPOSITORY")),
+                    );
+                });
             });
         match action {
             Some(UpdateAction::Check) => self.start_update_check(true),

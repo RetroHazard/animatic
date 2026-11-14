@@ -307,7 +307,10 @@ the generated line for that pull request's squash commit.
 - About Animatic shows its three link buttons on one row, and the license window opens wide
   enough that the license's lines do not wrap.
 - Options labels the API key as optional, and the Updates page says that checks go to GitHub
-  anonymously, that nothing installs without asking, and links to the releases page.
+  anonymously, that nothing installs without asking, and links to the releases page. The
+  Software updates window is shorter in every step: the installed version with the release
+  channel, one status line, the next action, and the details (privacy, checksum, what an install
+  replaces) in hover text.
 - Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
   nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
   pattern that loops or recurses without end, or builds an enormous text, now fails with an

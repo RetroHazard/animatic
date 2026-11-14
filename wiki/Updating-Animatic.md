@@ -24,18 +24,23 @@ and a downloaded update that is not installed yet, and the next check uses the n
 and the current step):
 
 1. **Check.** Help → **Check for updates…** opens the window and starts a check (**Check now** /
-   **Check again** repeat it). The startup check does the same work but does not open the
+   **Check again** repeat it; after a failed check the error is shown with **Try again**). The startup check does the same work but does not open the
    window: if it finds a newer release, the Log gets a note and an **Update available: VERSION**
    button appears at the right of the menu bar to open the window. A startup check that finds
    nothing or fails stays quiet (a failure is only written to the Log); a manual check always
-   reports its result in the window. The window shows the version, the download size, a link to the
-   release page on GitHub and the integrity warning described below.
+   reports its result in the window. The window shows the installed version and the release channel
+   (*Channel: Stable* or *Beta*; change it in Options → Updates), then the status. An available
+   update shows its version, the download size, a **Release notes** link to the release page on
+   GitHub and a short not-code-signed warning (hover it for the full integrity explanation
+   below). A line at the bottom, *Checks GitHub only, anonymously. Nothing installs without
+   asking.*, gives the privacy details on hover.
 2. **Download and verify.** The archive and `SHA256SUMS` are downloaded with size limits and
    checked against each other (SHA-256), then unpacked into a private temporary folder. **Cancel**
    stops the download. Nothing in the installation folder changes yet. The verified SHA-256 is
    shown, and **Discard download** throws the staged files away.
-3. **Install.** **Install** first shows which file will be replaced; **Confirm installation**
-   (or **Back**) is the confirmation. Only then are the staged files installed; see below.
+3. **Install.** **Install** first asks *Replace PATH with the new version?*, naming the
+   file that will be replaced, and says that your data and the bundled docs stay as they are;
+   **Confirm installation** (or **Back**) is the confirmation. Only then are the staged files installed; see below.
 4. **Restart now or Later.** **Restart now** saves your settings, closes the window normally and
    starts the new executable afterwards; **Later** leaves the running version untouched and the
    new one starts the next time you launch Animatic. Until you restart, the running (older)
