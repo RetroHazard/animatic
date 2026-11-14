@@ -105,6 +105,13 @@ impl Page {
         }
     }
 
+    /// Whether `Ctrl+F` has a search field to focus here: the searchable list pages and the
+    /// title field of the advanced search. The other pages have none, so the shortcut must not
+    /// be remembered for the next page that has one.
+    fn has_search_field(self) -> bool {
+        !matches!(self, Page::Dashboard | Page::Queue | Page::Log)
+    }
+
     /// Pages in sidebar order (`Ctrl+1` … `Ctrl+9`).
     fn all() -> impl Iterator<Item = Page> {
         Page::GROUPS
@@ -2783,7 +2790,7 @@ impl AnimaticApp {
         if pressed(&shortcuts::ADD_FILES) && !self.import_pending {
             self.submit_files();
         }
-        if pressed(&shortcuts::SEARCH) {
+        if pressed(&shortcuts::SEARCH) && self.page.has_search_field() {
             self.focus_search = true;
         }
         if pressed(&shortcuts::OPTIONS) {
@@ -3346,10 +3353,13 @@ impl AnimaticApp {
     fn search_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, None, false);
         ui.horizontal_wrapped(|ui| {
-            ui.add_sized(
+            let title = ui.add_sized(
                 [260.0, 28.0],
                 egui::TextEdit::singleline(&mut self.query).hint_text("Title or AniDB ID"),
             );
+            if std::mem::take(&mut self.focus_search) {
+                title.request_focus();
+            }
             ui.label("Year");
             ui.add_sized(
                 [80.0, 28.0],
