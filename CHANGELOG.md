@@ -40,6 +40,8 @@ the generated line for that pull request's squash commit.
   focused, so a comma after the last extension no longer vanishes before the next one is typed.
 - Closing Options with the sidebar **Options** button now refreshes the file-menu status line
   the next time Options opens, like every other way of closing it.
+- The startup error dialog (Animatic started from Explorer) shows "Animatic could not start"
+  once instead of twice.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 
