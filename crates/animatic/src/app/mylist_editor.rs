@@ -122,9 +122,17 @@ impl MylistForm {
 
     /// The edit this form stands for when it is applied to many entries at once. They differ
     /// in whether they are watched, so a ticked watched box is a value to set, never "no
-    /// change" (`Db::queue_edit_mylist_many` leaves entries that already match alone).
+    /// change" (`Db::queue_edit_mylist_many` leaves entries that already match alone). Only a
+    /// view date typed into the form is a value for every entry; a plain "watched" carries no
+    /// date, so entries that already are watched keep theirs and the others are stamped when
+    /// the batch is queued.
     pub(super) fn build_many(&self, now: i64) -> Result<MylistEdit, String> {
-        self.build(self.change_watched && !self.watched, now)
+        let mut edit = self.build(self.change_watched && !self.watched, now)?;
+        let date_typed = self.change_viewdate && !self.viewdate.trim().is_empty();
+        if edit.viewed == Some(true) && !date_typed {
+            edit.viewdate = None;
+        }
+        Ok(edit)
     }
 }
 
@@ -1112,8 +1120,18 @@ mod tests {
                 form.build_many(5).unwrap().viewed,
                 form.build_many(5).unwrap().viewdate
             ),
-            (Some(true), Some(5))
+            (Some(true), None),
+            "a plain mark carries no date: watched entries keep theirs, the batch stamps the rest"
         );
+        form.change_viewdate = true;
+        form.viewdate = "2025-03-04 18:30".into();
+        let dated = form.build_many(5).unwrap();
+        assert_eq!(dated.viewed, Some(true));
+        assert!(
+            dated.viewdate.is_some_and(|d| d != 5),
+            "a typed date is a value for every entry"
+        );
+        form.change_viewdate = false;
         form.watched = false;
         assert_eq!(
             form.build_many(5).unwrap(),

@@ -462,8 +462,10 @@ impl Db {
     ///
     /// A batch is meant for "set this on all of them", so it leaves an entry alone whose
     /// stored state or watched flag already is the requested value (no needless AniDB
-    /// command, no new watch date on an entry that already was watched). Entries with a
-    /// pending removal, and lids without a local row, are refused and counted as `skipped`.
+    /// command). For an entry that already is watched, a watched mark without a date (the
+    /// implicit "watched now") is no change, so its watch date stays; an explicit date that
+    /// differs from the stored one is set. Entries with a pending removal, and lids without a
+    /// local row, are refused and counted as `skipped`.
     pub fn queue_edit_mylist_many(&self, lids: &[i64], edit: &MylistEdit) -> Result<BatchEdit> {
         self.write_tx(|| {
             let mut outcome = BatchEdit::default();
@@ -476,7 +478,12 @@ impl Db {
                 if wanted.state == Some(entry.state) {
                     wanted.state = None;
                 }
-                if wanted.viewed == Some(entry.viewed) {
+                if wanted.viewed == Some(true) && entry.viewed {
+                    if wanted.viewdate.is_none_or(|date| date == entry.viewdate) {
+                        wanted.viewed = None;
+                        wanted.viewdate = None;
+                    }
+                } else if wanted.viewed == Some(entry.viewed) {
                     wanted.viewed = None;
                     wanted.viewdate = None;
                 }
@@ -1638,8 +1645,12 @@ mod tests {
         db.queue_edit_mylist(2, &watched(10)).unwrap();
         db.queue_push(&Command::MylistDelete { lid: 3 }).unwrap();
         let queue_before = db.queue_len().unwrap();
+        let mark_watched = MylistEdit {
+            viewed: Some(true),
+            ..Default::default()
+        };
         let done = db
-            .queue_edit_mylist_many(&[1, 2, 3, 99], &watched(500))
+            .queue_edit_mylist_many(&[1, 2, 3, 99], &mark_watched)
             .unwrap();
         assert_eq!(
             done,
@@ -1658,7 +1669,37 @@ mod tests {
         );
         assert!(!db.mylist_entry(3).unwrap().unwrap().viewed);
         assert!(!db.mylist_entry(4).unwrap().unwrap().viewed);
-        assert_eq!(db.mylist_entry(1).unwrap().unwrap().viewdate, 500);
+        assert!(
+            db.mylist_entry(1).unwrap().unwrap().viewdate > 0,
+            "stamped now"
+        );
+    }
+
+    #[test]
+    fn a_batch_date_change_reaches_entries_that_already_are_watched() {
+        let db = Db::memory().unwrap();
+        for lid in 1..=3 {
+            entry(&db, lid);
+        }
+        db.queue_edit_mylist(1, &watched(10)).unwrap();
+        db.queue_edit_mylist(2, &watched(500)).unwrap();
+        let done = db
+            .queue_edit_mylist_many(&[1, 2, 3], &watched(500))
+            .unwrap();
+        assert_eq!(
+            done,
+            BatchEdit {
+                queued: vec![1, 3],
+                unchanged: 1,
+                skipped: 0
+            },
+            "1 gets the new date, 2 already has it, 3 becomes watched on that date"
+        );
+        for lid in 1..=3 {
+            let e = db.mylist_entry(lid).unwrap().unwrap();
+            assert_eq!((e.viewed, e.viewdate), (true, 500), "entry {lid}");
+            assert_eq!(sole_edit(&db, lid).1, watched(500), "entry {lid}");
+        }
     }
 
     #[test]
