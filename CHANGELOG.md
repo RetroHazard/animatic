@@ -175,8 +175,9 @@ the generated line for that pull request's squash commit.
   the next save. A refused client (replies 503/504, or an HTTP client rejection) now says to update
   Animatic or report it, and the automatic queue run no longer waits for a client name.
 - Naming conventions for renaming: **Tools → Options → Renaming pattern** now has a **Naming
-  convention** list instead of only a pattern editor. Choose the default
-  (`Title - 06v2 - Episode title [Group](CRC)`), the fansub style `[Group] Title - 06v2 [CRC]`,
+  convention** list instead of only a pattern editor. Choose the fansub style
+  `[Group] Title - 06v2 [CRC]` (now the default for new settings; settings saved earlier keep
+  their pattern), AniDB O'Matic's `Title - 06v2 - Episode title [Group](CRC)`,
   `Title - 06 - Episode title`, or `Title - S01E06 - Episode title` for media servers, and see
   an example name at once. Every convention names all AniDB episode types: specials `S15`,
   credits (openings and endings) `C05`, trailers `T08v2`, parodies and other episodes, with the

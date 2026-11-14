@@ -100,8 +100,8 @@ name it gives a fictitious file (episode 6, release version 2, group `ExGroup`):
 
 | Convention | Example |
 |---|---|
-| `Title - episode - episode title [group](CRC)` (the default) | `Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv` |
-| [Group] Title - episode [CRC] | `[ExGroup] Reibun no Tabi - 06v2 [EB420C97].mkv` |
+| [Group] Title - episode [CRC] (the default) | `[ExGroup] Reibun no Tabi - 06v2 [EB420C97].mkv` |
+| `Title - episode - episode title [group](CRC)` (AniDB O'Matic's default) | `Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv` |
 | Title - episode - episode title | `Reibun no Tabi - 06 - The Long Road.mkv` |
 | Title - S01E06 - episode title (media servers) | `Reibun no Tabi - S01E06 - The Long Road.mkv` |
 

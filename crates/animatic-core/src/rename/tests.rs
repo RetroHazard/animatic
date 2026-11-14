@@ -69,7 +69,7 @@ fn titles() -> Fixture {
 }
 
 fn default_name(bindings: &Bindings) -> String {
-    let pattern = Pattern::compile(include_str!("default_pattern.txt")).unwrap();
+    let pattern = Pattern::compile(include_str!("aom_pattern.txt")).unwrap();
     let result = evaluate(&pattern, bindings, &titles()).unwrap();
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     result.result
@@ -127,11 +127,11 @@ fn custom_unpadded_and_unicode_patterns_are_unaffected() {
 #[test]
 fn built_in_defaults_are_recognized_but_custom_patterns_are_not() {
     assert_eq!(
-        classify(&include_str!("default_pattern.txt").replace('\n', "\r\n")),
-        PatternKind::Preset(&super::presets::PRESETS[0])
+        classify(&include_str!("aom_pattern.txt").replace('\n', "\r\n")),
+        PatternKind::Preset(&super::presets::PRESETS[1])
     );
     assert_eq!(classify(" \r\n\t"), PatternKind::Empty);
-    let edited = include_str!("default_pattern.txt").replace("'v'", "'ver'");
+    let edited = include_str!("aom_pattern.txt").replace("'v'", "'ver'");
     assert_eq!(classify(&edited), PatternKind::Custom);
 }
 
@@ -171,7 +171,7 @@ fn plan_for(pattern: &str, bindings: &Bindings) -> plan::Plan {
 
 #[test]
 fn plan_with_the_default_pattern_yields_a_target_beside_the_file() {
-    let plan = plan_for(include_str!("default_pattern.txt"), &sample(12, 12, 1, 3));
+    let plan = plan_for(include_str!("aom_pattern.txt"), &sample(12, 12, 1, 3));
     assert!(plan.can_apply(), "{plan:?}");
     assert_eq!(
         plan.target.unwrap(),
@@ -226,7 +226,7 @@ fn plan_requires_fetched_metadata_for_the_stable_default_only() {
             .with("Id", Value::Int(1))
             .with("Name", Value::WStr(objects::TITLE_PENDING.into())),
     );
-    let stable = include_str!("default_pattern.txt");
+    let stable = include_str!("aom_pattern.txt");
     let blocked = plan::plan(stable, &pending_title, &titles(), old);
     assert!(
         blocked.target.is_none() && !blocked.errors.is_empty(),

@@ -422,7 +422,7 @@ Limits:
 | Bound objects, property values, language resolution | [objects.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/objects.rs) |
 | Result handling, target path, name validation | [mod.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/mod.rs) |
 | Plan, classification, stable-default metadata rule | [plan.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/plan.rs) |
-| Default pattern | [default_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/default_pattern.txt) |
+| Built-in conventions | [fansub_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/fansub_pattern.txt) (default), [aom_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/aom_pattern.txt), [presets.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/presets.rs) |
 | Behavior tests | [tests.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/tests.rs) |
 | Apply | [file_manager.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/file_manager.rs) (`move_file`) |
 | Preview and editor UI | [app.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic/src/app.rs) (`preview_rename`, `rename_window`, `pattern_editor_ui`) |

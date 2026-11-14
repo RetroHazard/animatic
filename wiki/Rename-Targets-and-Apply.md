@@ -1,5 +1,5 @@
 How a pattern's result becomes a target path, what blocks a rename, how a rename is applied,
-and the stable built-in pattern.
+and the built-in naming conventions.
 
 ## From result to target path
 
@@ -112,7 +112,7 @@ rename skipped!`
 Not checked: the total path length (Windows `MAX_PATH`), name collisions that differ only in
 case, Unicode normalization, or whether a folder exists. Nothing is replaced silently: a
 character that is not allowed makes the rename fail with a message. Sanitizing is the
-pattern's job, as the stable default does. A trailing dot or space is the exception: it is
+pattern's job, as the built-in conventions do. A trailing dot or space is the exception: it is
 removed from each component, so `Show.` becomes `Show`.
 
 Because the default pattern limits titles by **characters** (`limit(…, 90)`, `200`, `235`),
@@ -202,8 +202,8 @@ as **Custom pattern**. `rename::presets::PRESETS` lists them; each text is a fil
 
 | Convention | File | Example (episode 6, version 2, group `ExGroup`) |
 |---|---|---|
-| `Title - episode - episode title [group](CRC)`, the default | `default_pattern.txt` | `Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv` |
-| [Group] Title - episode [CRC] | `fansub_pattern.txt` | `[ExGroup] Reibun no Tabi - 06v2 [EB420C97].mkv` |
+| [Group] Title - episode [CRC], the default for new settings | `fansub_pattern.txt` | `[ExGroup] Reibun no Tabi - 06v2 [EB420C97].mkv` |
+| `Title - episode - episode title [group](CRC)`, AniDB O'Matic's default | `aom_pattern.txt` | `Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv` |
 | Title - episode - episode title | `episode_title_pattern.txt` | `Reibun no Tabi - 06 - The Long Road.mkv` |
 | Title - S01E06 - episode title (media servers) | `media_server_pattern.txt` | `Reibun no Tabi - S01E06 - The Long Road.mkv` |
 
@@ -214,7 +214,7 @@ same clean-up as the default replaces characters that are not allowed in file na
 
 Episode types and versions:
 
-| AniDB episode | Default and [Group] conventions | Title - episode - episode title | Media servers |
+| AniDB episode | [Group] and AniDB O'Matic conventions | Title - episode - episode title | Media servers |
 |---|---|---|---|
 | Regular 10, version 2 | `10v2` | `10` | `S01E10` |
 | Special 15 | `S15` | `S15` | `S00E15` |
@@ -227,10 +227,16 @@ group, and the CRC when there is none. AniDB has a single credit type for openin
 the Pattern reference has a recipe that names them `OP01` and `ED01` from the episode title.
 The rename unit tests check every row above.
 
-## The stable default pattern
+## The AniDB O'Matic pattern
 
-The text is the file `crates/animatic-core/src/rename/default_pattern.txt`; the constant
-`settings::DEFAULT_RENAME_PATTERN` includes it. This listing is a copy for reading; the file is
+New settings use the **[Group] Title - episode [CRC]** convention (`fansub_pattern.txt`, the
+constant `settings::DEFAULT_RENAME_PATTERN`). It shares every part described below except the
+layout: `[group] title - number [CRC].extension`, with no episode title, and no group text at all
+when the file has no group. This section lists AniDB O'Matic's own default, the
+`Title - episode - episode title [group](CRC)` convention.
+
+The text is the file `crates/animatic-core/src/rename/aom_pattern.txt`; the constant
+`settings::AOM_RENAME_PATTERN` includes it. This listing is a copy for reading; the file is
 the source of truth.
 
 ```
@@ -303,7 +309,7 @@ The rename unit tests check this for several totals and counts.
 
 | Situation | Pattern text |
 |---|---|
-| New settings (no settings file) | The stable default |
+| New settings (no settings file) | The [Group] Title - episode [CRC] convention |
 | A saved `settings.json` that contains `renaming_pattern` | Kept exactly as saved. The application never rewrites a saved pattern. |
 | A saved file without `renaming_pattern` | The default fills the missing field |
 | Imported AOM settings with a non-blank `general/renamingPattern` | That text, with `\r\n` converted to `\n`, replaces the pattern |

@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::secrets::{CredentialStorage, Credentials};
 
+/// The rename pattern of new settings: the fansub convention `[Group] Title - 06v2 [CRC].mkv`.
+pub const DEFAULT_RENAME_PATTERN: &str = include_str!("rename/fansub_pattern.txt");
 /// The rename script AniDB O'Matic used when none was configured (literal at 0x7d4078).
-pub const DEFAULT_RENAME_PATTERN: &str = include_str!("rename/default_pattern.txt");
+pub const AOM_RENAME_PATTERN: &str = include_str!("rename/aom_pattern.txt");
 
 /// Default extension filter of the legacy client (literal at 0x7d3a28).
 pub const DEFAULT_EXTENSIONS: &str = "7z,aac,ac3,ace,asf,ass,avi,dts,dtshd,flac,flv,idx,js,lrc,m2ts,m4a,mk3d,mka,mks,mkv,mov,mp3,mp4,mpeg,mpg,ogg,ogm,ogv,pjs,qt,ra,rar,rm,rmvb,rt,smi,smil,srt,ssa,sub,swf,thd,tmp,ts,tts,txt,wav,webm,wma,wmv,xss,zip";

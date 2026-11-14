@@ -47,7 +47,7 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 | `ui` | object | see [UI](#ui) | Theme, scale, colors, column and window state |
 | `players` | array of objects | `[]` | [External players](#external-players-players) |
 | `file_managers` | object | two built-in entries | [Managed folders](#managed-folders-file_managers) |
-| `renaming_pattern` | string | stable built-in pattern | [Top-level keys](#top-level-keys) |
+| `renaming_pattern` | string | the [Group] Title - episode [CRC] convention | [Top-level keys](#top-level-keys) |
 | `stat_whore` | object | disabled | [Statistics export](#statistics-export-stat_whore) |
 | `avdump` | object | disabled | [AVDump](#avdump-avdump) |
 | `ed2k_space_replacement` | string or `null` | `null` | [Top-level keys](#top-level-keys) |
@@ -389,7 +389,7 @@ such preference. An older Animatic build ignores and drops the unknown `media` k
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `renaming_pattern` | string | the default built-in convention (33 lines, `crates/animatic-core/src/rename/default_pattern.txt`) | "Renaming pattern": Naming convention list and custom editor | **Active.** Pattern used by every rename. Only the text is stored: a text equal to a built-in convention shows as that convention, anything else as Custom pattern. The section reports syntax errors, shows an example name, offers the Pattern reference, "Restore my custom pattern" and "Validate on selected file". Saving does not validate the pattern; an empty or invalid pattern simply blocks renames. Custom text is never modified by the application. Language: [Rename language](Rename-Language.md). |
+| `renaming_pattern` | string | the [Group] Title - episode [CRC] convention (`crates/animatic-core/src/rename/fansub_pattern.txt`); settings saved earlier keep their pattern | "Renaming pattern": Naming convention list and custom editor | **Active.** Pattern used by every rename. Only the text is stored: a text equal to a built-in convention shows as that convention, anything else as Custom pattern. The section reports syntax errors, shows an example name, offers the Pattern reference, "Restore my custom pattern" and "Validate on selected file". Saving does not validate the pattern; an empty or invalid pattern simply blocks renames. Custom text is never modified by the application. Language: [Rename language](Rename-Language.md). |
 | `ed2k_space_replacement` | string or `null` | `null` | none | **Stored only.** No consumer; ED2K links are always built with the file name as is. |
 | `first_launch` | boolean | `true` | "Dismiss first-run card" on Overview | **Active.** While true the Overview page shows the first-run card; dismissing sets it false and saves. After an AOM settings import it is set to whether the imported username is empty. |
 | `secrets_in_keystore` | boolean | `false` | none (shown as a notice in Options) | **Active, written by Animatic.** `true` after a save that moved `anidb.password`, `anidb.api_key` and `avdump.key` into the operating-system keystore and stored them empty here; loading then fills empty credential fields from the keystore. Do not edit by hand; a file with real values in those keys and `true` uses the file's values. See [Credentials and the system keystore](Settings-Files.md#credentials-and-the-system-keystore). |

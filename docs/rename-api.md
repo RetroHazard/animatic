@@ -16,7 +16,7 @@ the source-level entry points are:
 | `bindings_for_file`, `DbSource`, `anime_object`, `episode_object`, `file_object`, `group_object`, `hash_object`, `mylist_object`, `TITLE_PENDING` | [objects.rs](../crates/animatic-core/src/rename/objects.rs) |
 | `PatternKind`, `classify`, `check_pattern`, `Plan`, `plan`, `plan_local_file`, `Candidate`, `BatchRow`, `plan_batch` | [plan.rs](../crates/animatic-core/src/rename/plan.rs) |
 | `file_manager::{move_file, move_file_with, MoveControl, MoveOutcome, MoveMethod}` | [file_manager.rs](../crates/animatic-core/src/file_manager.rs) |
-| `DEFAULT_RENAME_PATTERN` | [settings.rs](../crates/animatic-core/src/settings.rs) and [default_pattern.txt](../crates/animatic-core/src/rename/default_pattern.txt) |
+| `DEFAULT_RENAME_PATTERN`, `AOM_RENAME_PATTERN` | [settings.rs](../crates/animatic-core/src/settings.rs), [fansub_pattern.txt](../crates/animatic-core/src/rename/fansub_pattern.txt) and [aom_pattern.txt](../crates/animatic-core/src/rename/aom_pattern.txt) |
 | `Preset`, `PRESETS`, `preset_for`, `sample_plan`, `sample_value` (built-in naming conventions and the fictitious sample file) | [presets.rs](../crates/animatic-core/src/rename/presets.rs) |
 | `SECTIONS`, `Section`, `Entry` (the in-application pattern reference) | [reference.rs](../crates/animatic-core/src/rename/reference.rs) |
 

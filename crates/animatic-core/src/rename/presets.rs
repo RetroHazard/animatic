@@ -9,7 +9,7 @@ use std::path::Path;
 use super::eval::DataSource;
 use super::plan::{self, Plan};
 use super::{Bindings, Object, Pattern, Value, evaluate};
-use crate::settings::DEFAULT_RENAME_PATTERN;
+use crate::settings::{AOM_RENAME_PATTERN, DEFAULT_RENAME_PATTERN};
 
 /// One built-in naming convention.
 #[derive(Debug, PartialEq, Eq)]
@@ -27,16 +27,17 @@ pub struct Preset {
 /// The built-in conventions, in list order. The first is the default for new settings.
 pub const PRESETS: &[Preset] = &[
     Preset {
-        id: "default",
-        name: "Title - episode - episode title [group](CRC)",
-        description: "The built-in default, compatible with AniDB O'Matic's default naming.",
+        id: "fansub",
+        name: "[Group] Title - episode [CRC]",
+        description: "The default: the usual fansub release style; keeps the group, version and \
+                      checksum.",
         source: DEFAULT_RENAME_PATTERN,
     },
     Preset {
-        id: "fansub",
-        name: "[Group] Title - episode [CRC]",
-        description: "The usual fansub release style; keeps the group, version and checksum.",
-        source: include_str!("fansub_pattern.txt"),
+        id: "aom",
+        name: "Title - episode - episode title [group](CRC)",
+        description: "AniDB O'Matic's default naming.",
+        source: AOM_RENAME_PATTERN,
     },
     Preset {
         id: "episode-title",
@@ -194,7 +195,7 @@ mod tests {
     #[test]
     fn every_preset_names_the_sample_as_its_convention_promises() {
         assert_eq!(
-            name("default"),
+            name("aom"),
             "Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv"
         );
         assert_eq!(
@@ -248,7 +249,7 @@ mod tests {
             let name = run(preset, type_id, epno, version, true);
             let rest = name.strip_prefix("Reibun no Tabi - ").unwrap().to_string();
             match preset {
-                "default" => rest.split(" - ").next().unwrap().to_string(),
+                "aom" => rest.split(" - ").next().unwrap().to_string(),
                 _ => rest.split([' ', '.']).next().unwrap().to_string(),
             }
         };
@@ -261,7 +262,7 @@ mod tests {
             (6, 2, 1, ["O02", "O02", "O02"]),
         ];
         for (type_id, epno, version, [default, episode_title, media]) in rows {
-            assert_eq!(number("default", type_id, epno, version), default);
+            assert_eq!(number("aom", type_id, epno, version), default);
             assert_eq!(
                 number("episode-title", type_id, epno, version),
                 episode_title
@@ -276,7 +277,7 @@ mod tests {
             let crlf = format!("\r\n{}\r\n", preset.source.replace('\n', "\r\n"));
             assert_eq!(preset_for(&crlf), Some(preset));
         }
-        let edited = PRESETS[1].source.replace("' ['", "' ('");
+        let edited = PRESETS[0].source.replace("' ['", "' ('");
         assert_eq!(preset_for(&edited), None);
         assert_eq!(preset_for(""), None);
     }
