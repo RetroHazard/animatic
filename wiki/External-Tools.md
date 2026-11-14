@@ -1,4 +1,4 @@
-**Players** (Options → External player): per player *Name*, *Executable*, *Open arguments*, *Play
+**Players** (Options → Players and tools → External players): per player *Name*, *Executable*, *Open arguments*, *Play
 arguments*, *Enqueue arguments* and *Default player*; **Add player** and **Remove player** manage the
 list. On the Hashed files page, with a file selected:
 
@@ -14,12 +14,12 @@ list. On the Hashed files page, with a file selected:
   in …**, **Enqueue in …**) for the chosen player; a right click on a file outside the selection
   selects it first.
 
-**Open** (the plain button and the menu entry of that name) and a double-click on a path use the OS
+**Open file** (the toolbar button; the menu entry **Open** does the same) and a double-click on a path use the OS
 default program, not a configured player. An empty executable gives `Could not start player: player
 executable is not configured`; an action whose template is blank gives `this player has no open
 arguments configured`.
 
-**AVDump** (Options → AVDump): *Enable AVDump integration*, *Executable*, *Arguments*, *AVDump API
+**AVDump** (Options → Players and tools → AVDump): *Enable AVDump integration*, *Executable*, *Arguments*, *AVDump API
 key*. The **AVDump** button needs the integration enabled and a selected file. The default
 arguments are:
 
@@ -54,7 +54,7 @@ More examples and the stored-field details: [settings reference](Settings-Refere
 Animatic can read the duration, resolution, frame rate, codecs, sample rate and bitrates of your
 hashed files with **`ffprobe`**, the media-inspection tool of [FFmpeg](https://ffmpeg.org/). It is
 **optional and off by default**: nothing is read and no process is started until you enable
-*Read media properties after hashing* in Options → Media properties, and that checkbox stays
+*Read media properties after hashing* in Options → Players and tools → Media properties, and that checkbox stays
 disabled until an `ffprobe` is found. The values fill the media tokens of the
 [hash export](Exports.md#hash-export) (`%fps%`, `%length%`, `%height%`, `%width%`, `%vcodec%`,
 `%vbitrate%`, `%acodec%`, `%asample%`, `%abitrate%`); they are not shown elsewhere and do not

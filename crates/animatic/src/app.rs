@@ -4,21 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use animatic_anidb::{HTTP_CLIENT, HTTP_CLIENT_VERSION, UDP_CLIENT, UDP_CLIENT_VERSION};
-use animatic_core::db::Db;
-use animatic_core::format;
-use animatic_core::hash_queue::HashSource;
-use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
-use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
-use animatic_core::rename::{presets, reference};
-use animatic_core::secrets::{CredentialStorage, Credentials};
-use animatic_core::settings::{MYLIST_STATES, Settings, StatFormat, Theme};
-use animatic_core::ui_state::{
-    self, anime_slot, local_file_slot, mylist_slot, row_colors, window_to_save,
-};
-use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedUpdate};
-use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
-
+use crate::style;
 use crate::table::{
     SortKey, data_table, row_height, sort_anime, sort_genres, sort_groups, sort_key, sort_local,
     sort_mylist,
@@ -26,11 +12,26 @@ use crate::table::{
 use crate::worker::{
     Event, Job, RenameItem, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
 };
+use animatic_anidb::{HTTP_CLIENT, HTTP_CLIENT_VERSION, UDP_CLIENT, UDP_CLIENT_VERSION};
+use animatic_core::db::Db;
+use animatic_core::format;
+use animatic_core::hash_queue::HashSource;
+use animatic_core::library::{Anime, AnimeDetail, LibraryProjection, mylist_state_name};
 use animatic_core::maintenance::{BackupInfo, IntegrityReport};
+use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
+use animatic_core::rename::{presets, reference};
+use animatic_core::secrets::{CredentialStorage, Credentials};
+use animatic_core::settings::{MYLIST_STATES, RowStyle, Settings, StatFormat, Theme};
+use animatic_core::ui_state::{
+    self, anime_slot, local_file_slot, mylist_slot, row_colors, window_to_save,
+};
+use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedUpdate};
 use crossbeam_channel::{Receiver, TryRecvError};
+use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 
 mod auto_rename;
 mod covers;
+mod dialog;
 mod hash_queue_panel;
 mod media_options;
 mod mylist_editor;
@@ -66,17 +67,45 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [(Page, &str); 9] = [
-        (Page::Dashboard, "Overview"),
-        (Page::Mylist, "My list"),
-        (Page::Anime, "Anime"),
-        (Page::Search, "Advanced search"),
-        (Page::Hashed, "Hashed files"),
-        (Page::Groups, "Groups"),
-        (Page::Genres, "Genres"),
-        (Page::Queue, "Queue"),
-        (Page::Log, "Log"),
+    /// Sidebar groups in order: an unnamed group for the overview, then the library pages, then
+    /// the activity pages. The order is the documented one; only the grouping is visual.
+    const GROUPS: [(Option<&'static str>, &'static [Page]); 3] = [
+        (None, &[Page::Dashboard]),
+        (
+            Some("Library"),
+            &[
+                Page::Mylist,
+                Page::Anime,
+                Page::Search,
+                Page::Hashed,
+                Page::Groups,
+                Page::Genres,
+            ],
+        ),
+        (Some("Activity"), &[Page::Queue, Page::Log]),
     ];
+
+    /// The sidebar label, which is also the page title.
+    fn label(self) -> &'static str {
+        match self {
+            Page::Dashboard => "Overview",
+            Page::Mylist => "MyList",
+            Page::Anime => "Anime",
+            Page::Search => "Advanced search",
+            Page::Hashed => "Hashed files",
+            Page::Groups => "Groups",
+            Page::Genres => "Genres",
+            Page::Queue => "Queue",
+            Page::Log => "Log",
+        }
+    }
+
+    /// Pages in sidebar order (`Ctrl+1` … `Ctrl+9`).
+    fn all() -> impl Iterator<Item = Page> {
+        Page::GROUPS
+            .into_iter()
+            .flat_map(|(_, pages)| pages.iter().copied())
+    }
 }
 
 /// Request/response bookkeeping for background library projections: at most one request is
@@ -536,6 +565,12 @@ pub struct AnimaticApp {
     selected_aid: Option<i64>,
     settings_open: bool,
     about_open: bool,
+    /// Ctrl+F asked for the page's search field to take the keyboard focus.
+    focus_search: bool,
+    /// The status line holds an error that stays until the next message replaces it.
+    status_error: bool,
+    options_page: OptionsPage,
+    clear_queue_confirm: bool,
     selected_local: Option<i64>,
     rename_preview: Option<RenamePreview>,
     batch_rename: Option<BatchRename>,
@@ -673,6 +708,10 @@ impl AnimaticApp {
             selected_player: None,
             settings_open: false,
             about_open: false,
+            focus_search: false,
+            status_error: false,
+            options_page: OptionsPage::Account,
+            clear_queue_confirm: false,
             import_source: String::new(),
             imported_settings: None,
             import_pending: false,
@@ -797,6 +836,7 @@ impl AnimaticApp {
         self.mylist_overlay.retain(|_, o| o.generation > generation);
         if self.status == LOADING_STATUS {
             self.status = "Ready".into();
+            self.status_error = false;
         }
     }
 
@@ -942,6 +982,7 @@ impl AnimaticApp {
     fn log(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
+        self.status_error = false;
         self.logs.push(format!(
             "{}  {text}",
             chrono::Local::now().format("%H:%M:%S")
@@ -954,6 +995,7 @@ impl AnimaticApp {
     fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
+        self.status_error = true;
         self.logs.push(format!(
             "{}  ERROR  {text}",
             chrono::Local::now().format("%H:%M:%S")
@@ -1322,7 +1364,10 @@ impl AnimaticApp {
                         self.restore = None;
                     }
                     self.activity.busy = false;
-                    self.status = "Ready".into();
+                    // An error from the job stays readable; otherwise the line returns to Ready.
+                    if !self.status_error {
+                        self.status = "Ready".into();
+                    }
                     self.request_library_refresh();
                     self.media_after_job();
                 }
@@ -1408,13 +1453,13 @@ impl AnimaticApp {
         let mut open = true;
         let mut apply = false;
         let mut cancelled = false;
-        egui::Window::new("Review imported AOM settings")
+        dialog::window(ctx, "Review imported AOM settings")
             .open(&mut open)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.strong("Applying will replace your current Animatic settings.");
                 ui.colored_label(
-                    Color32::YELLOW,
+                    style::warn(ui.visuals()),
                     "Imported credentials will not connect to AniDB: offline mode remains enabled.",
                 );
                 ui.label("Review managed folders before scanning them.");
@@ -1494,8 +1539,7 @@ impl AnimaticApp {
         let mut proceed = false;
         let mut cancelled = false;
         let mut open = true;
-        egui::Window::new("Import into a database that has data?")
-            .collapsible(false)
+        dialog::window(ctx, "Import into a database that has data?")
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
@@ -1538,14 +1582,13 @@ impl AnimaticApp {
         };
         let mut remove = false;
         let mut keep = false;
-        egui::Window::new("Leftover import files")
-            .collapsible(false)
+        dialog::window(ctx, "Leftover import files")
             .resizable(false)
             .show(ctx, |ui| {
                 ui.colored_label(
-                    Color32::YELLOW,
+                    style::warn(ui.visuals()),
                     "An earlier import of an AOM databank did not finish cleanly. It left \
-                     decrypted copies of the databank in these temporary folders:",
+                 decrypted copies of the databank in these temporary folders:",
                 );
                 for folder in folders {
                     ui.monospace(folder.display().to_string());
@@ -1621,7 +1664,7 @@ impl AnimaticApp {
         let mut open = true;
         let mut apply = false;
         let mut edit_pattern = false;
-        egui::Window::new("Confirm rename")
+        let shown = dialog::window(ctx, "Confirm rename")
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Current path");
@@ -1656,6 +1699,9 @@ impl AnimaticApp {
                     }
                 });
             });
+        if dialog::escape_closes(ctx, shown.as_ref()) {
+            open = false;
+        }
         if apply {
             if let Some(new) = plan.target.clone().filter(|_| plan.can_apply()) {
                 self.worker.submit(Job::RenameFiles {
@@ -1670,6 +1716,7 @@ impl AnimaticApp {
             self.rename_preview = None;
         } else if edit_pattern {
             self.settings_open = true;
+            self.options_page = OptionsPage::Renaming;
             self.rename_preview = None;
         } else if !open {
             self.rename_preview = None;
@@ -1745,7 +1792,7 @@ impl AnimaticApp {
         let mut close = false;
         let mut apply = false;
         let mut edit_pattern = false;
-        egui::Window::new("Batch rename")
+        let shown = dialog::window(ctx, "Batch rename")
             .open(&mut open)
             .default_width(760.0)
             .show(ctx, |ui| {
@@ -1820,6 +1867,9 @@ impl AnimaticApp {
                     }
                 });
             });
+        if dialog::escape_closes(ctx, shown.as_ref()) {
+            close = true;
+        }
         if apply
             && let Some(batch) = self.batch_rename.as_mut()
             && let Some(rows) = &batch.rows
@@ -1842,6 +1892,7 @@ impl AnimaticApp {
             });
         } else if edit_pattern {
             self.settings_open = true;
+            self.options_page = OptionsPage::Renaming;
             self.batch_rename = None;
         } else if close || !open {
             self.batch_rename = None;
@@ -1963,7 +2014,7 @@ impl AnimaticApp {
                     .desired_rows(12),
             );
             if let Some(error) = &self.pattern_editor.syntax_error {
-                ui.colored_label(Color32::LIGHT_RED, error);
+                ui.colored_label(style::error(ui.visuals()), error);
             } else if let Some(sample) = &self.pattern_editor.sample {
                 show_plan(ui, sample);
             }
@@ -1981,7 +2032,7 @@ impl AnimaticApp {
         }
         match &self.pattern_editor.test {
             Some(Err(e)) => {
-                ui.colored_label(Color32::LIGHT_RED, e);
+                ui.colored_label(style::error(ui.visuals()), e);
             }
             Some(Ok(preview)) => {
                 if !preview.plan.result.is_empty() {
@@ -1990,7 +2041,10 @@ impl AnimaticApp {
                 }
                 show_plan(ui, &preview.plan);
                 if preview.plan.can_apply() || preview.plan.already_named() {
-                    ui.colored_label(Color32::LIGHT_GREEN, "The pattern is valid for this file.");
+                    ui.colored_label(
+                        style::ok(ui.visuals()),
+                        "The pattern is valid for this file.",
+                    );
                 }
             }
             None => {}
@@ -2014,7 +2068,7 @@ impl AnimaticApp {
                 .collect();
         }
         let mut open = true;
-        egui::Window::new("Renaming pattern reference")
+        let shown = dialog::window(ctx, "Renaming pattern reference")
             .open(&mut open)
             .default_width(720.0)
             .default_height(560.0)
@@ -2056,13 +2110,13 @@ impl AnimaticApp {
                                     Ok(v) => {
                                         ui.label(RichText::new(format!("→ {v}")).monospace().weak())
                                     }
-                                    Err(e) => ui.colored_label(Color32::LIGHT_RED, e),
+                                    Err(e) => ui.colored_label(style::error(ui.visuals()), e),
                                 };
                             }
                         });
                 }
             });
-        if !open {
+        if !open || dialog::escape_closes(ctx, shown.as_ref()) {
             self.pattern_editor.reference_open = false;
         }
     }
@@ -2072,11 +2126,10 @@ impl AnimaticApp {
             return;
         };
         let mut dismissed = false;
-        egui::Window::new("Settings recovered")
-            .collapsible(false)
+        dialog::window(ctx, "Settings recovered")
             .resizable(false)
             .show(ctx, |ui| {
-                ui.colored_label(Color32::YELLOW, text);
+                ui.colored_label(style::warn(ui.visuals()), text);
                 ui.add_space(8.0);
                 if ui.button("OK").clicked() {
                     dismissed = true;
@@ -2247,6 +2300,9 @@ impl AnimaticApp {
     }
 
     fn top_bar(&mut self, root: &mut egui::Ui) {
+        const IMPORTING: &str = "An import is in progress";
+        const QUEUED_ONLY: &str = "Adds a command to the queue; nothing is sent to AniDB until \
+                                   the command queue runs.";
         let ctx = root.ctx().clone();
         let cooling = self
             .active_cooldown()
@@ -2257,54 +2313,60 @@ impl AnimaticApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui
-                        .add_enabled(!self.import_pending, egui::Button::new("Add files…"))
+                        .add_enabled(
+                            !self.import_pending,
+                            menu_entry(&ctx, "Add files…", &shortcuts::ADD_FILES),
+                        )
+                        .on_disabled_hover_text(IMPORTING)
                         .clicked()
                     {
                         ui.close();
                         self.submit_files();
                     }
-                    if ui
-                        .add_enabled(
-                            !self.import_pending,
-                            egui::Button::new("Import AOM databank…"),
-                        )
-                        .clicked()
-                    {
-                        ui.close();
-                        if let Some(dir) = pick_aom_databank_folder() {
-                            self.import_source = dir.to_string_lossy().into_owned();
-                            self.import_legacy();
+                    ui.separator();
+                    ui.menu_button("Import", |ui| {
+                        if ui
+                            .add_enabled(!self.import_pending, egui::Button::new("AOM databank…"))
+                            .on_disabled_hover_text(IMPORTING)
+                            .clicked()
+                        {
+                            ui.close();
+                            if let Some(dir) = pick_aom_databank_folder() {
+                                self.import_source = dir.to_string_lossy().into_owned();
+                                self.import_legacy();
+                            }
                         }
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.import_pending,
-                            egui::Button::new("Import AOM settings…"),
-                        )
-                        .clicked()
-                    {
-                        ui.close();
-                        self.import_legacy_settings();
-                    }
-                    if ui
-                        .add_enabled(
-                            library_blocker.is_none(),
-                            egui::Button::new("Import MyList export…"),
-                        )
-                        .on_disabled_hover_text(library_blocker.unwrap_or_default())
-                        .clicked()
-                    {
-                        ui.close();
-                        self.import_mylist_export();
-                    }
-                    if ui.button("Export statistics…").clicked() {
-                        ui.close();
-                        self.export_statistics();
-                    }
-                    if ui.button("Export hashes…").clicked() {
-                        ui.close();
-                        self.export_hashes();
-                    }
+                        if ui
+                            .add_enabled(!self.import_pending, egui::Button::new("AOM settings…"))
+                            .on_disabled_hover_text(IMPORTING)
+                            .clicked()
+                        {
+                            ui.close();
+                            self.import_legacy_settings();
+                        }
+                        if ui
+                            .add_enabled(
+                                library_blocker.is_none(),
+                                egui::Button::new("MyList export…"),
+                            )
+                            .on_disabled_hover_text(library_blocker.unwrap_or_default())
+                            .clicked()
+                        {
+                            ui.close();
+                            self.import_mylist_export();
+                        }
+                    });
+                    ui.menu_button("Export", |ui| {
+                        if ui.button("Statistics…").clicked() {
+                            ui.close();
+                            self.export_statistics();
+                        }
+                        if ui.button("Hashes…").clicked() {
+                            ui.close();
+                            self.export_hashes();
+                        }
+                    });
+                    ui.separator();
                     if ui
                         .add_enabled(
                             library_blocker.is_none(),
@@ -2327,30 +2389,53 @@ impl AnimaticApp {
                         ui.close();
                         self.restore_library();
                     }
-                    if ui.button("Refresh").clicked() {
+                    ui.separator();
+                    if ui
+                        .add(menu_entry(&ctx, "Reload", &shortcuts::RELOAD))
+                        .on_hover_text("Re-read the library from disk. Nothing is sent to AniDB.")
+                        .clicked()
+                    {
                         ui.close();
                         self.request_library_refresh();
                     }
+                    ui.separator();
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 ui.menu_button("Tools", |ui| {
-                    if ui.button("Options…").clicked() {
+                    if ui
+                        .add(menu_entry(&ctx, "Options…", &shortcuts::OPTIONS))
+                        .clicked()
+                    {
                         self.settings_open = true;
                         ui.close();
                     }
-                    ui.add_enabled_ui(!self.import_pending, |ui| {
-                        if ui.button("Scan managed folders").clicked() {
-                            self.worker.submit(Job::Scan {
-                                settings: self.settings.file_managers.clone(),
-                                extensions: self.settings.hashing.extensions.join(","),
-                            });
-                            ui.close();
-                        }
-                    });
-                    if ui.button("Download anime titles").clicked() {
+                    ui.separator();
+                    let run = ui
+                        .add_enabled(
+                            self.queue_run_allowed(),
+                            menu_entry(&ctx, "Run command queue", &shortcuts::RUN_QUEUE),
+                        )
+                        .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
+                    if run.clicked() {
+                        self.run_command_queue();
+                        ui.close();
+                    }
+                    if ui
+                        .button("Download anime titles")
+                        .on_hover_text(QUEUED_ONLY)
+                        .clicked()
+                    {
                         self.queue_titles_dump();
+                        ui.close();
+                    }
+                    if ui
+                        .button("Fetch MyList statistics")
+                        .on_hover_text(QUEUED_ONLY)
+                        .clicked()
+                    {
+                        self.queue_command(animatic_core::sync::Command::MylistStats);
                         ui.close();
                     }
                     if ui
@@ -2368,12 +2453,42 @@ impl AnimaticApp {
                         self.start_full_update_preview();
                         ui.close();
                     }
-                    if ui.button("Fetch mylist statistics").clicked() {
-                        self.queue_command(animatic_core::sync::Command::MylistStats);
-                        ui.close();
-                    }
                     if ui.button("Request MyList export…").clicked() {
                         self.open_export_request();
+                        ui.close();
+                    }
+                    ui.menu_button("Edit AniDB data", |ui| {
+                        for (label, url) in [
+                            ("Add anime", "https://anidb.net/anime/add"),
+                            ("Add episode", "https://anidb.net/episode/add"),
+                            ("Add file", "https://anidb.net/file/add"),
+                            ("Submit change request", "https://anidb.net/creq"),
+                        ] {
+                            if ui
+                                .button(label)
+                                .on_hover_text("Opens the AniDB website")
+                                .clicked()
+                            {
+                                if let Err(e) = open::that(url) {
+                                    self.error(format!("Could not open AniDB: {e}"));
+                                }
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            !self.import_pending,
+                            egui::Button::new("Scan managed folders"),
+                        )
+                        .on_disabled_hover_text(IMPORTING)
+                        .clicked()
+                    {
+                        self.worker.submit(Job::Scan {
+                            settings: self.settings.file_managers.clone(),
+                            extensions: self.settings.hashing.extensions.join(","),
+                        });
                         ui.close();
                     }
                     if ui
@@ -2398,38 +2513,37 @@ impl AnimaticApp {
                         ui.close();
                         self.compact_confirm = true;
                     }
-                    ui.menu_button("Edit AniDB data", |ui| {
-                        for (label, url) in [
-                            ("Add anime…", "https://anidb.net/anime/add"),
-                            ("Add episode…", "https://anidb.net/episode/add"),
-                            ("Add file…", "https://anidb.net/file/add"),
-                            ("Submit change request…", "https://anidb.net/creq"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                if let Err(e) = open::that(url) {
-                                    self.error(format!("Could not open AniDB: {e}"));
-                                }
-                                ui.close();
-                            }
-                        }
-                    });
-                    let run = ui
-                        .add_enabled(
-                            self.queue_run_allowed(),
-                            egui::Button::new("Run command queue"),
-                        )
-                        .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
-                    if run.clicked() {
-                        self.worker
-                            .submit(Job::ProcessQueue(self.settings.anidb.clone()));
-                        ui.close();
-                    }
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("AniDB website").clicked() {
                         let _ = open::that("https://anidb.net/");
                         ui.close();
                     }
+                    ui.menu_button("Keyboard shortcuts", |ui| {
+                        for (what, shortcut) in [
+                            ("Add files", ctx.format_shortcut(&shortcuts::ADD_FILES)),
+                            ("Search this page", ctx.format_shortcut(&shortcuts::SEARCH)),
+                            ("Options", ctx.format_shortcut(&shortcuts::OPTIONS)),
+                            ("Reload", ctx.format_shortcut(&shortcuts::RELOAD)),
+                            (
+                                "Run command queue",
+                                ctx.format_shortcut(&shortcuts::RUN_QUEUE),
+                            ),
+                            (
+                                "Open page 1–9 of the sidebar",
+                                format!("{}1…9", ctx.format_modifiers(egui::Modifiers::COMMAND)),
+                            ),
+                            ("Close the topmost window", "Esc".to_string()),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(what);
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.label(RichText::new(shortcut).weak());
+                                });
+                            });
+                        }
+                    });
+                    ui.separator();
                     if ui
                         .add_enabled(
                             Platform::current().is_some(),
@@ -2460,36 +2574,133 @@ impl AnimaticApp {
         });
     }
 
+    /// Sends the command queue to AniDB now (menu, Queue page and shortcut).
+    fn run_command_queue(&mut self) {
+        self.worker
+            .submit(Job::ProcessQueue(self.settings.anidb.clone()));
+    }
+
+    /// The main window's keyboard shortcuts. None act while a modal dialog is open.
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.memory(|m| m.top_modal_layer().is_some()) {
+            return;
+        }
+        let pressed =
+            |shortcut: &egui::KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(shortcut));
+        if pressed(&shortcuts::ADD_FILES) && !self.import_pending {
+            self.submit_files();
+        }
+        if pressed(&shortcuts::SEARCH) {
+            self.focus_search = true;
+        }
+        if pressed(&shortcuts::OPTIONS) {
+            self.settings_open = true;
+        }
+        if pressed(&shortcuts::RELOAD) {
+            self.request_library_refresh();
+        }
+        if pressed(&shortcuts::RUN_QUEUE) && self.queue_run_allowed() {
+            self.run_command_queue();
+        }
+        for (key, page) in shortcuts::PAGES.into_iter().zip(Page::all()) {
+            if pressed(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key)) {
+                self.page = page;
+            }
+        }
+    }
+
     fn navigation(&mut self, root: &mut egui::Ui) {
+        let fill = style::chrome_fill(root.visuals());
+        let pending = self.projection.queue.len();
+        let blocked = self.projection.summary.queue_blocked;
         egui::Panel::left("navigation")
             .resizable(false)
-            .default_size(165.0)
+            .exact_size(184.0)
+            .frame(
+                egui::Frame::side_top_panel(root.style())
+                    .fill(fill)
+                    .inner_margin(egui::Margin::symmetric(10, 12)),
+            )
             .show(root, |ui| {
-                ui.add_space(10.0);
-                ui.heading(RichText::new("Animatic").size(24.0));
-                ui.label(RichText::new("AniDB library manager").weak());
-                ui.add_space(16.0);
-                for (page, label) in Page::ALL {
-                    if ui.selectable_label(self.page == page, label).clicked() {
-                        self.page = page;
+                ui.label(
+                    RichText::new("Animatic")
+                        .size(19.0)
+                        .color(style::accent(ui.visuals())),
+                );
+                for (group, pages) in Page::GROUPS {
+                    match group {
+                        Some(name) => {
+                            ui.add_space(14.0);
+                            ui.label(RichText::new(name.to_uppercase()).small().weak());
+                        }
+                        None => ui.add_space(10.0),
+                    }
+                    for &page in pages {
+                        let badge = match page {
+                            Page::Queue if blocked > 0 => {
+                                Some((format!("{blocked} blocked"), style::error(ui.visuals())))
+                            }
+                            Page::Queue if pending > 0 => {
+                                Some((pending.to_string(), ui.visuals().weak_text_color()))
+                            }
+                            // Only the queue: pending work is the one state the other pages hide.
+                            _ => None,
+                        };
+                        if nav_item(ui, self.page == page, page.label(), badge).clicked() {
+                            self.page = page;
+                        }
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    ui.label(format!("{} anime", self.projection.anime.len()));
-                    ui.label(format!("{} mylist files", self.projection.mylist.len()));
+                    ui.label(
+                        RichText::new(format!(
+                            "{} · {}",
+                            style::plural(self.projection.anime.len(), "anime", "anime"),
+                            style::plural(
+                                self.projection.mylist.len(),
+                                "MyList entry",
+                                "MyList entries"
+                            ),
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    if nav_item(ui, self.settings_open, "⚙ Options", None)
+                        .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
+                        .clicked()
+                    {
+                        self.settings_open = !self.settings_open;
+                    }
                 });
             });
     }
 
-    fn page_header(&mut self, ui: &mut egui::Ui, title: &str, searchable: bool) {
+    /// The page title (the sidebar label), an optional one-line explanation of what the page
+    /// lists, and the search field shared by the searchable pages.
+    fn page_header(&mut self, ui: &mut egui::Ui, subtitle: Option<&str>, searchable: bool) {
         ui.horizontal(|ui| {
-            ui.heading(title);
+            ui.heading(self.page.label());
+            if let Some(subtitle) = subtitle {
+                ui.label(RichText::new(subtitle).weak());
+            }
             if searchable {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_sized(
-                        [260.0, 28.0],
-                        egui::TextEdit::singleline(&mut self.query).hint_text("Search…"),
+                    let search = ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .hint_text("Search…")
+                            .desired_width(240.0),
                     );
+                    if std::mem::take(&mut self.focus_search) {
+                        search.request_focus();
+                    }
+                    if !self.query.is_empty()
+                        && ui
+                            .small_button("✕")
+                            .on_hover_text("Clear the search")
+                            .clicked()
+                    {
+                        self.query.clear();
+                    }
                 });
             }
         });
@@ -2497,71 +2708,273 @@ impl AnimaticApp {
     }
 
     fn dashboard(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Library overview", false);
+        self.page_header(ui, None, false);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                if self.settings.first_launch {
+                    self.getting_started(ui);
+                }
+                self.attention(ui);
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    let accent = style::accent(ui.visuals());
+                    if ui
+                        .add_enabled(
+                            !self.import_pending,
+                            egui::Button::new(RichText::new("Add files…").color(Color32::WHITE))
+                                .fill(accent),
+                        )
+                        .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::ADD_FILES))
+                        .clicked()
+                    {
+                        self.submit_files();
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.import_pending,
+                            egui::Button::new("Scan managed folders"),
+                        )
+                        .clicked()
+                    {
+                        self.worker.submit(Job::Scan {
+                            settings: self.settings.file_managers.clone(),
+                            extensions: self.settings.hashing.extensions.join(","),
+                        });
+                    }
+                    if ui.button("Open hashed files").clicked() {
+                        self.page = Page::Hashed;
+                    }
+                });
+                let summary = self.projection.summary;
+                style::section(ui, "Your library");
+                ui.columns(4, |cols| {
+                    metric(
+                        &mut cols[0],
+                        "Anime",
+                        self.projection.anime.len().to_string(),
+                    );
+                    metric(
+                        &mut cols[1],
+                        "MyList entries",
+                        self.projection.mylist.len().to_string(),
+                    );
+                    metric(&mut cols[2], "Watched", summary.mylist_watched.to_string());
+                    metric(
+                        &mut cols[3],
+                        "Size on disk",
+                        format::size_short(summary.local_bytes),
+                    );
+                });
+                ui.label(
+                    RichText::new(format!(
+                        "{} of {} identified by AniDB",
+                        summary.local_known,
+                        style::plural(self.projection.local.len(), "hashed file", "hashed files"),
+                    ))
+                    .weak(),
+                );
+                self.account_figures(ui);
+            });
+    }
+
+    /// What needs the user now, each with the action that resolves it; one calm line otherwise.
+    fn attention(&mut self, ui: &mut egui::Ui) {
         let summary = self.projection.summary;
-        let known = summary.local_known;
-        let local_total = self.projection.local.len();
-        ui.heading("Local library figures");
-        ui.columns(4, |cols| {
-            metric(
-                &mut cols[0],
-                "Anime",
-                self.projection.anime.len().to_string(),
-            );
-            metric(
-                &mut cols[1],
-                "Mylist files",
-                self.projection.mylist.len().to_string(),
-            );
-            metric(&mut cols[2], "Watched", summary.mylist_watched.to_string());
-            metric(
-                &mut cols[3],
-                "Local size",
-                format::size_short(summary.local_bytes),
-            );
-        });
-        ui.add_space(20.0);
-        ui.heading("Local library health");
-        ui.label(format!(
-            "{known} of {local_total} hashed files identified by AniDB"
-        ));
-        let bad = summary.local_crc_mismatch;
-        if bad > 0 {
-            ui.colored_label(
-                Color32::from_rgb(235, 100, 100),
-                format!("{bad} files have a CRC mismatch"),
-            );
-        }
-        let unknown = local_total.saturating_sub(known);
-        if unknown > 0 {
-            ui.label(format!("{unknown} files are not identified yet"));
+        let unidentified = self
+            .projection
+            .local
+            .len()
+            .saturating_sub(summary.local_known);
+        let pending = self.projection.queue.len();
+        let blocked = summary.queue_blocked;
+        let hashing = self.projection.hash_queue.pending + self.projection.hash_queue.failed;
+        let offline = self.settings.anidb.offline;
+        style::section(ui, "Needs attention");
+        let nothing = summary.local_crc_mismatch == 0
+            && unidentified == 0
+            && pending == 0
+            && blocked == 0
+            && hashing == 0
+            && self.deferred.is_empty();
+        if nothing {
+            ui.colored_label(style::ok(ui.visuals()), "✓ Nothing needs your attention.");
+            return;
         }
         self.hash_queue_panel(ui, true);
-        ui.add_space(20.0);
-        self.account_figures(ui);
-        ui.add_space(20.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!self.import_pending, egui::Button::new("Add files"))
-                .clicked()
-            {
-                self.submit_files();
+        let row = |ui: &mut egui::Ui, color: Option<Color32>, text: String, action: &str| {
+            ui.horizontal(|ui| {
+                match color {
+                    Some(color) => ui.colored_label(color, text),
+                    None => ui.label(text),
+                };
+                ui.button(action).clicked()
+            })
+            .inner
+        };
+        if summary.local_crc_mismatch > 0
+            && row(
+                ui,
+                Some(style::error(ui.visuals())),
+                format!(
+                    "⚠ {} the CRC in {} name",
+                    style::plural(
+                        summary.local_crc_mismatch,
+                        "file does not match",
+                        "files do not match"
+                    ),
+                    if summary.local_crc_mismatch == 1 {
+                        "its"
+                    } else {
+                        "their"
+                    }
+                ),
+                "Open hashed files",
+            )
+        {
+            self.page = Page::Hashed;
+        }
+        if unidentified > 0
+            && row(
+                ui,
+                None,
+                format!(
+                    "{} not identified by AniDB yet",
+                    style::plural(unidentified, "hashed file is", "hashed files are"),
+                ),
+                "Open hashed files",
+            )
+        {
+            self.page = Page::Hashed;
+        }
+        if blocked > 0
+            && row(
+                ui,
+                Some(style::error(ui.visuals())),
+                format!(
+                    "⚠ {} could not be sent",
+                    style::plural(blocked, "command", "commands")
+                ),
+                "Open queue",
+            )
+        {
+            self.page = Page::Queue;
+        }
+        let waiting = pending.saturating_sub(blocked);
+        if waiting > 0 {
+            let text = format!(
+                "{} to be sent to AniDB{}",
+                style::plural(waiting, "command waits", "commands wait"),
+                if offline { " (working offline)" } else { "" }
+            );
+            let (action, allowed) = if offline {
+                ("Go online", true)
+            } else {
+                ("Run command queue", self.queue_run_allowed())
+            };
+            let clicked = ui
+                .horizontal(|ui| {
+                    ui.label(text);
+                    ui.add_enabled(allowed, egui::Button::new(action)).clicked()
+                })
+                .inner;
+            if clicked {
+                if offline {
+                    self.settings.anidb.offline = false;
+                    self.persist_settings_incidentally();
+                    self.log("Working online");
+                } else {
+                    self.run_command_queue();
+                }
             }
-            if ui.button("Open hashed files").clicked() {
-                self.page = Page::Hashed;
-            }
-            if ui.button("Refresh data").clicked() {
-                self.request_library_refresh();
-            }
-        });
-        if self.settings.first_launch {
-            ui.add_space(24.0);
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.heading("Bring your AniDB O'Matic library forward");
-                ui.label("Import the encrypted databank directly. Existing anime, mylist, hashes and local paths are preserved.");
-                ui.label("Choose the AOM folder or its kowai folder. The folder picker does not list the .data files inside.");
+        }
+        if !self.deferred.is_empty() {
+            ui.colored_label(
+                style::warn(ui.visuals()),
+                format!(
+                    "{} not saved yet; Animatic keeps retrying",
+                    style::plural(self.deferred.len(), "command", "commands")
+                ),
+            );
+        }
+    }
+
+    /// First-launch checklist: account, folders, and the optional AOM import.
+    fn getting_started(&mut self, ui: &mut egui::Ui) {
+        let account = !self.settings.anidb.username.trim().is_empty();
+        let folders = self
+            .settings
+            .file_managers
+            .managers
+            .iter()
+            .any(|m| !m.path.trim().is_empty());
+        let visuals = ui.visuals().clone();
+        egui::Frame::new()
+            .fill(visuals.faint_bg_color)
+            .stroke(egui::Stroke::new(1.0, style::accent(&visuals)))
+            .corner_radius(8)
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.import_source);
+                    ui.label(
+                        RichText::new("Getting started")
+                            .text_style(style::section_style())
+                            .color(visuals.strong_text_color()),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.small_button("Hide").clicked() {
+                            self.settings.first_launch = false;
+                            self.persist_settings_incidentally();
+                        }
+                    });
+                });
+                let step = |ui: &mut egui::Ui, done: bool, text: &str, action: &str| {
+                    ui.horizontal(|ui| {
+                        if done {
+                            ui.colored_label(style::ok(ui.visuals()), "✓");
+                        } else {
+                            ui.weak("○");
+                        }
+                        ui.label(text);
+                        ui.button(action).clicked()
+                    })
+                    .inner
+                };
+                if step(
+                    ui,
+                    account,
+                    "Enter your AniDB account, or keep working offline for now",
+                    "Open account options",
+                ) {
+                    self.options_page = OptionsPage::Account;
+                    self.settings_open = true;
+                }
+                if step(
+                    ui,
+                    folders,
+                    "Choose the folders Animatic watches and renames into",
+                    "Open folder options",
+                ) {
+                    self.options_page = OptionsPage::Library;
+                    self.settings_open = true;
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new("Coming from AniDB O'Matic (AOM)?").strong());
+                ui.label(
+                    RichText::new(
+                        "Import its databank: anime, MyList entries, hashes and file paths are \
+                         kept. Choose the AOM folder or its kowai folder; the picker does not \
+                         list the .data files inside.",
+                    )
+                    .weak(),
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.import_source)
+                            .hint_text("AOM folder")
+                            .desired_width(320.0),
+                    );
                     ui.add_enabled_ui(!self.import_pending, |ui| {
                         if ui.button("Browse…").clicked()
                             && let Some(d) = pick_aom_databank_folder()
@@ -2573,16 +2986,12 @@ impl AnimaticApp {
                         }
                     });
                 });
-                if ui.button("Dismiss first-run card").clicked() {
-                    self.settings.first_launch = false;
-                    self.persist_settings_incidentally();
-                }
             });
-        }
+        ui.add_space(6.0);
     }
 
     fn anime_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Anime database", true);
+        self.page_header(ui, Some("every anime stored locally"), true);
         let sort = sort_key(&self.settings.ui.columns, "anime_table");
         let key = (self.loader.version, self.query.to_ascii_lowercase(), sort);
         {
@@ -2600,7 +3009,7 @@ impl AnimaticApp {
             });
             let rows = &views.anime.rows;
             let row_height = row_height(ui);
-            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
+            let (colored, overrides) = (settings.ui.tint_mode(), &settings.ui.colors);
             data_table(
                 ui,
                 "anime_table",
@@ -2610,7 +3019,7 @@ impl AnimaticApp {
                     ("Year", 80.0),
                     ("Episodes", 90.0),
                     ("Rating", 80.0),
-                    ("Mylist", 160.0),
+                    ("MyList", 160.0),
                 ],
                 &mut settings.ui.columns,
             )
@@ -2665,7 +3074,7 @@ impl AnimaticApp {
     }
 
     fn search_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Advanced anime search", false);
+        self.page_header(ui, None, false);
         ui.horizontal_wrapped(|ui| {
             ui.add_sized(
                 [260.0, 28.0],
@@ -2701,7 +3110,7 @@ impl AnimaticApp {
                         ui.selectable_value(&mut self.search_type, id, name);
                     }
                 });
-            ui.checkbox(&mut self.search_mylist_only, "In mylist");
+            ui.checkbox(&mut self.search_mylist_only, "In MyList");
             ui.checkbox(&mut self.search_watched_only, "Fully watched");
         });
         ui.separator();
@@ -2738,7 +3147,7 @@ impl AnimaticApp {
             });
             let rows = &views.search.rows;
             let row_height = row_height(ui);
-            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
+            let (colored, overrides) = (settings.ui.tint_mode(), &settings.ui.colors);
             data_table(
                 ui,
                 "advanced-results",
@@ -2748,7 +3157,7 @@ impl AnimaticApp {
                     ("Year", 80.0),
                     ("Episodes", 90.0),
                     ("Rating", 80.0),
-                    ("Mylist", 160.0),
+                    ("MyList", 160.0),
                 ],
                 &mut settings.ui.columns,
             )
@@ -2800,7 +3209,7 @@ impl AnimaticApp {
     }
 
     fn mylist_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "My list", true);
+        self.page_header(ui, None, true);
         self.mylist_toolbar(ui);
         let key = (
             self.loader.version,
@@ -2826,7 +3235,7 @@ impl AnimaticApp {
             });
             let rows = &views.mylist.rows;
             let row_height = row_height(ui);
-            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
+            let (colored, overrides) = (settings.ui.tint_mode(), &settings.ui.colors);
             data_table(
                 ui,
                 "mylist_table",
@@ -2951,7 +3360,7 @@ impl AnimaticApp {
     }
 
     fn hashed_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Hashed files", true);
+        self.page_header(ui, None, true);
         let key = (
             self.loader.version,
             self.query.to_ascii_lowercase(),
@@ -2990,17 +3399,30 @@ impl AnimaticApp {
                 mylist_ui.marked_locals.retain(|id| listed.contains(id));
             }
         }
-        ui.horizontal(|ui| {
-            if ui.button("Add files…").clicked() {
+        const SELECT_FIRST: &str = "Select a file in the table first";
+        ui.horizontal_wrapped(|ui| {
+            let selected = self.selected_local.is_some();
+            let marked = self.selected_locals().len();
+            let group_gap = |ui: &mut egui::Ui| {
+                ui.add(egui::Separator::default().vertical().spacing(10.0));
+            };
+            if ui
+                .add_enabled(!self.import_pending, egui::Button::new("Add files…"))
+                .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::ADD_FILES))
+                .on_disabled_hover_text("An import is in progress")
+                .clicked()
+            {
                 self.submit_files();
             }
+            group_gap(ui);
             if ui
-                .add_enabled(self.selected_local.is_some(), egui::Button::new("Rename…"))
+                .add_enabled(selected, egui::Button::new("Rename…"))
+                .on_hover_text("Preview and rename the selected file")
+                .on_disabled_hover_text(SELECT_FIRST)
                 .clicked()
             {
                 self.prepare_rename();
             }
-            let marked = self.selected_locals().len();
             if ui
                 .add_enabled(
                     marked > 0,
@@ -3011,12 +3433,61 @@ impl AnimaticApp {
                     }),
                 )
                 .on_hover_text("Preview and rename the selected files together")
+                .on_disabled_hover_text("Ctrl+click or Shift+click selects several files")
                 .clicked()
             {
                 self.prepare_batch_rename();
             }
             if ui
-                .button("Select all shown")
+                .add_enabled(
+                    selected || !self.mylist_ui.marked_locals.is_empty(),
+                    egui::Button::new("Add to MyList…"),
+                )
+                .on_hover_text("Ctrl+click or Shift+click selects several files")
+                .on_disabled_hover_text(SELECT_FIRST)
+                .clicked()
+            {
+                self.open_add_dialog();
+            }
+            group_gap(ui);
+            if ui
+                .add_enabled(selected, egui::Button::new("Play"))
+                .on_disabled_hover_text(SELECT_FIRST)
+                .clicked()
+            {
+                self.play_selected(animatic_core::external::PlayerAction::Play);
+            }
+            if ui
+                .add_enabled(selected, egui::Button::new("Open file"))
+                .on_hover_text("Open with the program your system uses for this file type")
+                .on_disabled_hover_text(SELECT_FIRST)
+                .clicked()
+                && let Some(f) = self
+                    .projection
+                    .local
+                    .iter()
+                    .find(|f| Some(f.id) == self.selected_local)
+            {
+                let _ = open::that(&f.path);
+            }
+            self.player_toolbar(ui);
+            if ui
+                .add_enabled(
+                    selected && self.settings.avdump.enabled,
+                    egui::Button::new("AVDump"),
+                )
+                .on_disabled_hover_text(if self.settings.avdump.enabled {
+                    SELECT_FIRST
+                } else {
+                    "Turn on AVDump in Options, Players and tools"
+                })
+                .clicked()
+            {
+                self.avdump_selected();
+            }
+            group_gap(ui);
+            if ui
+                .button("Select all")
                 .on_hover_text("Select every listed file (Rename and Add to MyList act on all)")
                 .clicked()
             {
@@ -3032,50 +3503,21 @@ impl AnimaticApp {
                 self.mylist_ui.marked_locals.clear();
                 self.selected_local = None;
             }
-            if ui
-                .add_enabled(self.selected_local.is_some(), egui::Button::new("Open"))
-                .clicked()
-                && let Some(f) = self
-                    .projection
-                    .local
-                    .iter()
-                    .find(|f| Some(f.id) == self.selected_local)
-            {
-                let _ = open::that(&f.path);
-            }
-            if ui
-                .add_enabled(self.selected_local.is_some(), egui::Button::new("Play"))
-                .clicked()
-            {
-                self.play_selected(animatic_core::external::PlayerAction::Play);
-            }
-            self.player_toolbar(ui);
-            if ui
-                .add_enabled(
-                    self.selected_local.is_some() && self.settings.avdump.enabled,
-                    egui::Button::new("AVDump"),
-                )
-                .clicked()
-            {
-                self.avdump_selected();
-            }
-            if ui
-                .add_enabled(
-                    self.selected_local.is_some() || !self.mylist_ui.marked_locals.is_empty(),
-                    egui::Button::new("Add to MyList…"),
-                )
-                .on_hover_text("Ctrl+click or Shift+click selects several files")
-                .clicked()
-            {
-                self.open_add_dialog();
-            }
             let shown = self.views.local.rows.len();
             let total = self.projection.local.len();
-            ui.label(if shown == total {
-                format!("{total} files")
+            let count = if shown == total {
+                style::plural(total, "file", "files")
             } else {
-                format!("{shown} of {total} files")
-            });
+                format!("{shown} of {}", style::plural(total, "file", "files"))
+            };
+            ui.label(
+                RichText::new(if marked > 0 {
+                    format!("{count} · {marked} selected")
+                } else {
+                    count
+                })
+                .weak(),
+            );
         });
         self.hash_queue_panel(ui, false);
         let file_menu = self.file_menu();
@@ -3091,7 +3533,7 @@ impl AnimaticApp {
             } = self;
             let rows = &views.local.rows;
             let row_height = row_height(ui);
-            let (colored, overrides) = (settings.ui.colored_rows, &settings.ui.colors);
+            let (colored, overrides) = (settings.ui.tint_mode(), &settings.ui.colors);
             data_table(
                 ui,
                 "local_table",
@@ -3099,7 +3541,7 @@ impl AnimaticApp {
                     ("File", 300.0),
                     ("Size", 90.0),
                     ("AniDB", 90.0),
-                    ("Mylist", 140.0),
+                    ("MyList", 140.0),
                     ("CRC", 90.0),
                     ("Path", 400.0),
                 ],
@@ -3142,13 +3584,13 @@ impl AnimaticApp {
                         ui.label(
                             f.fid
                                 .map(|id| format!("fid {id}"))
-                                .unwrap_or_else(|| "Unknown".into()),
+                                .unwrap_or_else(|| "Not identified".into()),
                         );
                     });
                     row.col(|ui| {
                         ui.label(match (f.lid, f.mylist_add_pending) {
-                            (Some(id), _) if f.viewed => format!("lid {id} · watched"),
-                            (Some(id), _) => format!("lid {id}"),
+                            (Some(id), _) if f.viewed => format!("Watched · lid {id}"),
+                            (Some(id), _) => format!("In MyList · lid {id}"),
                             (None, true) => "Add queued".to_string(),
                             (None, false) => "—".to_string(),
                         });
@@ -3177,7 +3619,7 @@ impl AnimaticApp {
     }
 
     fn groups_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Groups", true);
+        self.page_header(ui, None, true);
         let key = (
             self.loader.version,
             self.query.to_ascii_lowercase(),
@@ -3251,7 +3693,7 @@ impl AnimaticApp {
     }
 
     fn genres_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Genres", true);
+        self.page_header(ui, None, true);
         let key = (
             self.loader.version,
             self.query.to_ascii_lowercase(),
@@ -3290,7 +3732,7 @@ impl AnimaticApp {
     }
 
     fn queue_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "AniDB command queue", false);
+        self.page_header(ui, Some("AniDB commands waiting to be sent"), false);
         let total = self.projection.queue.len();
         let blocked = self.projection.summary.queue_blocked;
         let blocked_pending = self.blocked_unconfirmed();
@@ -3300,15 +3742,16 @@ impl AnimaticApp {
         let mut clear = false;
         let mut retry = false;
         let mut sync = false;
-        ui.horizontal(|ui| {
-            ui.label(format!("{total} pending commands"));
-            if blocked_pending {
-                ui.colored_label(Color32::LIGHT_RED, "blocked commands (refreshing)");
-            } else if blocked > 0 {
-                ui.colored_label(Color32::LIGHT_RED, format!("{blocked} blocked"));
-            }
-            if ui.button("Clear queue").clicked() {
-                clear = true;
+        ui.horizontal_wrapped(|ui| {
+            let run = ui
+                .add_enabled(
+                    self.queue_run_allowed(),
+                    egui::Button::new("Run command queue"),
+                )
+                .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::RUN_QUEUE))
+                .on_disabled_hover_text(cooling.as_deref().unwrap_or("An import is in progress"));
+            if run.clicked() {
+                sync = true;
             }
             if ui
                 .add_enabled(
@@ -3316,22 +3759,33 @@ impl AnimaticApp {
                     egui::Button::new("Retry failed"),
                 )
                 .on_hover_text("Unblock failed commands and try them again")
+                .on_disabled_hover_text("No command has failed")
                 .clicked()
             {
                 retry = true;
             }
-            let run = ui
-                .add_enabled(
-                    self.queue_run_allowed(),
-                    egui::Button::new("Synchronize now"),
-                )
-                .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
-            if run.clicked() {
-                sync = true;
+            ui.label(style::plural(total, "pending command", "pending commands"));
+            if blocked_pending {
+                ui.colored_label(style::error(ui.visuals()), "blocked commands (refreshing)");
+            } else if blocked > 0 {
+                ui.colored_label(style::error(ui.visuals()), format!("{blocked} blocked"));
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(
+                        total > 0,
+                        egui::Button::new(style::destructive(ui, "Clear queue…")),
+                    )
+                    .on_hover_text("Discard every pending command")
+                    .on_disabled_hover_text("The queue is empty")
+                    .clicked()
+                {
+                    self.clear_queue_confirm = true;
+                }
+            });
         });
         if let Some(text) = &cooling {
-            ui.colored_label(Color32::YELLOW, text);
+            ui.colored_label(style::warn(ui.visuals()), text);
         }
         if self.settings.anidb.auto_run_queue {
             let removals = self
@@ -3347,16 +3801,49 @@ impl AnimaticApp {
                 })
                 .count();
             ui.weak(
-                "Automatic runs are on. They never remove MyList entries: removals stay queued until you click Synchronize now.",
+                "Automatic runs are on. They never remove MyList entries: removals stay queued \
+                 until you click Run command queue.",
             );
             if removals > 0 {
                 ui.colored_label(
-                    Color32::YELLOW,
-                    format!("{removals} MyList removal(s) wait for you to click Synchronize now."),
+                    style::warn(ui.visuals()),
+                    format!(
+                        "{} {} for you to click Run command queue.",
+                        style::plural(removals, "MyList removal", "MyList removals"),
+                        if removals == 1 { "waits" } else { "wait" }
+                    ),
                 );
             }
         }
-        if clear {
+        if self.clear_queue_confirm {
+            let mut close = false;
+            let modal = egui::Modal::new(egui::Id::unique("clear_queue")).show(ui.ctx(), |ui| {
+                ui.set_max_width(420.0);
+                style::section(ui, "Clear the command queue?");
+                ui.label(format!(
+                    "{} will be discarded and never sent to AniDB. MyList edits that are \
+                     still waiting are lost. This cannot be undone.",
+                    style::plural(total, "pending command", "pending commands")
+                ));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                    if ui
+                        .button(style::destructive(ui, "Discard commands"))
+                        .clicked()
+                    {
+                        clear = true;
+                        close = true;
+                    }
+                });
+            });
+            if close || modal.should_close() {
+                self.clear_queue_confirm = false;
+            }
+        }
+        if clear && total > 0 {
             match self.db.queue_clear() {
                 Ok(()) => self.request_library_refresh(),
                 Err(e) => self.db_write_error("Could not clear the queue", &e),
@@ -3372,8 +3859,20 @@ impl AnimaticApp {
             }
         }
         if sync {
-            self.worker
-                .submit(Job::ProcessQueue(self.settings.anidb.clone()));
+            self.run_command_queue();
+        }
+        if total == 0 {
+            empty_state(
+                ui,
+                "Nothing is waiting for AniDB",
+                if self.settings.anidb.offline {
+                    "MyList edits and lookups wait here until they are sent. You are working \
+                     offline, so they are kept."
+                } else {
+                    "MyList edits and lookups wait here until they are sent."
+                },
+            );
+            return;
         }
         let queue = &self.projection.queue;
         let row_height = row_height(ui);
@@ -3400,16 +3899,19 @@ impl AnimaticApp {
                 });
                 row.col(|ui| {
                     if entry.blocked {
-                        ui.colored_label(Color32::LIGHT_RED, "Blocked");
+                        ui.colored_label(style::error(ui.visuals()), "Blocked");
                     } else if entry.tries > 0 {
-                        ui.colored_label(Color32::YELLOW, format!("{} retries", entry.tries));
+                        ui.colored_label(
+                            style::warn(ui.visuals()),
+                            style::plural(entry.tries as usize, "retry", "retries"),
+                        );
                     } else {
                         ui.weak("Pending");
                     }
                 });
                 row.col(|ui| {
                     if let Some(err) = &entry.last_error {
-                        ui.label(RichText::new(err).color(Color32::LIGHT_RED))
+                        ui.label(RichText::new(err).color(style::error(ui.visuals())))
                             .on_hover_text(err);
                     }
                 });
@@ -3418,19 +3920,39 @@ impl AnimaticApp {
     }
 
     fn log_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, "Activity log", false);
+        self.page_header(ui, Some("this session's activity"), false);
         ui.horizontal(|ui| {
-            if ui.button("Clear").clicked() {
+            if ui
+                .add_enabled(!self.logs.is_empty(), egui::Button::new("Clear"))
+                .on_hover_text("Empty the log; nothing else changes")
+                .clicked()
+            {
                 self.logs.clear();
             }
         });
+        if self.logs.is_empty() {
+            empty_state(
+                ui,
+                "No activity yet",
+                "Hashing, renaming, AniDB requests and errors are listed here as they happen.",
+            );
+            return;
+        }
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .auto_shrink([false, false])
             .show_rows(ui, row_height, self.logs.len(), |ui, range| {
                 for line in &self.logs[range] {
-                    ui.monospace(line);
+                    if line.contains("  ERROR  ") {
+                        ui.label(
+                            RichText::new(line)
+                                .monospace()
+                                .color(style::error(ui.visuals())),
+                        );
+                    } else {
+                        ui.monospace(line);
+                    }
                 }
             });
     }
@@ -3450,50 +3972,83 @@ impl AnimaticApp {
         let mut refresh_requested = false;
         let mut episode_refresh: Vec<i64> = Vec::new();
         let mut open = true;
-        egui::Window::new(format!("Anime #{aid}"))
+        let title = match &detail {
+            Some(d) if !d.anime.name.is_empty() => d.anime.name.clone(),
+            _ => format!("Anime {aid}"),
+        };
+        let shown = dialog::window(ctx, title)
+            // The title changes with the anime shown; the window keeps its place.
+            .id(egui::Id::unique("anime_detail"))
             .open(&mut open)
-            .default_width(520.0)
+            .default_width(560.0)
+            .max_height(ctx.content_rect().height() * 0.85)
+            .vscroll(true)
             .show(ctx, |ui| {
-                if let Some(d) = &detail {
-                    ui.horizontal_top(|ui| {
-                        self.covers.show(
-                            ui,
-                            &self.worker,
-                            &self.settings.anidb,
-                            aid,
-                            d.anime.picname.as_deref(),
-                        );
-                        ui.vertical(|ui| {
-                            ui.heading(if d.anime.name.is_empty() {
-                                format!("Anime {aid}")
-                            } else {
-                                d.anime.name.clone()
-                            });
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(d.anime.type_name());
-                                ui.separator();
-                                ui.label(&d.anime.year);
-                                ui.separator();
-                                ui.label(format!("{} episodes", d.anime.episodes));
-                            });
-                        });
-                    });
-                    if let Some(text) = &d.anime.description {
-                        ui.add_space(8.0);
-                        ui.label(text);
+                ui.horizontal(|ui| {
+                    if ui.button("Open on AniDB").clicked() {
+                        let _ = open::that(format!("https://anidb.net/anime/{aid}"));
                     }
-                    ui.add_space(8.0);
-                    ui.collapsing(format!("Titles ({})", d.titles.len()), |ui| {
-                        for t in &d.titles {
-                            ui.horizontal(|ui| {
-                                ui.monospace(&t.lang);
-                                ui.label(&t.name);
-                            });
+                    if ui
+                        .button("Refresh from AniDB")
+                        .on_hover_text("Queues a request that re-reads this anime from AniDB")
+                        .clicked()
+                    {
+                        refresh_requested = true;
+                    }
+                });
+                ui.add_space(4.0);
+                let Some(d) = &detail else {
+                    ui.label("No detail record is available.");
+                    return;
+                };
+                ui.horizontal_top(|ui| {
+                    self.covers.show(
+                        ui,
+                        &self.worker,
+                        &self.settings.anidb,
+                        aid,
+                        d.anime.picname.as_deref(),
+                    );
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(d.anime.type_name());
+                            ui.separator();
+                            ui.label(&d.anime.year);
+                            ui.separator();
+                            ui.label(style::plural(
+                                d.anime.episodes.max(0) as usize,
+                                "episode",
+                                "episodes",
+                            ));
+                            ui.separator();
+                            ui.label(RichText::new(format!("AniDB {aid}")).weak());
+                        });
+                        if let Some(text) = &d.anime.description {
+                            ui.add_space(6.0);
+                            ui.label(text);
                         }
                     });
-                    ui.collapsing(format!("Episodes ({})", d.episodes.len()), |ui| {
-                        for e in &d.episodes {
-                            ui.horizontal(|ui| {
+                });
+                ui.add_space(8.0);
+                // Sections without entries stay listed (with their zero) but cannot open.
+                let section = |ui: &mut egui::Ui,
+                               name: &str,
+                               count: usize,
+                               open: bool,
+                               body: &mut dyn FnMut(&mut egui::Ui)| {
+                    let header = egui::CollapsingHeader::new(format!("{name} ({count})"))
+                        .id_salt(("anime_detail_section", name))
+                        .default_open(open);
+                    ui.add_enabled_ui(count > 0, |ui| {
+                        header.show(ui, |ui| body(ui));
+                    });
+                };
+                section(ui, "Episodes", d.episodes.len(), true, &mut |ui| {
+                    egui::Grid::new("anime_detail_episodes")
+                        .num_columns(3)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for e in &d.episodes {
                                 ui.monospace(e.epno_str());
                                 ui.label(&e.name);
                                 if ui
@@ -3505,58 +4060,63 @@ impl AnimaticApp {
                                 {
                                     episode_refresh.push(e.eid);
                                 }
-                            });
-                        }
-                    });
-                    ui.collapsing(format!("Genres ({})", d.genres.len()), |ui| {
-                        ui.label(
-                            d.genres
-                                .iter()
-                                .map(|g| g.1.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        );
-                    });
-                    ui.collapsing(format!("Relations ({})", d.relations.len()), |ui| {
-                        for (related_aid, relation, name) in &d.relations {
-                            if ui
-                                .link(format!(
-                                    "{} — {}",
-                                    animatic_core::library::relation_name(*relation),
-                                    name
-                                ))
-                                .clicked()
-                            {
-                                self.selected_aid = Some(*related_aid);
+                                ui.end_row();
                             }
+                        });
+                });
+                section(ui, "Titles", d.titles.len(), false, &mut |ui| {
+                    for t in &d.titles {
+                        ui.horizontal(|ui| {
+                            ui.monospace(&t.lang);
+                            ui.label(&t.name);
+                        });
+                    }
+                });
+                section(ui, "Genres", d.genres.len(), false, &mut |ui| {
+                    ui.label(
+                        d.genres
+                            .iter()
+                            .map(|g| g.1.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                });
+                let mut related = None;
+                section(ui, "Relations", d.relations.len(), false, &mut |ui| {
+                    for (related_aid, relation, name) in &d.relations {
+                        if ui
+                            .link(format!(
+                                "{} — {}",
+                                animatic_core::library::relation_name(*relation),
+                                name
+                            ))
+                            .clicked()
+                        {
+                            related = Some(*related_aid);
                         }
-                    });
-                    ui.collapsing(format!("Reviews ({})", d.reviews.len()), |ui| {
-                        for review in &d.reviews {
-                            ui.horizontal(|ui| {
-                                ui.strong(if review.uname.is_empty() {
-                                    "Anonymous"
-                                } else {
-                                    &review.uname
-                                });
-                                ui.label(format::rating(review.rating));
-                            });
-                            ui.label(&review.body);
-                            ui.separator();
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("Open on AniDB").clicked() {
-                            let _ = open::that(format!("https://anidb.net/anime/{aid}"));
-                        }
-                        if ui.button("Refresh from AniDB").clicked() {
-                            refresh_requested = true;
-                        }
-                    });
-                } else {
-                    ui.label("No detail record is available.");
+                    }
+                });
+                if related.is_some() {
+                    self.selected_aid = related;
                 }
+                section(ui, "Reviews", d.reviews.len(), false, &mut |ui| {
+                    for review in &d.reviews {
+                        ui.horizontal(|ui| {
+                            ui.strong(if review.uname.is_empty() {
+                                "Anonymous"
+                            } else {
+                                &review.uname
+                            });
+                            ui.label(format::rating(review.rating));
+                        });
+                        ui.label(&review.body);
+                        ui.separator();
+                    }
+                });
             });
+        if dialog::escape_closes(ctx, shown.as_ref()) {
+            open = false;
+        }
         if open {
             self.detail = Some(DetailCache {
                 aid,
@@ -3583,158 +4143,285 @@ impl AnimaticApp {
         let exe = self.executable_path().map(Path::to_path_buf);
         self.shell.ensure_probed(exe.as_deref());
         let mut save = false;
-        egui::Window::new("Options")
+        let mut close = false;
+        // Never larger than the main window, so the footer with Save stays on screen.
+        let room = ctx.content_rect().size() - egui::vec2(48.0, 72.0);
+        let shown = dialog::window(ctx, "Options")
             .open(&mut open)
             .resizable(true)
-            .default_size([620.0, 600.0])
+            .default_size([820.0_f32.min(room.x), 560.0_f32.min(room.y)])
+            .min_size([520.0_f32.min(room.x), 300.0_f32.min(room.y)])
+            .max_size(room)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading("AniDB account");
-                    field(ui, "Username", &mut self.settings.anidb.username);
-                    ui.horizontal(|ui| {
-                        ui.label("Password");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.settings.anidb.password)
-                                .password(true),
-                        );
+                let body = (ui.available_height() - 52.0).max(160.0);
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(170.0);
+                        for page in OptionsPage::ALL {
+                            if nav_item(ui, self.options_page == page, page.label(), None).clicked()
+                            {
+                                self.options_page = page;
+                            }
+                        }
                     });
-                    field(ui, "API key", &mut self.settings.anidb.api_key);
-                    if let Some(notice) = self.credential_storage.notice() {
-                        ui.colored_label(Color32::YELLOW, notice);
-                    }
+                    ui.separator();
+                    // A scroll area takes the layout of its parent: without this vertical
+                    // wrapper the page would be laid out left to right.
+                    ui.vertical(|ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt(("options-page", self.options_page))
+                            .max_height(body)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(self.options_page.label())
+                                        .text_style(style::section_style())
+                                        .color(ui.visuals().strong_text_color()),
+                                );
+                                ui.add_space(4.0);
+                                match self.options_page {
+                                    OptionsPage::Account => self.options_account(ui),
+                                    OptionsPage::Appearance => self.options_appearance(ui),
+                                    OptionsPage::Library => self.options_folders(ui),
+                                    OptionsPage::Hashing => {
+                                        self.options_hashing(ui, exe.as_deref())
+                                    }
+                                    OptionsPage::Renaming => self.pattern_editor_ui(ui),
+                                    OptionsPage::Tools => self.options_tools(ui),
+                                    OptionsPage::Exports => self.options_exports(ui),
+                                    OptionsPage::Updates => self.options_updates(ui),
+                                }
+                            });
+                    });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!(
-                            "AniDB client: {UDP_CLIENT} v{UDP_CLIENT_VERSION} (UDP), \
-                             {HTTP_CLIENT} v{HTTP_CLIENT_VERSION} (HTTP)"
-                        ))
+                        RichText::new(
+                            "Changes are used right away. Save options writes them to the \
+                             settings file.",
+                        )
+                        .small()
                         .weak(),
-                    )
-                    .on_hover_text(
-                        "Animatic's own registered AniDB clients. They are built in and fixed: \
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let accent = style::accent(ui.visuals());
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("Save options").color(Color32::WHITE),
+                                )
+                                .fill(accent),
+                            )
+                            .clicked()
+                        {
+                            save = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if save {
+            self.save_settings();
+            self.apply_visuals(ctx);
+            self.media_settings_saved();
+            self.settings_open = false;
+            self.apply_shell_integration(exe.as_deref());
+        }
+        if !open || close || dialog::escape_closes(ctx, shown.as_ref()) {
+            self.settings_open = false;
+        }
+        if !self.settings_open {
+            self.shell.options_closed();
+        }
+    }
+
+    fn options_account(&mut self, ui: &mut egui::Ui) {
+        field(ui, "Username", &mut self.settings.anidb.username);
+        ui.horizontal(|ui| {
+            field_label(ui, "Password");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.anidb.password)
+                    .password(true)
+                    .desired_width(FIELD_WIDTH),
+            );
+        });
+        field(ui, "API key", &mut self.settings.anidb.api_key);
+        if let Some(notice) = self.credential_storage.notice() {
+            ui.colored_label(style::warn(ui.visuals()), notice);
+        }
+        ui.label(
+            RichText::new(format!(
+                "AniDB client: {UDP_CLIENT} v{UDP_CLIENT_VERSION} (UDP), \
+                             {HTTP_CLIENT} v{HTTP_CLIENT_VERSION} (HTTP)"
+            ))
+            .weak(),
+        )
+        .on_hover_text(
+            "Animatic's own registered AniDB clients. They are built in and fixed: \
                          you only need your AniDB username and password.",
-                    );
-                    ui.checkbox(
-                        &mut self.settings.anidb.offline,
-                        "Work offline (keep commands queued)",
-                    );
-                    ui.checkbox(
-                        &mut self.settings.anidb.auto_run_queue,
-                        "Run the command queue automatically",
-                    )
-                    .on_hover_text(
-                        "Sends the queued commands 30 seconds after new ones arrive and every 15 \
+        );
+        style::section(ui, "Synchronization");
+        ui.checkbox(
+            &mut self.settings.anidb.offline,
+            "Work offline (keep commands queued)",
+        );
+        ui.checkbox(
+            &mut self.settings.anidb.auto_run_queue,
+            "Run the command queue automatically",
+        )
+        .on_hover_text(
+            "Sends the queued commands 30 seconds after new ones arrive and every 15 \
                          minutes, and keeps one AniDB login between those runs. Never while Work \
                          offline is on or AniDB has paused syncing, and MyList removals are never \
                          sent automatically.",
-                    );
-                    ui.add_enabled_ui(self.settings.anidb.auto_run_queue, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Log out of AniDB when idle for");
-                            ui.add(
-                                egui::DragValue::new(&mut self.settings.anidb.idle_logout_minutes)
-                                    .range(
-                                        animatic_core::settings::MIN_IDLE_LOGOUT_MINUTES
-                                            ..=animatic_core::settings::MAX_IDLE_LOGOUT_MINUTES,
-                                    )
-                                    .suffix(" min"),
-                            );
-                        });
-                    });
-                    ui.checkbox(
-                        &mut self.settings.anidb.update_file_information,
-                        "Update known file information",
-                    )
-                    .on_hover_text(
-                        "When an already identified file is hashed again, queue a refresh of its \
+        );
+        ui.add_enabled_ui(self.settings.anidb.auto_run_queue, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Log out of AniDB when idle for");
+                ui.add(
+                    egui::DragValue::new(&mut self.settings.anidb.idle_logout_minutes)
+                        .range(
+                            animatic_core::settings::MIN_IDLE_LOGOUT_MINUTES
+                                ..=animatic_core::settings::MAX_IDLE_LOGOUT_MINUTES,
+                        )
+                        .suffix(" min"),
+                );
+            });
+        });
+        style::section(ui, "Downloads");
+        ui.checkbox(
+            &mut self.settings.anidb.update_file_information,
+            "Update known file information",
+        )
+        .on_hover_text(
+            "When an already identified file is hashed again, queue a refresh of its \
                          AniDB record (at most once every 7 days per file).",
-                    );
-                    ui.checkbox(
-                        &mut self.settings.anidb.download_covers,
-                        "Download anime covers when a detail window opens",
-                    )
-                    .on_hover_text(
-                        "Each cover is downloaded once from AniDB's image server and kept on \
+        );
+        ui.checkbox(
+            &mut self.settings.anidb.download_covers,
+            "Download anime covers when a detail window opens",
+        )
+        .on_hover_text(
+            "Each cover is downloaded once from AniDB's image server and kept on \
                          disk for your own display; covers already on disk are always shown",
-                    );
-                    ui.separator();
-                    ui.heading("Appearance");
-                    egui::ComboBox::from_label("Theme")
-                        .selected_text(format!("{:?}", self.settings.ui.theme))
+        );
+    }
+
+    fn options_appearance(&mut self, ui: &mut egui::Ui) {
+        let theme_name = |theme: Theme| match theme {
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+            Theme::System => "Same as the system",
+        };
+        let mut restyle = false;
+        egui::Grid::new("options-appearance")
+            .num_columns(2)
+            .spacing([14.0, 8.0])
+            .show(ui, |ui| {
+                ui.label("Theme");
+                egui::ComboBox::from_id_salt("options-theme")
+                    .selected_text(theme_name(self.settings.ui.theme))
+                    .show_ui(ui, |ui| {
+                        for theme in [Theme::Dark, Theme::Light, Theme::System] {
+                            restyle |= ui
+                                .selectable_value(
+                                    &mut self.settings.ui.theme,
+                                    theme,
+                                    theme_name(theme),
+                                )
+                                .changed();
+                        }
+                    });
+                ui.end_row();
+                ui.label("UI scale");
+                let scale = ui.add(
+                    egui::Slider::new(&mut self.settings.ui.zoom, 0.75..=2.0)
+                        .step_by(0.05)
+                        .suffix("×"),
+                );
+                // Rescaling while dragging would move the slider under the pointer.
+                restyle |= scale.drag_stopped() || (scale.changed() && !scale.dragged());
+                ui.end_row();
+                ui.label("Status colors");
+                ui.checkbox(
+                    &mut self.settings.ui.colored_rows,
+                    "Tint table rows by status",
+                )
+                .on_hover_text(
+                    "Tint table rows by status: CRC mismatch, unidentified, watched and in \
+                         MyList. Each status is also written in the row, so the color is never \
+                         the only cue.",
+                );
+                ui.end_row();
+                ui.label("Row color style");
+                ui.add_enabled_ui(self.settings.ui.colored_rows, |ui| {
+                    egui::ComboBox::from_id_salt("options-row-style")
+                        .selected_text(self.settings.ui.row_style.label())
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.settings.ui.theme, Theme::Dark, "Dark");
-                            ui.selectable_value(&mut self.settings.ui.theme, Theme::Light, "Light");
-                            ui.selectable_value(
-                                &mut self.settings.ui.theme,
-                                Theme::System,
-                                "System",
-                            );
-                        });
-                    ui.add(
-                        egui::Slider::new(&mut self.settings.ui.zoom, 0.75..=2.0).text("UI scale"),
-                    );
-                    ui.checkbox(&mut self.settings.ui.colored_rows, "Use status colors")
+                            for row_style in RowStyle::ALL {
+                                ui.selectable_value(
+                                    &mut self.settings.ui.row_style,
+                                    row_style,
+                                    row_style.label(),
+                                );
+                            }
+                        })
+                        .response
                         .on_hover_text(
-                            "Tint table rows by status: CRC mismatch, unidentified, watched and in MyList. \
-                             Each status is also written in the row, so the color is never the only cue.",
+                            "Soft: a light tint and a colored bar at the start of the row. \
+                             Solid: the whole row in the status color, as in AniDB O'Matic.",
                         );
-                    ui.separator();
-                    self.tray_options_ui(ui);
-                    ui.separator();
-                    ui.heading("Hashing");
-                    ui.checkbox(
-                        &mut self.settings.hashing.autostart,
-                        "Start hashing automatically",
-                    )
-                    .on_hover_text(
-                        "Resume the files still waiting in the hash queue when Animatic starts",
-                    );
-                    ui.checkbox(
-                        &mut self.settings.hashing.identify_after_hashing,
-                        "Identify files with AniDB after hashing",
-                    );
-                    self.shell.options_ui(
-                        ui,
-                        &mut self.settings.hashing.integrate_into_shell,
-                        exe.as_deref(),
-                    );
-                    ui.checkbox(
-                        &mut self.settings.hashing.use_extensions,
-                        "Restrict file extensions",
-                    );
-                    let mut ext = self.settings.hashing.extensions.join(",");
-                    if ui
-                        .add(egui::TextEdit::multiline(&mut ext).desired_rows(3))
-                        .changed()
-                    {
-                        self.settings.hashing.extensions = ext
-                            .split(',')
-                            .map(|x| x.trim().to_string())
-                            .filter(|x| !x.is_empty())
-                            .collect();
-                    }
-                    ui.label("Hash export template");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.settings.hashing.export_template)
-                            .desired_rows(2)
-                            .hint_text("%filename% %size% %fulled2k%"),
-                    );
-                    ui.checkbox(
-                        &mut self.settings.ui.copy_length_as_minutes,
-                        "Export %length% in minutes",
-                    );
-                    ui.separator();
-                    ui.heading("Managed folders");
-                    let mut remove_manager = None;
-                    let mut enable_auto_rename = None;
-                    for (index, manager) in
-                        self.settings.file_managers.managers.iter_mut().enumerate()
-                    {
-                        let label = if manager.name.is_empty() {
-                            "Unnamed folder".to_string()
-                        } else {
-                            manager.name.clone()
-                        };
-                        ui.collapsing(label, |ui| {
+                });
+                ui.end_row();
+            });
+        if restyle {
+            self.apply_visuals(ui.ctx());
+        }
+        self.tray_options_ui(ui);
+    }
+
+    fn options_hashing(&mut self, ui: &mut egui::Ui, exe: Option<&Path>) {
+        ui.checkbox(
+            &mut self.settings.hashing.autostart,
+            "Start hashing automatically",
+        )
+        .on_hover_text("Resume the files still waiting in the hash queue when Animatic starts");
+        ui.checkbox(
+            &mut self.settings.hashing.identify_after_hashing,
+            "Identify files with AniDB after hashing",
+        );
+        self.shell
+            .options_ui(ui, &mut self.settings.hashing.integrate_into_shell, exe);
+        ui.checkbox(
+            &mut self.settings.hashing.use_extensions,
+            "Restrict file extensions",
+        );
+        let mut ext = self.settings.hashing.extensions.join(",");
+        if ui
+            .add(egui::TextEdit::multiline(&mut ext).desired_rows(3))
+            .changed()
+        {
+            self.settings.hashing.extensions = ext
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+        }
+    }
+
+    fn options_folders(&mut self, ui: &mut egui::Ui) {
+        let mut remove_manager = None;
+        let mut enable_auto_rename = None;
+        for (index, manager) in self.settings.file_managers.managers.iter_mut().enumerate() {
+            let label = if manager.name.is_empty() {
+                "Unnamed folder".to_string()
+            } else {
+                manager.name.clone()
+            };
+            ui.collapsing(label, |ui| {
                             field(ui, "Name", &mut manager.name);
                             field(ui, "Path", &mut manager.path);
                             field(ui, "Rename destination", &mut manager.base_path);
@@ -3757,8 +4444,16 @@ impl AnimaticApp {
                                          the folder (and emptied parents) if nothing at all is left in it. \
                                          The managed folder itself is never removed.",
                                     );
-                                ui.checkbox(&mut manager.mylist_auto_add, "Add to mylist");
+                                ui.checkbox(&mut manager.mylist_auto_add, "Add to MyList")
+                                    .on_hover_text(
+                                        "Add files identified in this folder to your AniDB MyList",
+                                    );
                             });
+                            ui.label(
+                                RichText::new("For files this folder adds to MyList")
+                                    .small()
+                                    .weak(),
+                            );
                             ui.horizontal(|ui| {
                                 ui.checkbox(&mut manager.mylist_watched_check, "Set watched");
                                 if manager.mylist_watched_check {
@@ -3795,202 +4490,199 @@ impl AnimaticApp {
                                 remove_manager = Some(index);
                             }
                         });
-                    }
-                    if let Some(index) = remove_manager {
-                        self.settings.file_managers.managers.remove(index);
-                    }
-                    if let Some(index) = enable_auto_rename {
-                        self.begin_auto_rename_enable(index);
-                    }
-                    if ui.button("Add folder rule").clicked() {
-                        self.settings.file_managers.managers.push(
-                            animatic_core::settings::FileManager {
-                                name: "New folder".into(),
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Folder scanning").strong());
-                    {
-                        use animatic_core::settings::{
-                            MAX_ACTION_DELAY_MS, MAX_SCAN_INTERVAL_MINUTES, MAX_SLEEP_TIME_MS,
-                            MIN_SCAN_INTERVAL_MINUTES,
-                        };
-                        let scanning = &mut self.settings.file_managers;
-                        ui.checkbox(
-                            &mut scanning.scan_at_start,
-                            "Scan managed folders when Animatic starts",
-                        );
-                        ui.checkbox(
-                            &mut scanning.scheduled_scan,
-                            "Scan managed folders on a schedule",
-                        );
-                        ui.add_enabled_ui(scanning.scheduled_scan, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Scan every");
-                                ui.add(
-                                    egui::DragValue::new(&mut scanning.scan_interval_minutes)
-                                        .range(MIN_SCAN_INTERVAL_MINUTES..=MAX_SCAN_INTERVAL_MINUTES)
-                                        .suffix(" minutes"),
-                                );
-                            });
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Hash a file once unchanged for");
-                            ui.add(
-                                egui::DragValue::new(&mut scanning.action_delay_ms)
-                                    .range(0..=MAX_ACTION_DELAY_MS)
-                                    .suffix(" ms"),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Pause between hashed files");
-                            ui.add(
-                                egui::DragValue::new(&mut scanning.sleep_time_ms)
-                                    .range(0..=MAX_SLEEP_TIME_MS)
-                                    .suffix(" ms"),
-                            );
-                        });
-                    }
-                    ui.label(
-                        RichText::new(
-                            "Scans read local folders only and never contact AniDB. A scheduled \
-                             scan waits while another task, an import, a settings review or a \
-                             restore is running. A file still being written is left for the \
-                             next scan. Schedule changes apply when Options is closed.",
-                        )
-                        .weak(),
+        }
+        if let Some(index) = remove_manager {
+            self.settings.file_managers.managers.remove(index);
+        }
+        if let Some(index) = enable_auto_rename {
+            self.begin_auto_rename_enable(index);
+        }
+        if ui.button("Add folder rule").clicked() {
+            self.settings
+                .file_managers
+                .managers
+                .push(animatic_core::settings::FileManager {
+                    name: "New folder".into(),
+                    ..Default::default()
+                });
+        }
+        style::section(ui, "Folder scanning");
+        ui.label(
+            RichText::new(
+                "Scans read local folders only and never contact AniDB. Schedule changes apply \
+                 when Options is closed.",
+            )
+            .weak(),
+        );
+        {
+            use animatic_core::settings::{
+                MAX_ACTION_DELAY_MS, MAX_SCAN_INTERVAL_MINUTES, MAX_SLEEP_TIME_MS,
+                MIN_SCAN_INTERVAL_MINUTES,
+            };
+            let scanning = &mut self.settings.file_managers;
+            ui.checkbox(
+                &mut scanning.scan_at_start,
+                "Scan managed folders when Animatic starts",
+            );
+            ui.checkbox(
+                &mut scanning.scheduled_scan,
+                "Scan managed folders on a schedule",
+            )
+            .on_hover_text(
+                "A scheduled scan waits while another task, an import, a settings review or a \
+                 restore is running.",
+            );
+            ui.add_enabled_ui(scanning.scheduled_scan, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Scan every");
+                    ui.add(
+                        egui::DragValue::new(&mut scanning.scan_interval_minutes)
+                            .range(MIN_SCAN_INTERVAL_MINUTES..=MAX_SCAN_INTERVAL_MINUTES)
+                            .suffix(" minutes"),
                     );
-                    ui.separator();
-                    ui.heading("Statistics export");
-                    ui.checkbox(
-                        &mut self.settings.stat_whore.enabled,
-                        "Write statistics after library updates",
-                    );
-                    egui::ComboBox::from_label("Format")
-                        .selected_text(format!("{:?}", self.settings.stat_whore.format))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.settings.stat_whore.format,
-                                animatic_core::settings::StatFormat::Xml,
-                                "XML",
-                            );
-                            ui.selectable_value(
-                                &mut self.settings.stat_whore.format,
-                                animatic_core::settings::StatFormat::Ini,
-                                "INI",
-                            );
-                        });
-                    field(ui, "Output file", &mut self.settings.stat_whore.file);
-                    ui.separator();
-                    ui.heading("External player");
-                    let mut remove_player = None;
-                    let mut default_change = None;
-                    let default_index = animatic_core::external::default_player(&self.settings.players);
-                    for (index, player) in self.settings.players.iter_mut().enumerate() {
-                        if index > 0 {
-                            ui.separator();
-                        }
-                        field_hint(
-                            ui,
-                            "Name",
-                            &mut player.name,
-                            "Shown in the player chooser on Hashed files when several players are configured.",
-                        );
-                        field(ui, "Executable", &mut player.path);
-                        field_hint(
-                            ui,
-                            "Open arguments",
-                            &mut player.open,
-                            "Arguments for Open in player. Leave empty to hide that action for this player.",
-                        );
-                        field_hint(
-                            ui,
-                            "Play arguments",
-                            &mut player.play,
-                            "Arguments for Play. Without {path} or %file% the file is appended.",
-                        );
-                        field_hint(
-                            ui,
-                            "Enqueue arguments",
-                            &mut player.enqueue,
-                            "Arguments for Enqueue. Leave empty to hide that action for this player.",
-                        );
-                        let mut is_default = default_index == Some(index);
-                        if ui.checkbox(&mut is_default, "Default player").changed() {
-                            default_change = Some((index, is_default));
-                        }
-                        if ui.button("Remove player").clicked() {
-                            remove_player = Some(index);
-                        }
-                    }
-                    if let Some((index, on)) = default_change {
-                        animatic_core::external::set_default_player(
-                            &mut self.settings.players,
-                            index,
-                            on,
-                        );
-                    }
-                    if let Some(index) = remove_player {
-                        self.settings.players.remove(index);
-                        self.selected_player = None;
-                    }
-                    if ui.button("Add player").clicked() {
-                        self.settings
-                            .players
-                            .push(animatic_core::settings::Player::default());
-                    }
-                    ui.separator();
-                    ui.heading("AVDump");
-                    ui.checkbox(
-                        &mut self.settings.avdump.enabled,
-                        "Enable AVDump integration",
-                    );
-                    field(ui, "Executable", &mut self.settings.avdump.executable);
-                    field(ui, "Arguments", &mut self.settings.avdump.arguments);
-                    field(ui, "AVDump API key", &mut self.settings.avdump.key);
-                    ui.separator();
-                    ui.heading("Media properties");
-                    self.media_options_ui(ui);
-                    ui.separator();
-                    ui.heading("Renaming pattern");
-                    self.pattern_editor_ui(ui);
-                    ui.separator();
-                    ui.heading("Updates");
-                    ui.checkbox(
-                        &mut self.settings.updates.auto_check,
-                        "Check for updates at startup",
-                    );
-                    ui.label(
-                        RichText::new(
-                            "Contacts github.com, not AniDB, and is skipped in offline mode. \
-                             Nothing is downloaded or installed without your confirmation.",
-                        )
-                        .weak(),
-                    );
-                    ui.separator();
-                    ui.heading("Mylist states");
-                    ui.label(MYLIST_STATES.join(" · "));
-                    ui.add_space(12.0);
-                    if ui.button("Save options").clicked() {
-                        save = true;
-                    }
                 });
             });
-        if save {
-            self.save_settings();
-            self.apply_visuals(ctx);
-            self.media_settings_saved();
-            self.settings_open = false;
-            self.apply_shell_integration(exe.as_deref());
+            ui.horizontal(|ui| {
+                ui.label("Hash a file once it is unchanged for")
+                    .on_hover_text("A file still being written is left for the next scan.");
+                ui.add(
+                    egui::DragValue::new(&mut scanning.action_delay_ms)
+                        .range(0..=MAX_ACTION_DELAY_MS)
+                        .suffix(" ms"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Pause between hashed files");
+                ui.add(
+                    egui::DragValue::new(&mut scanning.sleep_time_ms)
+                        .range(0..=MAX_SLEEP_TIME_MS)
+                        .suffix(" ms"),
+                );
+            });
         }
-        if !open {
-            self.settings_open = false;
+    }
+
+    fn options_tools(&mut self, ui: &mut egui::Ui) {
+        style::section(ui, "External players");
+        let mut remove_player = None;
+        let mut default_change = None;
+        let default_index = animatic_core::external::default_player(&self.settings.players);
+        for (index, player) in self.settings.players.iter_mut().enumerate() {
+            if index > 0 {
+                ui.separator();
+            }
+            field_hint(
+                ui,
+                "Name",
+                &mut player.name,
+                "Shown in the player chooser on Hashed files when several players are configured.",
+            );
+            field(ui, "Executable", &mut player.path);
+            field_hint(
+                ui,
+                "Open arguments",
+                &mut player.open,
+                "Arguments for Open in player. Leave empty to hide that action for this player.",
+            );
+            field_hint(
+                ui,
+                "Play arguments",
+                &mut player.play,
+                "Arguments for Play. Without {path} or %file% the file is appended.",
+            );
+            field_hint(
+                ui,
+                "Enqueue arguments",
+                &mut player.enqueue,
+                "Arguments for Enqueue. Leave empty to hide that action for this player.",
+            );
+            let mut is_default = default_index == Some(index);
+            if ui.checkbox(&mut is_default, "Default player").changed() {
+                default_change = Some((index, is_default));
+            }
+            if ui.button("Remove player").clicked() {
+                remove_player = Some(index);
+            }
         }
-        if !self.settings_open {
-            self.shell.options_closed();
+        if let Some((index, on)) = default_change {
+            animatic_core::external::set_default_player(&mut self.settings.players, index, on);
         }
+        if let Some(index) = remove_player {
+            self.settings.players.remove(index);
+            self.selected_player = None;
+        }
+        if ui.button("Add player").clicked() {
+            self.settings
+                .players
+                .push(animatic_core::settings::Player::default());
+        }
+        style::section(ui, "AVDump");
+        ui.checkbox(
+            &mut self.settings.avdump.enabled,
+            "Enable AVDump integration",
+        );
+        field(ui, "Executable", &mut self.settings.avdump.executable);
+        field(ui, "Arguments", &mut self.settings.avdump.arguments);
+        field(ui, "AVDump API key", &mut self.settings.avdump.key);
+        style::section(ui, "Media properties");
+        self.media_options_ui(ui);
+    }
+
+    fn options_exports(&mut self, ui: &mut egui::Ui) {
+        style::section(ui, "Hash export");
+        ui.label(RichText::new("The text written for each file by File → Export → Hashes…").weak());
+        ui.add(
+            egui::TextEdit::multiline(&mut self.settings.hashing.export_template)
+                .desired_rows(2)
+                .hint_text("%filename% %size% %fulled2k%"),
+        );
+        ui.checkbox(
+            &mut self.settings.ui.copy_length_as_minutes,
+            "Export %length% in minutes",
+        );
+        style::section(ui, "Statistics export");
+        ui.checkbox(
+            &mut self.settings.stat_whore.enabled,
+            "Write statistics after library updates",
+        );
+        ui.horizontal(|ui| {
+            field_label(ui, "Format");
+            egui::ComboBox::from_id_salt("options-stat-format")
+                .selected_text(match self.settings.stat_whore.format {
+                    StatFormat::Xml => "XML",
+                    StatFormat::Ini => "INI",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.settings.stat_whore.format,
+                        StatFormat::Xml,
+                        "XML",
+                    );
+                    ui.selectable_value(
+                        &mut self.settings.stat_whore.format,
+                        StatFormat::Ini,
+                        "INI",
+                    );
+                });
+        });
+        field(ui, "Output file", &mut self.settings.stat_whore.file);
+    }
+
+    fn options_updates(&mut self, ui: &mut egui::Ui) {
+        ui.checkbox(
+            &mut self.settings.updates.auto_check,
+            "Check for updates at startup",
+        );
+        ui.label(
+            RichText::new(
+                "Contacts github.com, not AniDB, and is skipped in offline mode. Nothing is \
+                 downloaded or installed without your confirmation.",
+            )
+            .weak(),
+        );
+        style::section(ui, "MyList states");
+        ui.label(RichText::new("The states a MyList entry can have on AniDB:").weak());
+        ui.label(MYLIST_STATES.join(" · "));
     }
 
     fn update_window(&mut self, ctx: &egui::Context) {
@@ -4002,9 +4694,8 @@ impl AnimaticApp {
         let stage = self.update.stage.clone();
         let mut action = None;
         let mut open = true;
-        egui::Window::new("Software updates")
+        let shown = dialog::window(ctx, "Software updates")
             .open(&mut open)
-            .collapsible(false)
             .resizable(false)
             .default_width(460.0)
             .show(ctx, |ui| {
@@ -4015,7 +4706,7 @@ impl AnimaticApp {
                 }
                 ui.add_space(4.0);
                 if let Some(error) = &self.update.error {
-                    ui.colored_label(Color32::LIGHT_RED, error);
+                    ui.colored_label(style::error(ui.visuals()), error);
                     ui.add_space(4.0);
                 }
                 let version = self.update.release.as_ref().map(|r| r.version.as_str());
@@ -4055,7 +4746,7 @@ impl AnimaticApp {
                             ui.hyperlink_to("Release notes on GitHub", &release.page_url);
                         }
                         ui.add_space(4.0);
-                        ui.colored_label(Color32::YELLOW, UNSIGNED_WARNING);
+                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING);
                         ui.add_space(4.0);
                         if ui.button("Download and verify").clicked() {
                             action = Some(UpdateAction::Download);
@@ -4090,7 +4781,7 @@ impl AnimaticApp {
                             });
                         }
                         ui.add_space(4.0);
-                        ui.colored_label(Color32::YELLOW, UNSIGNED_WARNING);
+                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING);
                         ui.add_space(4.0);
                         if confirming {
                             ui.label(match self.executable_path() {
@@ -4209,7 +4900,7 @@ impl AnimaticApp {
             Some(UpdateAction::Close) => open = false,
             None => {}
         }
-        if !open {
+        if !open || dialog::escape_closes(ctx, shown.as_ref()) {
             self.update.open = false;
         }
     }
@@ -4297,8 +4988,12 @@ impl AnimaticApp {
         let cooling = self
             .active_cooldown()
             .map(|(until, reason)| Self::cooldown_text(until, reason));
-        egui::Panel::bottom("status").show(root, |ui| {
+        let frame = egui::Frame::side_top_panel(root.style())
+            .fill(style::chrome_fill(root.visuals()))
+            .inner_margin(egui::Margin::symmetric(10, 4));
+        egui::Panel::bottom("status").frame(frame).show(root, |ui| {
             ui.horizontal(|ui| {
+                ui.set_min_height(24.0);
                 if self.activity.busy {
                     ui.add(
                         egui::ProgressBar::new(self.activity.fraction)
@@ -4310,7 +5005,7 @@ impl AnimaticApp {
                         self.activity.label, self.activity.current, self.activity.total
                     ));
                     if ui
-                        .button(if self.worker.pause.load(Ordering::Relaxed) {
+                        .small_button(if self.worker.pause.load(Ordering::Relaxed) {
                             "Resume"
                         } else {
                             "Pause"
@@ -4320,35 +5015,81 @@ impl AnimaticApp {
                         let old = self.worker.pause.load(Ordering::Relaxed);
                         self.worker.pause.store(!old, Ordering::Relaxed);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.small_button("Cancel").clicked() {
                         self.worker.cancel.store(true, Ordering::Relaxed);
                     }
+                } else if self.status_error {
+                    // An error is marked by a sign as well as its colour and leads to the log.
+                    let text = RichText::new(format!("⚠ {}", self.status))
+                        .color(style::error(ui.visuals()));
+                    if ui
+                        .add(egui::Label::new(text).truncate().sense(Sense::click()))
+                        .on_hover_text("Open the log")
+                        .clicked()
+                    {
+                        self.page = Page::Log;
+                    }
                 } else {
-                    ui.label(&self.status);
+                    ui.add(egui::Label::new(&self.status).truncate());
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(if self.settings.anidb.offline {
-                        "Offline"
+                    let offline = self.settings.anidb.offline;
+                    let (text, color, hint) = if offline {
+                        (
+                            "● Offline",
+                            style::warn(ui.visuals()),
+                            "Work offline is on: commands stay queued and nothing is sent to \
+                             AniDB. Click to go online.",
+                        )
                     } else {
-                        "Ready for AniDB"
-                    });
+                        (
+                            "● Online",
+                            style::ok(ui.visuals()),
+                            "Work offline is off: queued commands are sent when the command \
+                             queue runs. Click to work offline.",
+                        )
+                    };
+                    if ui
+                        .add(egui::Button::new(RichText::new(text).color(color)).small())
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        self.settings.anidb.offline = !offline;
+                        self.persist_settings_incidentally();
+                        self.log(if offline {
+                            "Working online"
+                        } else {
+                            "Working offline"
+                        });
+                    }
                     if let Some(text) = &cooling {
-                        ui.colored_label(Color32::YELLOW, text);
+                        ui.colored_label(style::warn(ui.visuals()), text);
                     }
                     if self.projection.summary.queue_blocked > 0 || self.blocked_unconfirmed() {
-                        ui.colored_label(
-                            Color32::LIGHT_RED,
-                            if self.blocked_unconfirmed() {
-                                "blocked commands (refreshing)".to_string()
-                            } else {
-                                format!("{} blocked", self.projection.summary.queue_blocked)
-                            },
-                        );
+                        let text = if self.blocked_unconfirmed() {
+                            "blocked commands (refreshing)".to_string()
+                        } else {
+                            style::plural(
+                                self.projection.summary.queue_blocked,
+                                "blocked command",
+                                "blocked commands",
+                            )
+                        };
+                        if ui
+                            .link(RichText::new(text).color(style::error(ui.visuals())))
+                            .on_hover_text("Open the queue")
+                            .clicked()
+                        {
+                            self.page = Page::Queue;
+                        }
                     }
                     if !self.deferred.is_empty() {
                         ui.colored_label(
-                            Color32::YELLOW,
-                            format!("{} commands NOT saved yet", self.deferred.len()),
+                            style::warn(ui.visuals()),
+                            format!(
+                                "{} not saved yet",
+                                style::plural(self.deferred.len(), "command", "commands")
+                            ),
                         );
                     }
                 });
@@ -4548,7 +5289,7 @@ impl AnimaticApp {
         }
         let mut go = None;
         let response = egui::Modal::new(egui::Id::unique("compact_library")).show(ctx, |ui| {
-            ui.heading("Compact library");
+            style::section(ui, "Compact library");
             ui.label(
                 "Rewrites the library file without its unused space (SQLite VACUUM). It needs \
                  free disk space about the size of the library and blocks other background \
@@ -4589,7 +5330,7 @@ impl AnimaticApp {
             None => return,
             Some(RestoreStage::Validating { source }) => {
                 let response = egui::Modal::new(id).show(ctx, |ui| {
-                    ui.heading("Restore library");
+                    style::section(ui, "Restore library");
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(format!("Checking {}…", source.display()));
@@ -4609,7 +5350,7 @@ impl AnimaticApp {
             }
             Some(RestoreStage::Confirm { source, info }) => {
                 let response = egui::Modal::new(id).show(ctx, |ui| {
-                    ui.heading("Restore library");
+                    style::section(ui, "Restore library");
                     ui.label(format!(
                         "Replace the current library with {}?",
                         source.display()
@@ -4624,10 +5365,10 @@ impl AnimaticApp {
                         format::size_short(info.size as i64)
                     ));
                     ui.colored_label(
-                        Color32::YELLOW,
+                        style::warn(ui.visuals()),
                         "The current library is kept next to its file as \
-                         <name>.before-restore-<date>-<time>. Background work stops while the \
-                         files are swapped.",
+                     <name>.before-restore-<date>-<time>. Background work stops while the \
+                     files are swapped.",
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
@@ -4643,7 +5384,7 @@ impl AnimaticApp {
             }
             Some(RestoreStage::Running { source, result }) => {
                 egui::Modal::new(id).show(ctx, |ui| {
-                    ui.heading("Restoring library");
+                    style::section(ui, "Restoring library");
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(format!("Replacing the library with {}…", source.display()));
@@ -4662,8 +5403,8 @@ impl AnimaticApp {
             }
             Some(RestoreStage::Broken(message)) => {
                 egui::Modal::new(id).show(ctx, |ui| {
-                    ui.heading("Library unavailable");
-                    ui.colored_label(Color32::LIGHT_RED, message);
+                    style::section(ui, "Library unavailable");
+                    ui.colored_label(style::error(ui.visuals()), message);
                     if ui.button("Quit").clicked() {
                         quit = true;
                     }
@@ -4761,6 +5502,7 @@ impl eframe::App for AnimaticApp {
         self.sync_scan_schedule();
         self.sync_queue_schedule();
         self.pump_library(&ctx);
+        self.handle_shortcuts(&ctx);
         self.top_bar(root);
         self.navigation(root);
         self.bottom_bar(root);
@@ -4792,13 +5534,20 @@ impl eframe::App for AnimaticApp {
         self.media_install_window(&ctx);
         if self.about_open {
             let mut open = true;
-            egui::Window::new("About Animatic")
+            let shown = dialog::window(&ctx, "About Animatic")
                 .open(&mut open)
+                .resizable(false)
                 .show(&ctx, |ui| {
-                    ui.heading("Animatic");
-                    ui.label("Modern cross-platform AniDB library manager");
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.hyperlink_to("AniDB", "https://anidb.net/");
+                    ui.label(
+                        RichText::new("Animatic")
+                            .text_style(egui::TextStyle::Heading)
+                            .color(style::accent(ui.visuals())),
+                    );
+                    ui.label("Hash, identify, rename and track your anime library with AniDB.");
+                    ui.label(
+                        RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak(),
+                    );
+                    ui.hyperlink_to("AniDB website", "https://anidb.net/");
                     if let Some(dir) = self.executable_path().and_then(Path::parent) {
                         ui.separator();
                         ui.horizontal(|ui| {
@@ -4830,7 +5579,7 @@ impl eframe::App for AnimaticApp {
                         });
                     }
                 });
-            if !open {
+            if !open || dialog::escape_closes(&ctx, shown.as_ref()) {
                 self.about_open = false;
             }
         }
@@ -4885,11 +5634,154 @@ impl eframe::App for AnimaticApp {
     }
 }
 
-fn metric(ui: &mut egui::Ui, label: &str, value: String) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.label(RichText::new(value).size(24.0).strong());
-        ui.label(RichText::new(label).weak());
+/// What an empty page shows instead of a bare table: what would be here, and how it gets here.
+fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
+    ui.add_space((ui.available_height() * 0.2).min(120.0));
+    ui.vertical_centered(|ui| {
+        ui.label(
+            RichText::new(title)
+                .text_style(style::section_style())
+                .color(ui.visuals().strong_text_color()),
+        );
+        ui.add_space(4.0);
+        ui.label(RichText::new(detail).weak());
     });
+}
+
+/// A figure card: the value large, its meaning small underneath.
+fn metric(ui: &mut egui::Ui, label: &str, value: String) {
+    metric_card(ui, label, value, None);
+}
+
+/// A figure card; `accent` colours the value of a figure that needs attention.
+fn metric_card(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: String,
+    accent: Option<Color32>,
+) -> egui::Response {
+    let visuals = ui.visuals().clone();
+    egui::Frame::new()
+        .fill(visuals.faint_bg_color)
+        .stroke(visuals.widgets.noninteractive.bg_stroke)
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(
+                RichText::new(value)
+                    .size(24.0)
+                    .color(accent.unwrap_or_else(|| visuals.strong_text_color())),
+            );
+            ui.label(RichText::new(label).small().weak());
+        })
+        .response
+}
+
+/// One sidebar entry: full width, the selected one marked by the accent bar as well as its fill,
+/// with an optional count on the right.
+fn nav_item(
+    ui: &mut egui::Ui,
+    selected: bool,
+    label: &str,
+    badge: Option<(String, Color32)>,
+) -> egui::Response {
+    let text = if selected {
+        RichText::new(label).strong()
+    } else {
+        RichText::new(label)
+    };
+    let mut button = egui::Button::selectable(selected, text)
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(ui.available_width(), 28.0));
+    if let Some((badge, color)) = badge {
+        button = button.right_text(RichText::new(badge).small().color(color));
+    }
+    let response = ui.add(button);
+    if selected {
+        let rect = response.rect;
+        let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height()));
+        ui.painter()
+            .rect_filled(bar, 2.0, style::accent(ui.visuals()));
+    }
+    response
+}
+
+/// Keyboard shortcuts of the main window. `COMMAND` is Ctrl on Windows and Linux.
+mod shortcuts {
+    use eframe::egui::{Key, KeyboardShortcut, Modifiers};
+
+    pub const ADD_FILES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+    pub const SEARCH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::F);
+    pub const OPTIONS: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma);
+    pub const RELOAD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F5);
+    pub const RUN_QUEUE: KeyboardShortcut =
+        KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
+    /// `Ctrl+1` … `Ctrl+9` open the pages in sidebar order.
+    pub const PAGES: [Key; 9] = [
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+    ];
+}
+
+/// `Shortcut: Ctrl+,` for a hover text.
+fn shortcut_hint(ctx: &egui::Context, shortcut: &egui::KeyboardShortcut) -> String {
+    format!("Shortcut: {}", ctx.format_shortcut(shortcut))
+}
+
+/// A menu entry that shows its keyboard shortcut.
+fn menu_entry<'a>(
+    ctx: &egui::Context,
+    text: &'a str,
+    shortcut: &egui::KeyboardShortcut,
+) -> egui::Button<'a> {
+    egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut))
+}
+
+/// Categories of the Options window, in the order of its list.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum OptionsPage {
+    Account,
+    Appearance,
+    Library,
+    Hashing,
+    Renaming,
+    Tools,
+    Exports,
+    Updates,
+}
+
+impl OptionsPage {
+    const ALL: [OptionsPage; 8] = [
+        OptionsPage::Account,
+        OptionsPage::Appearance,
+        OptionsPage::Library,
+        OptionsPage::Hashing,
+        OptionsPage::Renaming,
+        OptionsPage::Tools,
+        OptionsPage::Exports,
+        OptionsPage::Updates,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            OptionsPage::Account => "AniDB account",
+            OptionsPage::Appearance => "Appearance",
+            OptionsPage::Library => "Managed folders",
+            OptionsPage::Hashing => "Hashing",
+            OptionsPage::Renaming => "Renaming",
+            OptionsPage::Tools => "Players and tools",
+            OptionsPage::Exports => "Exports",
+            OptionsPage::Updates => "Updates",
+        }
+    }
 }
 
 fn is_busy(e: &animatic_core::Error) -> bool {
@@ -4972,10 +5864,30 @@ fn filter_genres(p: &LibraryProjection, q: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Width of the label column of forms, so the fields of a section line up.
+const LABEL_WIDTH: f32 = 140.0;
+/// Width of single-line text fields in forms.
+const FIELD_WIDTH: f32 = 340.0;
+
+/// A form label in the fixed-width label column.
+fn field_label(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(LABEL_WIDTH, height),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_width(LABEL_WIDTH);
+            ui.label(label)
+        },
+    )
+    .inner
+}
+
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.horizontal(|ui| {
-        ui.label(label);
-        ui.text_edit_singleline(value);
+        let label = field_label(ui, label);
+        ui.add(egui::TextEdit::singleline(value).desired_width(FIELD_WIDTH))
+            .labelled_by(label.id);
     });
 }
 
@@ -4993,25 +5905,28 @@ fn batch_rename_line(
         .unwrap_or_default()
         .to_string_lossy()
         .into_owned();
+    let visuals = ui.visuals();
     let (color, status, text) = match result {
         Some(Ok(how)) => (
-            Color32::LIGHT_GREEN,
+            style::ok(visuals),
             how.clone(),
             row.plan.target.as_ref().map(|t| t.display().to_string()),
         ),
         Some(Err(why)) => (
-            Color32::LIGHT_RED,
+            style::error(visuals),
             format!("Not renamed: {why}"),
             row.plan.target.as_ref().map(|t| t.display().to_string()),
         ),
         None if row.plan.can_apply() => (
-            Color32::LIGHT_GREEN,
+            style::ok(visuals),
             if applied { "Waiting" } else { "Ready" }.to_string(),
             row.plan.target.as_ref().map(|t| t.display().to_string()),
         ),
-        None if row.plan.already_named() => (Color32::GRAY, "Already named".to_string(), None),
+        None if row.plan.already_named() => {
+            (visuals.weak_text_color(), "Already named".to_string(), None)
+        }
         None => (
-            Color32::LIGHT_RED,
+            style::error(visuals),
             "Blocked".to_string(),
             Some(
                 row.plan
@@ -5046,8 +5961,10 @@ fn batch_rename_line(
 /// A text field with a hover explanation.
 fn field_hint(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
     ui.horizontal(|ui| {
-        ui.label(label);
-        ui.text_edit_singleline(value).on_hover_text(hint);
+        let label = field_label(ui, label);
+        ui.add(egui::TextEdit::singleline(value).desired_width(FIELD_WIDTH))
+            .labelled_by(label.id)
+            .on_hover_text(hint);
     });
 }
 
@@ -5063,16 +5980,16 @@ fn shortened(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
 
 fn show_plan(ui: &mut egui::Ui, plan: &Plan) {
     for error in &plan.errors {
-        ui.colored_label(Color32::LIGHT_RED, error);
+        ui.colored_label(style::error(ui.visuals()), error);
     }
     if !plan.warnings.is_empty() {
         ui.colored_label(
-            Color32::YELLOW,
+            style::warn(ui.visuals()),
             "The pattern reported warnings, so its result cannot be trusted. Renaming stays \
-             disabled until they are fixed:",
+         disabled until they are fixed:",
         );
         for warning in &plan.warnings {
-            ui.colored_label(Color32::YELLOW, format!("• {warning}"));
+            ui.colored_label(style::warn(ui.visuals()), format!("• {warning}"));
         }
     }
 }

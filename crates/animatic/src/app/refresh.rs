@@ -123,7 +123,7 @@ impl AnimaticApp {
         let report = report.clone();
         let mut go = None;
         let response = egui::Modal::new(egui::Id::unique("full_update")).show(ctx, |ui| {
-            ui.heading("Full update");
+            crate::style::section(ui, "Full update");
             ui.label(format!(
                 "Queues {} commands: {} title dump, {} file refreshes and {} anime refreshes for \
                  the hashed files in the library.",

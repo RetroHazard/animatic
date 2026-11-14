@@ -10,7 +10,7 @@ use animatic_core::format;
 use animatic_core::media::install::current_pin;
 use animatic_core::media::store::MediaTarget;
 use animatic_core::media::tool::{self, Ffprobe};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 use super::AnimaticApp;
 use crate::media::{MediaScope, MediaTools, ToolEvent, ToolJob};
@@ -194,7 +194,7 @@ impl AnimaticApp {
             ));
             ui.label(RichText::new(tool.path.display().to_string()).weak());
         } else {
-            ui.colored_label(Color32::YELLOW, "ffprobe was not found.");
+            ui.colored_label(crate::style::warn(ui.visuals()), "ffprobe was not found.");
         }
         for note in &self.media_ui.notes {
             ui.label(RichText::new(note).weak());
@@ -223,9 +223,8 @@ impl AnimaticApp {
         .on_disabled_hover_text("Needs ffprobe: install it below or set its path");
         ui.label(
             RichText::new(
-                "Off by default. Reads duration, resolution, codecs and bitrates of each hashed \
-                 file once, in a separate step after hashing, and fills the media tokens of the \
-                 hash export.",
+                "Off by default. Reads duration, resolution, codecs and bitrates once, after \
+                 hashing, for the hash-export media tokens.",
             )
             .weak(),
         );
@@ -270,7 +269,7 @@ impl AnimaticApp {
             );
         }
         if let Some(error) = &self.media_ui.error {
-            ui.colored_label(Color32::LIGHT_RED, error);
+            ui.colored_label(crate::style::error(ui.visuals()), error);
         }
         let can_read = available && self.settings.media.read_properties;
         if ui
@@ -298,7 +297,7 @@ impl AnimaticApp {
         let folder = tool::install_dir(&self.media_ui.data_dir);
         let mut go = None;
         let response = egui::Modal::new(egui::Id::unique("install_ffprobe")).show(ctx, |ui| {
-            ui.heading("Install ffprobe");
+            crate::style::section(ui, "Install ffprobe");
             ui.label(
                 "Animatic will download FFmpeg's ffprobe tool, check it against a fixed \
                  SHA-256 checksum and keep only ffprobe and the FFmpeg license in its own \

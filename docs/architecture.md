@@ -86,6 +86,7 @@ cover thread pass them to `UdpConfig`/`HttpClient::new`.
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
 projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `auto_queue.rs` (opt-in automatic queue runs), `session.rs` (the AniDB session kept between runs), `hash_jobs.rs` (worker side of the persistent hash queue).
 The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash queue panel is `app/hash_queue_panel.rs`.
+`style.rs` (type scale, spacing, dark and light palettes, the accent and the status colours as helpers such as `warn`, `error`, `ok`, `section`, `plural` and `destructive`) and `app/dialog.rs` (the one constructor of floating windows: centred, no collapse triangle, closed by Esc when topmost and not typing).
 `media.rs` (the media tools thread for `ffprobe` detection and install, and the body of `Job::ReadMedia`),
 `app/media_options.rs` (the Options section, the install confirmation and the read after hashing).
 
@@ -125,7 +126,7 @@ network work is cancelled on drop, and an install in progress is joined.
 SQLite is the shared state. WAL mode lets the projection thread and the UI read while the worker
 writes; only one writer proceeds at a time. Writers that read-modify-write use
 `Db::write_tx` (`BEGIN IMMEDIATE`, nested use through a savepoint). When the UI hits a busy
-database, a queued command is held in memory and shown as "NOT saved yet" (up to 1000, retried
+database, a queued command is held in memory and shown as "not saved yet" (up to 1000, retried
 every 500 ms, one final 5 s attempt at exit); commands still unsaved after that are lost and logged. A
 failed mylist edit is not deferred: it reports the error and nothing changes.
 
@@ -260,7 +261,7 @@ sequenceDiagram
     participant Net as animatic-anidb clients
     User->>UI: Edit MyList / identify file
     UI->>DB: persist command (queue_edit_mylist / queue_push)
-    User->>UI: Synchronize now / Run command queue
+    User->>UI: Run command queue
     UI->>Worker: Job::ProcessQueue(AnidbSettings)
     Worker->>DB: refuse while offline or in cooldown
     Worker->>Net: build UdpClient and HttpClient from settings, over the worker's one shared Limits
@@ -323,9 +324,9 @@ exists before AniDB answers; `LibraryProjection` derives `LocalFile::mylist_add_
 queue snapshot so **Hashed files** shows `Add queued`. A removal never touches the `mylist` row
 until `execute` has AniDB's `MYLISTDEL` reply (`mylist_deleted_on_anidb`, which keeps the row when
 newer intent was queued after the delete); `LibraryProjection::mylist_pending` (from
-`pending_by_lid`) shows `Edit queued`, `Removal queued` and the `blocked` forms on **My list**. The
+`pending_by_lid`) shows `Edit queued`, `Removal queued` and the `blocked` forms on **MyList**. The
 latest `MYLISTSTATS` result is stored in `meta.mylist_stats` with its arrival time and exposed as
-`LibraryProjection::account_stats`; the Overview labels it as AniDB account figures, apart from
+`LibraryProjection::account_stats`; the Overview labels it **Your AniDB account**, apart from
 the local counts.
 
 ### Library projections
@@ -378,7 +379,7 @@ independent user actions.
    template=xml-plain-new` through the worker's shared `Limits`; `217` is a success, `318`
    (already queued) completes as skipped and is reported, `317` is a permanent error for that
    command only. A full update never queues it and nothing schedules it.
-2. **File → Import MyList export…** picks the file the user downloaded from AniDB and submits
+2. **File → Import → MyList export…** picks the file the user downloaded from AniDB and submits
    `Job::ImportMylistExport`. The worker calls `Db::import_mylist_export`, which reads the file
    like the title dump (bounded by `ExportLimits`; tar/tgz/zip/gzip/plain XML told from the
    content), validates all of it while spooling into a private temporary SQLite database, and
@@ -393,7 +394,7 @@ Details, accepted XML structure and merge rules:
 ### Legacy migration
 
 1. `find_databank` accepts a `kowai` directory or an install directory containing one.
-2. **File > Import AOM databank...** submits `Job::ImportLegacy { source, temp_root, confirmed }`.
+2. **File > Import > AOM databank...** submits `Job::ImportLegacy { source, temp_root, confirmed }`.
    The worker calls `open_for_legacy_import`: when the database is not empty (`Db::is_empty`:
    no anime, MyList entry or local file) and the job is not `confirmed`, nothing is written and
    the job answers `Event::LegacyImportNeedsConfirmation`. The UI thread never inspects the
@@ -481,7 +482,7 @@ library).
 
 ### Legacy settings migration
 
-**File > Import AOM settings...** submits `Job::ImportLegacySettings`; the worker parses the
+**File > Import > AOM settings...** submits `Job::ImportLegacySettings`; the worker parses the
 XML and returns a typed event. The UI keeps the candidate pending behind a review window that
 reports counts and a generic credential warning, never values. While it is open, worker
 submissions are gated. Apply forces offline mode and **saves before activating**; a save
@@ -841,7 +842,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 
 | Topic | Anchor |
 |---|---|
-| Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
+| Pages and menus | `crates/animatic/src/app.rs`: `Page::GROUPS` and `Page::all`, `top_bar`, `navigation`, `page_header`, `dashboard`, `attention`, `getting_started`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window` (with the `options_*` category methods and `OptionsPage`), `bottom_bar`, `handle_shortcuts` and `mod shortcuts`; `crates/animatic/src/style.rs`; `crates/animatic/src/app/dialog.rs` |
 | MyList editor, add, remove, refresh, account figures | `crates/animatic/src/app/mylist_editor.rs`: `MylistForm::build`, `mylist_toolbar`, `entry_editor_window`, `open_add_dialog`/`add_window`, `remove_window`, `click_selection`, `account_figures`; `library.rs`: `pending_by_lid`, `mark_pending_adds`; `store.rs`: `store_mylist_stats`, `mylist_stats_snapshot` |
 | Full update menu action, update known file information | `crates/animatic/src/app/refresh.rs`: `after_hash` (what hashing queues: identify, refresh a known file inside the 7-day window, nothing), `start_full_update_preview`/`full_update_window`; `worker.rs`: `plan_full_update` (shared by `preview_full_update` and `queue_full_update`, so the preview counts equal what is queued) |
 | Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals` |

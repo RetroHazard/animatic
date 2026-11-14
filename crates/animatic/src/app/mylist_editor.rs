@@ -338,6 +338,13 @@ impl AnimaticApp {
         let removing = selected
             .and_then(|lid| self.projection.mylist_pending.get(&lid))
             .is_some_and(|p| p.delete);
+        let status = selected.map(|lid| {
+            if removing {
+                format!("Entry {lid}: removal queued")
+            } else {
+                format!("Entry {lid} · {}", self.mylist_row_title(lid))
+            }
+        });
         let (mut edit, mut remove, mut refresh) = (false, false, false);
         ui.horizontal(|ui| {
             edit = ui
@@ -353,14 +360,17 @@ impl AnimaticApp {
                 )
                 .clicked();
             refresh = ui
-                .add_enabled(selected.is_some(), egui::Button::new("Refresh entry"))
+                .add_enabled(selected.is_some(), egui::Button::new("Refresh from AniDB"))
                 .on_hover_text("Queues a request that re-reads this entry from AniDB")
                 .clicked();
-            ui.label(match selected {
-                Some(lid) if removing => format!("Entry {lid}: removal queued"),
-                Some(lid) => format!("Entry {lid} selected"),
-                None => "Click a row's episode to select it".to_string(),
-            });
+            match status {
+                Some(text) => ui.label(text),
+                None => ui.label(
+                    RichText::new("Click a row's episode to select it")
+                        .weak()
+                        .small(),
+                ),
+            };
         });
         let Some(lid) = selected else { return };
         if edit {
@@ -374,7 +384,7 @@ impl AnimaticApp {
         }
         if refresh {
             self.queue_command(Command::MylistRefresh { lid });
-            self.log(format!("Queued a refresh of mylist entry {lid}"));
+            self.log(format!("Queued a refresh of MyList entry {lid}"));
         }
     }
 
@@ -391,9 +401,9 @@ impl AnimaticApp {
             }
             Ok(None) => {
                 self.mylist_ui.selected_lid = None;
-                self.error(format!("Mylist entry {lid} no longer exists locally"));
+                self.error(format!("MyList entry {lid} no longer exists locally"));
             }
-            Err(e) => self.error(format!("Could not read mylist entry {lid}: {e}")),
+            Err(e) => self.error(format!("Could not read MyList entry {lid}: {e}")),
         }
     }
 
@@ -439,9 +449,9 @@ impl AnimaticApp {
         let mut open = true;
         let mut cancel = false;
         let mut to_save: Option<MylistEdit> = None;
-        egui::Window::new(format!("Edit MyList entry {}", editor.lid))
+        let shown = super::dialog::window(ctx, "Edit MyList entry")
+            .id(egui::Id::unique("mylist_entry_editor"))
             .open(&mut open)
-            .collapsible(false)
             .show(ctx, |ui| {
                 ui.strong(&editor.title);
                 ui.label(
@@ -453,7 +463,7 @@ impl AnimaticApp {
                 );
                 if removing {
                     ui.colored_label(
-                        Color32::from_rgb(235, 160, 90),
+                        crate::style::warn(ui.visuals()),
                         "This entry is waiting to be removed from MyList; edits are refused.",
                     );
                 }
@@ -470,7 +480,7 @@ impl AnimaticApp {
                 let built = editor.form.build(editor.entry.viewed, format::now());
                 match &built {
                     Err(message) => {
-                        ui.colored_label(Color32::LIGHT_RED, message);
+                        ui.colored_label(crate::style::error(ui.visuals()), message);
                     }
                     Ok(edit) if *edit == MylistEdit::default() => {
                         ui.label(RichText::new("Nothing is ticked yet.").weak());
@@ -478,7 +488,7 @@ impl AnimaticApp {
                     Ok(_) => {}
                 }
                 if let Some(message) = &editor.error {
-                    ui.colored_label(Color32::LIGHT_RED, message);
+                    ui.colored_label(crate::style::error(ui.visuals()), message);
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -499,7 +509,8 @@ impl AnimaticApp {
                     }
                 });
             });
-        let mut keep = open && !cancel;
+        let escape = super::dialog::escape_closes(ctx, shown.as_ref());
+        let mut keep = open && !cancel && !escape;
         if let Some(edit) = to_save {
             let lid = editor.lid;
             match self.db.queue_edit_mylist(lid, &edit) {
@@ -518,12 +529,12 @@ impl AnimaticApp {
                             generation: self.loader.next_generation,
                         },
                     );
-                    self.log(format!("Queued an edit of mylist entry {lid}"));
+                    self.log(format!("Queued an edit of MyList entry {lid}"));
                     self.request_library_refresh();
                     keep = false;
                 }
                 Err(e) => {
-                    self.db_write_error(&format!("Could not edit mylist entry {lid}"), &e);
+                    self.db_write_error(&format!("Could not edit MyList entry {lid}"), &e);
                     editor.error = Some(e.to_string());
                 }
             }
@@ -540,18 +551,16 @@ impl AnimaticApp {
         let mut open = true;
         let mut cancel = false;
         let mut to_queue: Option<MylistEdit> = None;
-        egui::Window::new("Add to MyList")
+        let shown = super::dialog::window(ctx, "Add to MyList")
             .open(&mut open)
-            .collapsible(false)
             .show(ctx, |ui| {
                 let plan = &dialog.plan;
                 if plan.targets.is_empty() {
                     ui.label("None of the selected files can be added.");
                 } else {
                     ui.strong(format!(
-                        "{} file{} will be queued for your MyList",
-                        plan.targets.len(),
-                        if plan.targets.len() == 1 { "" } else { "s" }
+                        "{} will be queued for your MyList",
+                        crate::style::plural(plan.targets.len(), "file", "files")
                     ));
                     if plan.unidentified() > 0 {
                         ui.label(format!(
@@ -577,7 +586,7 @@ impl AnimaticApp {
                 if plan.in_mylist > 0 {
                     ui.label(
                         RichText::new(format!(
-                            "{} already in MyList (edit them on the My list page)",
+                            "{} already in MyList (edit them on the MyList page)",
                             plan.in_mylist
                         ))
                         .weak(),
@@ -603,7 +612,7 @@ impl AnimaticApp {
                 form_ui(ui, &mut dialog.form, "Set", false, "mylist-add");
                 let built = dialog.form.build(false, format::now());
                 if let Err(message) = &built {
-                    ui.colored_label(Color32::LIGHT_RED, message);
+                    ui.colored_label(crate::style::error(ui.visuals()), message);
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -622,6 +631,7 @@ impl AnimaticApp {
                     }
                 });
             });
+        let escape = super::dialog::escape_closes(ctx, shown.as_ref());
         if let Some(edit) = to_queue {
             let count = dialog.plan.targets.len();
             for target in std::mem::take(&mut dialog.plan.targets) {
@@ -631,10 +641,10 @@ impl AnimaticApp {
                 });
             }
             self.log(format!(
-                "Queued {count} file{} for MyList; run the command queue to send them",
-                if count == 1 { "" } else { "s" }
+                "Queued {} for MyList; run the command queue to send them",
+                crate::style::plural(count, "file", "files")
             ));
-        } else if open && !cancel {
+        } else if open && !cancel && !escape {
             self.mylist_ui.add = Some(dialog);
         }
     }
@@ -643,52 +653,63 @@ impl AnimaticApp {
         let Some(confirm) = self.mylist_ui.remove.take() else {
             return;
         };
-        let mut open = true;
         let mut decision = None;
-        egui::Window::new("Remove from MyList")
-            .open(&mut open)
-            .collapsible(false)
-            .show(ctx, |ui| {
-                ui.label("Remove this entry from your AniDB MyList?");
-                ui.strong(&confirm.title);
-                ui.add_space(6.0);
-                ui.label(
-                    "Your media file on disk is not touched. The request is queued and sent \
-                     when the command queue runs; this list keeps the row until AniDB confirms \
-                     the removal. Edits of this entry that are still queued are discarded.",
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Remove from MyList").clicked() {
-                        decision = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        decision = Some(false);
-                    }
-                });
+        let modal = egui::Modal::new(egui::Id::unique("mylist_remove_confirm")).show(ctx, |ui| {
+            ui.set_max_width(440.0);
+            crate::style::section(ui, "Remove from MyList");
+            ui.label("Remove this entry from your AniDB MyList?");
+            ui.strong(&confirm.title);
+            ui.add_space(6.0);
+            ui.label(
+                "Your media file on disk is not touched. The request is queued and sent \
+                 when the command queue runs; this list keeps the row until AniDB confirms \
+                 the removal. Edits of this entry that are still queued are discarded.",
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let label = crate::style::destructive(ui, "Remove from MyList");
+                if ui.button(label).clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    decision = Some(false);
+                }
             });
+        });
+        if decision.is_none() && modal.should_close() {
+            decision = Some(false);
+        }
         match decision {
             Some(true) => {
                 self.queue_command(Command::MylistDelete { lid: confirm.lid });
                 self.log(format!(
-                    "Queued removal of mylist entry {}; run the command queue to send it",
+                    "Queued removal of MyList entry {}; run the command queue to send it",
                     confirm.lid
                 ));
             }
-            None if open => self.mylist_ui.remove = Some(confirm),
-            _ => {}
+            None => self.mylist_ui.remove = Some(confirm),
+            Some(false) => {}
         }
     }
 
     /// The statistics AniDB reported for the whole account, labelled apart from the local
     /// figures above them.
-    pub(super) fn account_figures(&self, ui: &mut egui::Ui) {
-        ui.heading("AniDB account figures");
+    pub(super) fn account_figures(&mut self, ui: &mut egui::Ui) {
+        crate::style::section(ui, "Your AniDB account");
         let Some(stored) = &self.projection.account_stats else {
-            ui.label(
-                "None received yet. Tools → Fetch mylist statistics queues the request; AniDB \
-                 answers when the command queue runs.",
-            );
+            let mut fetch = false;
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("No account statistics yet.").weak());
+                fetch = ui
+                    .button("Fetch MyList statistics")
+                    .on_hover_text(
+                        "Queues the request; AniDB answers when you run the command queue",
+                    )
+                    .clicked();
+            });
+            if fetch {
+                self.queue_command(Command::MylistStats);
+            }
             return;
         };
         let s = &stored.stats;
@@ -701,38 +722,34 @@ impl AnimaticApp {
             .weak(),
         );
         ui.columns(4, |cols| {
-            metric(&mut cols[0], "Anime (AniDB)", format::thousands(s.animes));
-            metric(
-                &mut cols[1],
-                "Episodes (AniDB)",
-                format::thousands(s.episodes),
-            );
-            metric(&mut cols[2], "Files (AniDB)", format::thousands(s.files));
+            metric(&mut cols[0], "Anime", format::thousands(s.animes));
+            metric(&mut cols[1], "Episodes", format::thousands(s.episodes));
+            metric(&mut cols[2], "Files", format::thousands(s.files));
             metric(
                 &mut cols[3],
-                "Size (AniDB)",
+                "Size",
                 format::size_short(s.size_mb.saturating_mul(1024 * 1024)),
             );
         });
         ui.columns(4, |cols| {
             metric(
                 &mut cols[0],
-                "Watched episodes (AniDB)",
+                "Watched episodes",
                 format::thousands(s.viewed_episodes),
             );
             metric(
                 &mut cols[1],
-                "Watch time (AniDB)",
+                "Watch time",
                 format::length_compact(s.viewed_minutes.saturating_mul(60)),
             );
             metric(
                 &mut cols[2],
-                "Watched of MyList (AniDB)",
+                "MyList watched",
                 format!("{}%", s.viewed_pct_of_mylist),
             );
             metric(
                 &mut cols[3],
-                "Votes / reviews (AniDB)",
+                "Votes / reviews",
                 format!("{} / {}", s.votes, s.reviews),
             );
         });

@@ -22,7 +22,7 @@ Linux-specific statements are reading of the code.
 | Capability | Status |
 |---|---|
 | Rename one selected, AniDB-identified hashed file after a preview and explicit confirmation (**Hashed files → Rename…**) | Implemented |
-| Choose a built-in naming convention or write a custom pattern with an in-app reference and a live example, restore the replaced custom text and validate it on the selected file (**Tools → Options → Renaming pattern**) | Implemented |
+| Choose a built-in naming convention or write a custom pattern with an in-app reference and a live example, restore the replaced custom text and validate it on the selected file (**Tools → Options → Renaming**) | Implemented |
 | Per-folder rename destination (`base_path`, shown as **Rename destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
 | Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
 | Automatic renaming during or after a scan | **Opt-in per managed folder** (Options > Managed folders > **Auto rename**: Off, Dry run, On; off by default). Dry run only logs the plans; On renames identified files through the same verified worker job, and choosing On first shows a dry-run list to confirm. Collisions and blocked plans are skipped and logged, never overwritten. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). |

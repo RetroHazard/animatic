@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::library::{Anime, AnimeMylistState, LocalFile};
-use crate::settings::{ColorSlot, ColumnState, SlotColor, SortDirection};
+use crate::settings::{ColorSlot, ColumnState, RowStyle, SlotColor, SortDirection, TintMode};
 
 // ---------------------------------------------------------------------------------------------
 // Window geometry
@@ -245,11 +245,19 @@ pub fn set_column_visible(layout: &mut [ColumnState], index: usize, visible: boo
 // Status row colours
 // ---------------------------------------------------------------------------------------------
 
-/// Background and text colour of a tinted row, both 0xRRGGBB.
+/// What the painter needs to draw a tinted row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowColors {
+    /// Status colour of the slot, 0xRRGGBB: the whole fill when [`RowStyle::Solid`], the
+    /// marker bar and the tint source when [`RowStyle::Soft`].
     pub background: u32,
+    /// Text colour on a solid fill: the slot's own text colour, or black or white by contrast.
     pub text: u32,
+    /// The slot asks for the user's action (unknown, CRC mismatch, duplicate), so its soft
+    /// tint is stronger.
+    pub attention: bool,
+    /// How to draw the row. A slot with an explicit text colour is always solid.
+    pub style: RowStyle,
 }
 
 fn channel(value: u32) -> f64 {
@@ -283,19 +291,22 @@ pub fn readable_text(background: u32) -> u32 {
 /// The colours of a row whose status maps to `slot`, or `None` for an untinted row: status
 /// colours are off, or the slot is a neutral one the user did not customise.
 ///
-/// A text colour set for the slot is used as is; otherwise the text is black or white,
-/// whichever contrasts more with the background.
+/// A text colour set for the slot is used as is, and makes the row solid whatever the chosen
+/// style (the user picked that pair); otherwise the solid text is black or white, whichever
+/// contrasts more with the background.
 ///
-/// Takes `ui.colored_rows` and `ui.colors` separately so a table can hold its column layout
-/// (`ui.columns`) mutably while its rows are being coloured.
+/// Takes the [`TintMode`] (from `ui.tint_mode()`) and `ui.colors` separately so a table can
+/// hold its column layout (`ui.columns`) mutably while its rows are being coloured.
 pub fn row_colors(
-    colored_rows: bool,
+    mode: TintMode,
     overrides: &BTreeMap<String, SlotColor>,
     slot: ColorSlot,
 ) -> Option<RowColors> {
-    if !colored_rows {
-        return None;
-    }
+    let chosen = match mode {
+        TintMode::Off => return None,
+        TintMode::Soft => RowStyle::Soft,
+        TintMode::Solid => RowStyle::Solid,
+    };
     let custom = overrides.get(&format!("{slot:?}")).copied();
     if slot.is_neutral() && custom.is_none() {
         return None;
@@ -309,6 +320,12 @@ pub fn row_colors(
         text: color
             .text
             .unwrap_or_else(|| readable_text(color.background)),
+        attention: slot.is_attention(),
+        style: if color.text.is_some() {
+            RowStyle::Solid
+        } else {
+            chosen
+        },
     })
 }
 
@@ -584,16 +601,34 @@ mod tests {
     #[test]
     fn rows_are_tinted_by_status_only_when_status_colours_are_on() {
         let mut ui = UiSettings::default();
-        let colors = row_colors(ui.colored_rows, &ui.colors, ColorSlot::LocalFileUnknown).unwrap();
+        let colors = row_colors(ui.tint_mode(), &ui.colors, ColorSlot::LocalFileUnknown).unwrap();
         assert_eq!(
             colors.background,
             ColorSlot::LocalFileUnknown.default_background()
         );
         assert_eq!(colors.text, readable_text(colors.background));
+        assert!(colors.attention);
+        assert_eq!(colors.style, RowStyle::Soft);
         ui.colored_rows = false;
         assert_eq!(
-            row_colors(ui.colored_rows, &ui.colors, ColorSlot::LocalFileUnknown),
+            row_colors(ui.tint_mode(), &ui.colors, ColorSlot::LocalFileUnknown),
             None
+        );
+    }
+
+    #[test]
+    fn the_row_style_picks_soft_or_solid_and_only_attention_slots_are_marked() {
+        let mut ui = UiSettings::default();
+        let watched = row_colors(ui.tint_mode(), &ui.colors, ColorSlot::Watched).unwrap();
+        assert_eq!(watched.style, RowStyle::Soft);
+        assert!(!watched.attention);
+        ui.row_style = RowStyle::Solid;
+        let solid = row_colors(ui.tint_mode(), &ui.colors, ColorSlot::Watched).unwrap();
+        assert_eq!(solid.style, RowStyle::Solid);
+        assert_eq!(
+            ColorSlot::ALL.iter().filter(|s| s.is_attention()).count(),
+            4,
+            "unknown, invalid CRC (local and AniDB) and duplicate"
         );
     }
 
@@ -601,7 +636,7 @@ mod tests {
     fn plain_rows_stay_untinted_until_the_user_customises_the_slot() {
         let mut ui = UiSettings::default();
         assert_eq!(
-            row_colors(ui.colored_rows, &ui.colors, ColorSlot::LocalFile),
+            row_colors(ui.tint_mode(), &ui.colors, ColorSlot::LocalFile),
             None
         );
         ui.set_color(
@@ -611,11 +646,15 @@ mod tests {
                 text: Some(0xEEEEEE),
             },
         );
+        // The explicit text colour makes the row solid even though the style is Soft.
+        assert_eq!(ui.row_style, RowStyle::Soft);
         assert_eq!(
-            row_colors(ui.colored_rows, &ui.colors, ColorSlot::LocalFile),
+            row_colors(ui.tint_mode(), &ui.colors, ColorSlot::LocalFile),
             Some(RowColors {
                 background: 0x102030,
-                text: 0xEEEEEE
+                text: 0xEEEEEE,
+                attention: false,
+                style: RowStyle::Solid,
             })
         );
     }
@@ -630,9 +669,10 @@ mod tests {
                 text: None,
             },
         );
-        let colors = row_colors(ui.colored_rows, &ui.colors, ColorSlot::Watched).unwrap();
+        let colors = row_colors(ui.tint_mode(), &ui.colors, ColorSlot::Watched).unwrap();
         assert_eq!(colors.background, 0x000080);
         assert_eq!(colors.text, 0xFFFFFF);
+        assert_eq!(colors.style, RowStyle::Soft);
     }
 
     fn local(fid: Option<i64>, lid: Option<i64>, viewed: bool) -> LocalFile {

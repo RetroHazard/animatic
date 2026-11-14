@@ -6,7 +6,7 @@ command fails. Error messages and recovery steps are in
 
 Animatic works **offline-first**. Hashing, browsing, searching and local MyList edits never
 touch the network. Network traffic happens only in the *Synchronizing with AniDB* job, started
-by **Tools → Run command queue** or **Queue → Synchronize now**, or by Animatic itself when you
+by **Tools → Run command queue** or **Queue → Run command queue**, or by Animatic itself when you
 switch on **Run the command queue automatically** ([below](#automatic-runs-and-the-anidb-session);
 off by default, so nothing runs on a timer unless you ask for it).
 
@@ -44,8 +44,8 @@ What the user-reachable commands do:
 | Identify | Stores AniDB's file record; optionally adds the file to MyList (see above) |
 | Edit mylist entry | Sends the merged state, watched, view date, storage, source and other changes; on success updates the local entry (keeping any newer pending edit on top) |
 | Add to mylist | From **Hashed files → Add to MyList…**. An identified file is added by file id; an unidentified one by size and ED2K hash, which AniDB looks up first (a file it does not know is dropped with the log line `file unknown to AniDB`). A new entry is stored locally with the values you set; if the file is already in MyList the entry is refreshed and your values are applied as an edit. Until then **Hashed files** shows `Add queued`. |
-| Remove mylist entry | From **My list → Remove from MyList…**. Deletes the entry on AniDB. The local row is removed only after AniDB acknowledges (or says the entry no longer exists), and not at all if you queued something for the entry afterwards. Never touches your media file. |
-| Refresh mylist entry | From **My list → Refresh entry**. Re-reads the entry and replaces the cached row, keeping edits that are still queued on top. If AniDB says the entry is gone, the row is removed unless changes for it are queued. |
+| Remove mylist entry | From **MyList → Remove from MyList…** (after a confirmation dialog). Deletes the entry on AniDB. The local row is removed only after AniDB acknowledges (or says the entry no longer exists), and not at all if you queued something for the entry afterwards. Never touches your media file. |
+| Refresh mylist entry | From **MyList → Refresh from AniDB**. Re-reads the entry and replaces the cached row, keeping edits that are still queued on top. If AniDB says the entry is gone, the row is removed unless changes for it are queued. |
 | Fetch anime N | Downloads the HTTP-API anime record: titles, episodes, genres, relations, reviews, metadata. At most once per anime per 24 hours (see [Request limits](#request-limits)) |
 | Fetch file N | Updates a file record (from a full update, or from hashing an already identified file again with *Update known file information* on). At most once per file per 7 days |
 | Fetch episode N | From the **Refresh** button of an episode in the [anime detail window](Library-Pages.md#anime-detail-window). Replaces the cached episode record |
@@ -53,7 +53,7 @@ What the user-reachable commands do:
 | Download anime title list | Streams `anime-titles.xml.gz` into a temporary store, validates it, then merges atomically in one transaction. Creates an anime row for every unknown id and replaces titles only of anime without a full HTTP record (imported AOM anime count as such). Failure leaves titles and the completion time untouched. Limits: 32 MiB compressed, 128 MiB decoded, 250 000 anime, 2 000 000 titles, 2048 bytes per name. At most once per 24 hours (see [Request limits](#request-limits)) |
 | Request MyList export | Sends `MYLISTEXPORT template=xml-plain-new`. Only from **Tools → Request MyList export…**; logs the answer (requested, already queued, or blocked as an unknown template). At most once per 24 hours. See [Full-account MyList import](#full-account-mylist-import) |
 | Cancel MyList export | Sends `MYLISTEXPORT cancel=1` (from the same dialog); logs that the export was cancelled or that none was queued |
-| Fetch mylist statistics | Stores AniDB's account figures with the time they arrived (replacing the previous ones) and shows them on the [Overview](Library-Pages.md#overview) as **AniDB account figures**, apart from the local figures. The log line `N anime, N episodes, N files in mylist` is still written |
+| Fetch mylist statistics | Stores AniDB's account figures with the time they arrived (replacing the previous ones) and shows them on the [Overview](Library-Pages.md#overview) under **Your AniDB account**, apart from the local figures. The log line `N anime, N episodes, N files in mylist` is still written |
 
 A full update (**Tools → Full update…** after a confirmation that shows the counts, or `--full-update`) queues the title list plus one file lookup and one anime refresh for
 each file id and anime id that your **identified hashed local files** resolve to (not the whole local
@@ -84,7 +84,7 @@ first command needs it and out when it ends. With it on, Animatic starts the sam
   [Failure handling](#failure-handling)), so a burst of new commands never goes out faster than
   AniDB allows. Blocked commands are not retried automatically: they wait for **Retry failed**.
 - **MyList removals are never sent automatically.** A removal queued with **Remove from MyList…**
-  stays queued until you click **Queue → Synchronize now** or **Tools → Run command queue**; an
+  stays queued until you click **Queue → Run command queue** or **Tools → Run command queue**; an
   automatic run sends everything else around it. The Queue page says so while the option is on
   and counts the removals that are waiting.
 - **When it waits.** The run is postponed, with one log line (`Automatic command queue run
@@ -150,7 +150,7 @@ pauses the queue for the same cooldown as any other ban.
 
 ## MyList editing
 
-On **My list**, changing **State** or toggling **Watched**, or saving the **Edit…** dialog (state,
+On **MyList**, changing **State** or toggling **Watched**, or saving the **Edit…** dialog (state,
 watched, view date, storage, source, other), is a *local-first* edit:
 
 1. In one database transaction the edit is saved to the outbox **and** the stored MyList entry is
@@ -206,7 +206,7 @@ on request, and Animatic imports that file. Nothing here runs by itself; each st
 3. **Download the file.** Open [AniDB's export page](https://anidb.net/perl-bin/animedb.pl?show=export)
    (the dialog's **Open export page** button opens it in your browser) and save the export.
    AniDB documents no way to fetch it from a program, so Animatic does not try.
-4. **Import it.** **File → Import MyList export…** and pick the downloaded file (an archive
+4. **Import it.** **File → Import → MyList export…** and pick the downloaded file (an archive
    `.tgz`/`.zip`, a compressed `.gz` or a plain `.xml`; the kind is recognized from the content).
 
 What AniDB answers to the request:

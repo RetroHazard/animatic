@@ -45,7 +45,7 @@ templates or credentials on load or save.
 | Options → **Save options** | Yes; also applies theme and scale and closes Options |
 | Applying reviewed AOM settings | Yes, immediately (see [AOM import](#aom-settings-import)) |
 | Help → Check for updates…, Download and verify, Install | No; none of these writes the settings file. Only **Save options** (including the `updates.auto_check` checkbox) does |
-| Overview → "Dismiss first-run card" | Yes, unless the [recovery guard](#recovery-matrix) holds |
+| Overview → "Getting started" → **Hide** | Yes, unless the [recovery guard](#recovery-matrix) holds |
 | Closing the application | Yes, unless the guard holds; a failed exit save is silent. This is also when the window size, position and maximized state and the table column layouts reach the file |
 | Starting with neither file present | No; defaults are used and no file is created until the first save |
 
@@ -103,7 +103,7 @@ whose root is not an object (`[]`, `null`, `42`, `"text"`, `true` are all reject
 count as an empty-defaults file and never replace a backup).
 
 After a backup recovery the guard keeps the unreadable original untouched: the exit save and the
-first-run-card save are skipped, so recovered settings survive only in memory until you use
+Getting started **Hide** save are skipped, so recovered settings survive only in memory until you use
 **Save options** (or apply an AOM import). That explicit save writes the recovered values, including
 `offline: true`, over the primary (and, when the keystore works, writes the recovered credentials to
 it); untick the offline option afterwards if you want to go online.
@@ -213,7 +213,7 @@ Closing Animatic writes the complete file back, so the file then also contains e
 
 ## AOM settings import
 
-File → Import AOM settings… reads an AOM `local_settings.xml` (UTF-8 or UTF-16) on top of the
+File → Import → AOM settings… reads an AOM `local_settings.xml` (UTF-8 or UTF-16) on top of the
 defaults, shows a review window and, on **Apply imported settings**, saves it immediately
 (rotating the previous valid file into `settings.json.bak`), replaces the in-memory settings,
 forces `offline: true` and applies the theme and scale. Cancel changes nothing. XML containing no

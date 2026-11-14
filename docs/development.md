@@ -218,7 +218,7 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
    choose **Save options**. A fresh settings file has `offline` set to `false`, the
    built-in default folder rule adds identified files to MyList, and **Identify files with
    AniDB after hashing** is on by default, so hashing queues an Identify command. Nothing
-   runs unless you choose **Tools → Run command queue** or **Synchronize now**, but a smoke
+   runs unless you choose **Tools → Run command queue** or **Queue → Run command queue**, but a smoke
    test must never be one click from the network. The startup update check
    (`updates.auto_check`, default on) also contacts GitHub on a fresh profile; seed the isolated
    settings file with `{ "updates": { "auto_check": false }, "anidb": { "offline": true } }`
@@ -241,7 +241,7 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
 
 4. Exercise the changed path end to end (for example **File → Add files…**, the **Hashed
    files**, **Queue** and **Log** pages, **Tools → Scan managed folders**, the rename
-   preview/confirm window, or **File → Import AOM settings…** with a hand-written synthetic
+   preview/confirm window, or **File → Import → AOM settings…** with a hand-written synthetic
    XML file) and watch the status bar and the **Log** page for errors.
 5. Close the application and reopen it against the same files to confirm persistence (queue
    rows, settings, library rows).
@@ -405,7 +405,7 @@ is two years after its date):
    license text if it changed), the table in the transport section above and the sizes quoted in
    `wiki/External-Tools.md` and `wiki/Data-Locations.md`. `the_pinned_constants_are_well_formed`
    checks the shape (LGPL asset, HTTPS GitHub URL, 64 hex digits, size limit).
-5. Run the workspace checks, then a manual install on both platforms (Options → Media properties →
+5. Run the workspace checks, then a manual install on both platforms (Options → Players and tools → Media properties →
    **Install ffprobe…**) and one probe of a synthetic media file; a Linux run is not verified by
    the project until someone records one.
 

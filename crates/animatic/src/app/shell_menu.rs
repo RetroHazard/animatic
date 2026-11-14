@@ -125,28 +125,30 @@ impl ShellUi {
             ui.label(RichText::new(format!("Not available: {reason}.")).weak());
             return;
         }
-        let (text, color) = self.status_text(*enabled);
+        let (text, color) = self.status_text(*enabled, ui.visuals());
         ui.label(RichText::new(text).color(color));
     }
 
-    fn status_text(&self, enabled: bool) -> (String, Color32) {
-        let weak = Color32::GRAY;
+    fn status_text(&self, enabled: bool, visuals: &egui::Visuals) -> (String, Color32) {
+        let weak = visuals.weak_text_color();
+        let warn = crate::style::warn(visuals);
         if self.pending.is_some() {
             return ("Checking…".into(), weak);
         }
         match &self.status {
             None => ("Checking…".into(), weak),
-            Some(Err(e)) => (format!("Could not check the registration: {e}"), Color32::YELLOW),
-            Some(Ok(Status::Registered)) if enabled => {
-                ("Registered for the current user.".into(), Color32::LIGHT_GREEN)
-            }
+            Some(Err(e)) => (format!("Could not check the registration: {e}"), warn),
+            Some(Ok(Status::Registered)) if enabled => (
+                "Registered for the current user.".into(),
+                crate::style::ok(visuals),
+            ),
             Some(Ok(Status::Registered)) => (
                 "Registered for the current user; Save options to remove it.".into(),
-                Color32::YELLOW,
+                warn,
             ),
             Some(Ok(Status::NotRegistered)) if enabled => (
                 "Not registered yet; Save options to add it.".into(),
-                Color32::YELLOW,
+                warn,
             ),
             Some(Ok(Status::NotRegistered)) => ("Not registered.".into(), weak),
             Some(Ok(Status::Elsewhere { command })) if enabled => (
@@ -154,19 +156,19 @@ impl ShellUi {
                     "Registered for another copy of Animatic ({command}); Save options to \
                      register this copy instead."
                 ),
-                Color32::YELLOW,
+                warn,
             ),
             Some(Ok(Status::Elsewhere { command })) => (
                 format!(
                     "Registered for another copy of Animatic ({command}); Save options to \
                      remove it."
                 ),
-                Color32::YELLOW,
+                warn,
             ),
             Some(Ok(Status::Foreign)) => (
                 "An entry with this name exists that Animatic did not create; it is left unchanged."
                     .into(),
-                Color32::YELLOW,
+                warn,
             ),
         }
     }

@@ -165,7 +165,7 @@ For syntax and functions see [Rename language](Rename-Language.md).
 
 ### Databank import
 
-**File → Import AOM databank…** and the first-run card's **Browse…** open a folder picker titled
+**File → Import → AOM databank…** and the Getting started card's **Browse…** open a folder picker titled
 **Choose the AOM folder or its kowai folder (files are not listed)**. Folder pickers never show
 files, so an empty-looking `kowai` folder is normal: select it and confirm. Either the `kowai`
 folder (containing `mylist.data`, `local_files.data` or `animes.data`) or the AOM folder directly
@@ -217,7 +217,7 @@ temporary import folder …`. Results to be aware of:
 
 ### Settings import
 
-**File → Import AOM settings…** parses the chosen XML on the worker and shows **Review imported
+**File → Import → AOM settings…** parses the chosen XML on the worker and shows **Review imported
 AOM settings**. Errors appear as `Could not import AOM settings: …` (for example `XML: No
 supported AOM settings found in the selected XML` for unrelated XML). Failure or **Cancel**
 leaves your active settings unchanged and releases the lock on other actions. **Apply imported
@@ -230,13 +230,13 @@ before going online (see the [Settings reference](Settings-Reference.md)).
 
 ## External tools and exports
 
-- `player executable is not configured`: set a player in **Options → External player**.
+- `player executable is not configured`: set a player in **Options → Players and tools**.
 - `invalid external command arguments: …`: the argument template could not be split (for
   example an unbalanced quote). Templates are split into an argument list before placeholder
   substitution, with no shell involved; see the [Settings reference](Settings-Reference.md)
   for placeholders.
 - `AVDump integration is disabled` / `external executable is not configured`: enable and
-  configure it in **Options → AVDump**. Each placeholder value (user name, key, path) is
+  configure it in **Options → Players and tools → AVDump**. Each placeholder value (user name, key, path) is
   substituted inside its own argument, so spaces or quotes in it cannot split it. A template
   that uses `{key}` places that key on the child process's command line.
 - `Hash export failed: …`, `Automatic statistics export failed: …` or a manual statistics

@@ -54,9 +54,8 @@ impl AnimaticApp {
         let wait_until = self.export_ui.wait_until;
         let mut open = true;
         let mut action = None;
-        egui::Window::new("Request MyList export")
+        let shown = super::dialog::window(ctx, "Request MyList export")
             .open(&mut open)
-            .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.set_max_width(480.0);
@@ -113,6 +112,7 @@ impl AnimaticApp {
                     }
                 });
             });
+        let escape = super::dialog::escape_closes(ctx, shown.as_ref());
         match action {
             Some(Action::Request) => {
                 match self.db.mylist_export_next_allowed(format::now()) {
@@ -142,7 +142,7 @@ impl AnimaticApp {
             }
             None => {}
         }
-        self.export_ui.open = open;
+        self.export_ui.open = open && !escape;
     }
 
     /// **File → Import MyList export…**: pick the downloaded file and import it on the worker.

@@ -3,8 +3,8 @@ and tokens are in the [Settings reference](Settings-Reference.md#hash-export-tem
 
 ## Statistics export
 
-**File → Export statistics…** asks for a file and writes a library report in the format chosen in
-Options → Statistics export (XML or INI). It runs on the background projection thread and logs
+**File → Export → Statistics…** asks for a file and writes a library report in the format chosen in
+Options → Exports → Statistics export (XML or INI). It runs on the background projection thread and logs
 `Exported statistics to <path>` or `Statistics export failed: …`. All figures are read from one
 consistent database snapshot; if any query fails, the export fails with an error and writes
 nothing (it never writes zeros). The file is written to a temporary file next to the target and
@@ -29,7 +29,7 @@ file as personal data.
 
 ## Hash export
 
-**File → Export hashes…** writes one line per hashed file, for *all* hashed files (search
+**File → Export → Hashes…** writes one line per hashed file, for *all* hashed files (search
 filters and selection are ignored), using the *Hash export template* from Options
 (empty template = `%fulled2k%`). It runs on the background projection thread (the window stays responsive; only the file dialog
 opens on the interface thread), reading the hashed files from the database, and logs `Exported N
@@ -54,7 +54,7 @@ Tokens are replaced sequentially in this order; unknown text is left as is:
 | `%asample%` | Audio sample rate in Hz; constant `0` without data |
 
 The media tokens are filled only for files whose [media properties](External-Tools.md#media-properties-ffprobe)
-were read with the optional `ffprobe` tool (Options → Media properties, off by default). Each
+were read with the optional `ffprobe` tool (Options → Players and tools → Media properties, off by default). Each
 token falls back to its constant when the file was never read, has no such stream or `ffprobe`
 reported no value (an audio-only file has no `%width%`). Figures read before a file was hashed
 again to different content are ignored. See also the

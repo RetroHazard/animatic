@@ -32,9 +32,9 @@ consumers named in each table.
 | **Import only** | Stored only, and additionally filled in by the AOM settings importer. |
 | **Core only** | The core library supports it, but no desktop action calls that code. |
 
-Options is **Tools → Options…**. Its sections, in order: AniDB account, Appearance, System tray, Hashing,
-Managed folders, Statistics export, External player, AVDump, Renaming pattern, Updates,
-Mylist states (read-only label).
+Options is **Tools → Options…** (`Ctrl+,`). Its categories, in order: AniDB account, Appearance (including
+System tray), Managed folders, Hashing, Renaming, Players and tools (External players, AVDump, Media
+properties), Exports (Hash export, Statistics export) and Updates (which also lists the MyList state names read-only).
 
 ## Document layout
 
@@ -60,7 +60,7 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 
 Object `anidb`. See [Storage and network contracts](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md) for what the queue sends
 and how failures are handled. Animatic contacts **AniDB** only when the command queue runs (when you
-start it with Tools → Run command queue or Queue → Synchronize now, or, if you switch on `auto_run_queue`,
+start it with Tools → Run command queue or Queue → Run command queue, or, if you switch on `auto_run_queue`,
 when Animatic starts a run itself, see
 [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)) and when an anime
 detail window needs a cover picture that is not on disk yet. A manual run receives a copy of this
@@ -77,7 +77,7 @@ when Options was last closed. (Update checks contact GitHub, not AniDB; see [Upd
 | `image_server` | string | `cdn.anidb.net` | none | **Active, JSON only** (imported from AOM). Host that anime covers are downloaded from (`https://<host>/images/main/<picture>`), used until a login has told Animatic which image host AniDB wants used; after that the host AniDB announced at login is used and this value is only the fallback. A host name with an optional port; anything else (a path, a scheme, spaces) makes the cover download stop with an error. |
 | `download_covers` | boolean | `true` | "Download anime covers when a detail window opens" | **Active.** When true, opening an anime's detail window downloads its cover once if it is not on disk yet (never offline, never during a ban or cooldown); see [Cover](Library-Pages.md#cover). When false nothing is downloaded, and covers already in the [covers folder](Data-Locations.md#cover-pictures) are still shown. Files without the key load as `true`. |
 | `update_file_information` | boolean | `false` | "Update known file information" | **Active.** When true, hashing a file that is already identified (it has an AniDB file id) again queues a refresh of its AniDB record (`Fetch file`), at most once per file per 7 days; with the default `false`, re-hashing a known file queues nothing. Unidentified files follow *Identify after hashing*. (Import fills it from AOM.) |
-| `offline` | boolean | `false` | "Work offline (keep commands queued)" | **Active.** When true, Run command queue / Synchronize now send nothing and report "Offline mode is enabled; commands remain queued", and no cover is downloaded (covers already on disk are still shown). Commands are still queued locally. The status bar shows "Offline" or "Ready for AniDB". Forced to `true` by backup recovery and by applying imported AOM settings. It also suppresses the automatic startup [update check](#updates); an explicit **Help → Check for updates…** is still allowed. |
+| `offline` | boolean | `false` | "Work offline (keep commands queued)" (AniDB account → Synchronization); also the **● Online** / **● Offline** button in the status bar | **Active.** When true, Run command queue sends nothing and reports "Offline mode is enabled; commands remain queued", and no cover is downloaded (covers already on disk are still shown). Commands are still queued locally. The status bar shows "● Offline" (amber) or "● Online" (green), and clicking it toggles the setting. Forced to `true` by backup recovery and by applying imported AOM settings. It also suppresses the automatic startup [update check](#updates); an explicit **Help → Check for updates…** is still allowed. |
 | `idle_logout_minutes` | integer (u32) | `10` | "Log out of AniDB when idle for … min" (enabled only with automatic runs) | **Active, with `auto_run_queue`.** While automatic runs keep one AniDB session between runs, the client logs out after this many minutes without a command (unless more commands are waiting for an automatic run). Kept from 1 to 30 on load, so a session is always logged out before AniDB expires it after 35 idle minutes. Without `auto_run_queue` it has no effect: every run logs out when it ends. |
 | `auto_run_queue` | boolean | `false` | "Run the command queue automatically" | **Active.** Off: nothing is sent unless you start a run. On: Animatic starts a queue run 30 seconds after new commands are queued and every 15 minutes for anything still waiting, and keeps one AniDB login between runs. Never while Work offline is on, an AniDB cooldown is active, the account is not set, another task is running or an import/restore review is open. Blocked commands are not retried, and **MyList removals are never sent automatically**: they stay queued until you run the queue yourself. Not imported from AOM. |
 
@@ -97,7 +97,7 @@ Object `hashing`.
 | `priority` | integer 0-6 (u8) | `1` | none | **Stored only** (kept for AOM compatibility, no effect). Legacy thread-priority index (0 idle to 6 time critical). Hashing always runs at the normal thread priority, because there is no cross-platform thread-priority control; the importer clamps the value to 6. |
 | `use_extensions` | boolean | `false` | "Restrict file extensions" | **Partly active.** Only applies a file-type filter to the **Add files…** picker. It does not filter files given on the command line, and it does not switch scanning on or off (scans always use `extensions`; see below). |
 | `extensions` | array of strings | the 52 legacy AOM extensions (`7z`, `aac`, `ac3` … `zip`) | multi-line box, comma separated | **Active.** Scan allow-list, see below. Add files picker filter when `use_extensions` is true. |
-| `export_template` | string | `%fulled2k%` | "Hash export template" | **Active.** Template for File → Export hashes…; see [Hash export tokens](#hash-export-template-tokens). |
+| `export_template` | string | `%fulled2k%` | "Hash export" (Options → Exports) | **Active.** Template for File → Export → Hashes…; see [Hash export tokens](#hash-export-template-tokens). |
 | `integrate_into_shell` | boolean | `false` | "Add "Hash with Animatic" to the file menu" | **Active.** **Save options** registers a per-user file-menu entry when it is `true` and removes an entry Animatic created when it is `false`. The value alone never registers anything: loading settings and AOM import (`general/integrateIntoShell`) only store it, and Options shows whether the entry is really present. See [File-menu entry](Options-Window.md#file-menu-entry). |
 | `identify_after_hashing` | boolean | `true` | "Identify files with AniDB after hashing" | **Active.** After each file is hashed (Add files, command line, or scan), the UI queues an `Identify` command. If the file's [managed-folder rule](#how-a-file-picks-its-rule) has `mylist_auto_add`, the command carries that rule's MyList parameters. Offline, the command only waits in the queue. |
 
@@ -128,10 +128,11 @@ the desktop application; the remaining keys mirror AOM's interface options and a
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `theme` | `"Dark"`, `"Light"` or `"System"` | `"Dark"` | Theme combo | **Active.** Applied at startup and by **Save options** or **Apply imported settings**. `System` follows the operating system's light or dark mode and changes with it while Animatic runs (where the platform does not report a mode, it is dark). Values are case-sensitive. |
+| `theme` | `"Dark"`, `"Light"` or `"System"` | `"Dark"` | "Theme" combo (Dark, Light, "Same as the system") | **Active.** Applied at startup, at once when you choose it in Options, and by **Save options** or **Apply imported settings**. `System` follows the operating system's light or dark mode and changes with it while Animatic runs (where the platform does not report a mode, it is dark). Values are case-sensitive. |
 | `zoom` | number (f32) | `1.0` | "UI scale" slider 0.75-2.0 | **Active.** Applied (clamped to 0.75-2.0) at startup and at the same moments as `theme`. Load-time fixup resets values `<= 0.3` to `1.0`; other out-of-range values are kept in the file and clamped when applied. |
 | `last_directory` | string | `""` | none | **Active.** Start folder for the Add files picker and the AOM settings XML picker; updated to the folder of the files you last added. |
-| `colored_rows` | boolean | `true` | "Use status colors" | **Active.** Tints table rows by status with the [row colors](#row-colors-uicolors) below; `false` draws every row plainly. Every status is also written in the row, so the color is never the only signal. Takes effect immediately, no save needed. |
+| `colored_rows` | boolean | `true` | "Tint table rows by status" (Status colors) | **Active.** Tints table rows by status with the [row colors](#row-colors-uicolors) below; `false` draws every row plainly. Every status is also written in the row, so the color is never the only signal. Takes effect immediately, no save needed. |
+| `row_style` | `"Soft"` or `"Solid"` | `"Soft"` | "Row color style" | **Active** while `colored_rows` is on. `Soft` (shown as "Soft (tint and marker)") blends the status color into the page background and keeps the theme's text colors, with a 3-point bar in the full status color at the left edge of the row; statuses that ask for action (unknown, CRC mismatch, duplicate) get a stronger tint than the expected ones (watched, in MyList), and the tint is weakened wherever the text would drop below a 4.5 contrast ratio. `Solid` ("Solid (classic AOM)") fills the whole row with the full status color and black or white text, like the legacy client. A slot with its own `text` color in `colors` is always drawn Solid. A file without `row_style` (every earlier version's file) loads as `Soft`; an older build ignores and drops the key on its next save. Values are case-sensitive. Takes effect immediately. |
 | `copy_length_as_minutes` | boolean | `false` | "Export %length% in minutes" | **Active.** Read by hash export: `%length%` is the duration in whole minutes instead of seconds. Without [media data](#media-properties-media) it stays at its constant (`0`). See [token table](#hash-export-template-tokens). |
 | `show_tray_icon` | boolean | `true` | "Show tray icon" | **Active.** Puts an icon in the Windows notification area or the Linux StatusNotifierItem tray (menu: Show Animatic, Run command queue, Quit; a left click shows the window). Takes effect as you click, not only on Save. Disabled, with the reason, where the system has no tray; the stored value is then kept and never acted on. See [System tray](Main-Window.md#system-tray). |
 | `minimize_to_tray` | boolean | `true` | "Minimize to tray" | **Active.** Minimizing the window hides it to the tray instead of the taskbar. Needs `show_tray_icon` and a tray icon that is actually up; otherwise a minimize is an ordinary minimize. Closing the window still quits. |
@@ -159,7 +160,7 @@ their columns (all sortable except the queue, whose order is the run order):
 |---|---|---|
 | `anime_table` | Anime | `title`, `type`, `year`, `episodes`, `rating`, `mylist` |
 | `advanced-results` | Advanced search | same as `anime_table` |
-| `mylist_table` | My list | `anime`, `episode`, `group`, `state`, `watched`, `size`, `queue` |
+| `mylist_table` | MyList | `anime`, `episode`, `group`, `state`, `watched`, `size`, `queue` |
 | `local_table` | Hashed files | `file`, `size`, `anidb`, `mylist`, `crc`, `path` |
 | `groups` | Groups | `name`, `short_name`, `rating`, `votes`, `website` |
 | `genres` | Genres | `genre`, `anime` |
@@ -172,8 +173,11 @@ their columns (all sortable except the queue, whose order is the run order):
 integers (JSON has no hex literals); `text` may be omitted or `null` (no text override), but
 `background` is required in every entry. An absent slot uses the default background below.
 With `colored_rows` on, the table rows take these colors (no Options control edits them; an AOM
-import fills them). Without a `text` color the row text is black or white, whichever contrasts
-more with the background; the defaults all reach a contrast ratio of at least 4.5. Slots marked
+import fills them). The background is the status color of the `Solid` row style, and in the
+default `Soft` style it is blended into the page background and drawn as the left marker bar.
+Without a `text` color a solid row's text is black or white, whichever contrasts
+more with the background; the defaults all reach a contrast ratio of at least 4.5. A slot that
+has a `text` color is always drawn as a solid row, because you chose that pair. Slots marked
 *plain* describe an unremarkable row and are only drawn when you set them, because their default
 light greys would glare in the dark theme. Unknown slot names are not rejected and are kept on
 save.
@@ -202,14 +206,14 @@ Where Animatic uses a slot (first match wins):
 | Table | Status (also written in the row) | Slot |
 |---|---|---|
 | Hashed files | CRC `Mismatch` | `LocalFileInvalidCrc` |
-| | AniDB `Unknown` (not identified) | `LocalFileUnknown` |
-| | Mylist `lid N · watched` | `Watched` |
-| | Mylist `lid N` | `LocalFileInMylist` |
+| | AniDB `Not identified` | `LocalFileUnknown` |
+| | MyList `Watched · lid N` | `Watched` |
+| | MyList `In MyList · lid N` | `LocalFileInMylist` |
 | | otherwise | `LocalFile` (plain) |
-| Anime, Advanced search | Mylist `... · all watched` | `Watched` |
-| | Mylist `N eps / M files` | `AnimeInMylist` |
+| Anime, Advanced search | MyList `... · all watched` | `Watched` |
+| | MyList `N eps / M files` | `AnimeInMylist` |
 | | otherwise | `Anime` (plain) |
-| My list | Watched checkbox ticked | `Watched` |
+| MyList | Watched checkbox ticked | `Watched` |
 | | otherwise | `File` (plain) |
 
 The other slots (`LocalRoot`, `LocalFolder`, `LocalFileDuplicate`, `Episode`, `EpisodeInMylist`,
@@ -229,7 +233,7 @@ scan runs only when you start it or when one of the scan automation settings bel
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `action_delay_ms` | integer (u64) | `500` | "Hash a file once unchanged for" | **Active.** Settle delay of a scan: a file is hashed only once its modification time is at least this old and its size and modification time stay unchanged for this long; otherwise it is deferred to the next scan. `0` hashes at once. Load-time fixup limits values to 0-600000 (values above are lowered to 600000). |
+| `action_delay_ms` | integer (u64) | `500` | "Hash a file once it is unchanged for" | **Active.** Settle delay of a scan: a file is hashed only once its modification time is at least this old and its size and modification time stay unchanged for this long; otherwise it is deferred to the next scan. `0` hashes at once. Load-time fixup limits values to 0-600000 (values above are lowered to 600000). |
 | `sleep_time_ms` | integer (u64) | `0` | "Pause between hashed files" | **Active.** Pause between two hashed files of one scan (not before the first or after the last). Valid 0-10000. **Changed meaning:** earlier versions stored AOM's pause between scans here (default `900000`); load-time fixup resets any value above 10000 to `0`, and an AOM settings import turns `filemanager/sleepTime` into `scan_interval_minutes` instead. |
 | `scan_at_start` | boolean | `false` | "Scan managed folders when Animatic starts" | **Active.** Runs one scan after the application starts, as soon as nothing blocks it. |
 | `scheduled_scan` | boolean | `false` | "Scan managed folders on a schedule" | **Active.** Runs a scan every `scan_interval_minutes` minutes on the background worker. Never overlaps another task, import, settings review or restore. |
@@ -254,7 +258,7 @@ Each element of `managers` may omit any key; an omitted key takes the value in t
 | `exclude_hidden` | boolean | `true` | none | **Active.** Scans skip entries (files and folders) whose name starts with `.`. The OS "hidden" attribute is not consulted. |
 | `exclude_system` | boolean | `true` | "Skip system files" | **Active on Windows.** Scans skip files and folders that have the Windows system attribute (a skipped folder is not entered). **No effect on Linux**, which has no such attribute. |
 | `clear_empty_folders` | boolean | `false` | "Remove emptied folders" | **Active.** After a manual, batch or automatic rename moves a file, the folders it left are removed while they are strictly below this rule's folder and completely empty (hidden files keep a folder). The rule's own folder is never removed and nothing is deleted recursively. See [Removing folders a rename emptied](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). |
-| `mylist_auto_add` | boolean | `false` | "Add to mylist" | **Active.** When true and `identify_after_hashing` is on, the post-hash `Identify` command (queued after Add files, command-line hashing or a scan) carries the MyList parameters below, so the file is **added to your MyList on AniDB when the queue runs online**. Offline, the command only waits locally. |
+| `mylist_auto_add` | boolean | `false` | "Add to MyList" | **Active.** When true and `identify_after_hashing` is on, the post-hash `Identify` command (queued after Add files, command-line hashing or a scan) carries the MyList parameters below, so the file is **added to your MyList on AniDB when the queue runs online**. Offline, the command only waits locally. |
 | `mylist_watched_check` | boolean | `false` | "Set watched" | **Active.** Gates `mylist_watched`: when false the watched flag is not sent. |
 | `mylist_watched` | boolean | `false` | "Watched" (shown when the check is on) | **Active.** Watched flag sent when the check is on; `true` also sends the current time as view date. |
 | `mylist_state_check` | boolean | `true` | "Set state" | **Active.** Gates `mylist_state`. |
@@ -351,10 +355,10 @@ Object `stat_whore` (the AOM name for the statistics feature).
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
 | `enabled` | boolean | `false` | "Write statistics after library updates" | **Active.** With a non-empty `file`, the statistics file is rewritten every time the library view reloads in the background (after hashing, queue activity, imports and similar events). |
-| `format` | `"Xml"` or `"Ini"` | `"Xml"` | Format combo | **Active.** Format of the automatic file and of the suggested type for File → Export statistics…. Values are case-sensitive. |
+| `format` | `"Xml"` or `"Ini"` | `"Xml"` | Format combo | **Active.** Format of the automatic file and of the suggested type for File → Export → Statistics…. Values are case-sensitive. |
 | `file` | string | `""` | Output file | **Active.** Target of the automatic export; missing parent folders are created and the file is replaced atomically (temporary file, flush, rename), so a failed write keeps the previous file. |
 
-File → Export statistics… always asks for a path and ignores `enabled` and `file`. Both exports
+File → Export → Statistics… always asks for a path and ignores `enabled` and `file`. Both exports
 include the AniDB username (not the password) in the `anidb` block; treat exported statistics as
 personal data. Failures appear in the Log and status bar and do not stop the application.
 
@@ -389,9 +393,9 @@ such preference. An older Animatic build ignores and drops the unknown `media` k
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `renaming_pattern` | string | the [Group] Title - episode [CRC] convention (`crates/animatic-core/src/rename/fansub_pattern.txt`); settings saved earlier keep their pattern | "Renaming pattern": Naming convention list and custom editor | **Active.** Pattern used by every rename. Only the text is stored: a text equal to a built-in convention shows as that convention, anything else as Custom pattern. The section reports syntax errors, shows an example name, offers the Pattern reference, "Restore my custom pattern" and "Validate on selected file". Saving does not validate the pattern; an empty or invalid pattern simply blocks renames. Custom text is never modified by the application. Language: [Rename language](Rename-Language.md). |
+| `renaming_pattern` | string | the [Group] Title - episode [CRC] convention (`crates/animatic-core/src/rename/fansub_pattern.txt`); settings saved earlier keep their pattern | Options → Renaming: Naming convention list and custom editor | **Active.** Pattern used by every rename. Only the text is stored: a text equal to a built-in convention shows as that convention, anything else as Custom pattern. The section reports syntax errors, shows an example name, offers the Pattern reference, "Restore my custom pattern" and "Validate on selected file". Saving does not validate the pattern; an empty or invalid pattern simply blocks renames. Custom text is never modified by the application. Language: [Rename language](Rename-Language.md). |
 | `ed2k_space_replacement` | string or `null` | `null` | none | **Stored only.** No consumer; ED2K links are always built with the file name as is. |
-| `first_launch` | boolean | `true` | "Dismiss first-run card" on Overview | **Active.** While true the Overview page shows the first-run card; dismissing sets it false and saves. After an AOM settings import it is set to whether the imported username is empty. |
+| `first_launch` | boolean | `true` | "Hide" on the Overview's "Getting started" card | **Active.** While true the Overview page shows the Getting started card; hiding it sets this false and saves. After an AOM settings import it is set to whether the imported username is empty. |
 | `secrets_in_keystore` | boolean | `false` | none (shown as a notice in Options) | **Active, written by Animatic.** `true` after a save that moved `anidb.password`, `anidb.api_key` and `avdump.key` into the operating-system keystore and stored them empty here; loading then fills empty credential fields from the keystore. Do not edit by hand; a file with real values in those keys and `true` uses the file's values. See [Credentials and the system keystore](Settings-Files.md#credentials-and-the-system-keystore). |
 
 ## Updates
@@ -413,7 +417,7 @@ Applying an AOM settings import keeps your current `updates` object because AOM 
 
 ## Hash export template tokens
 
-Used by **File → Export hashes…** (it exports every hashed file in the library, in list order, to
+Used by **File → Export → Hashes…** (it exports every hashed file in the library, in list order, to
 the file you choose, default name `animatic-hashes.txt`; built and written on the background projection thread, replacing the file atomically). `hashing.export_template` is expanded once
 per file and followed by a CRLF line ending. An empty template is treated as `%fulled2k%`; `\n`
 inside the template is written as CRLF. There is no automatic export and no other UI entry for this

@@ -10,6 +10,7 @@ mod icon;
 mod media;
 mod scheduler;
 mod session;
+mod style;
 mod table;
 mod tray;
 mod worker;
@@ -122,6 +123,7 @@ fn run() -> anyhow::Result<()> {
         "Animatic",
         native,
         Box::new(|cc| {
+            style::install(&cc.egui_ctx);
             app.apply_visuals(&cc.egui_ctx);
             Ok(Box::new(app))
         }),

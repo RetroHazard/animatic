@@ -22,15 +22,15 @@ Coming from AOM? Read [Migrating from AOM](Migrating-from-AOM.md) before the fir
 
 | Page | Read it for |
 |---|---|
-| [Main window](Main-Window.md) | Layout, status bar and progress, searching and tables, menus |
-| [Library pages](Library-Pages.md) | Overview, My list, Anime, Advanced search, Hashed files, Groups, Genres, Queue, Log and the anime detail window |
+| [Main window](Main-Window.md) | Layout, status bar and progress, searching and tables, menus, keyboard shortcuts |
+| [Library pages](Library-Pages.md) | Overview, MyList, Anime, Advanced search, Hashed files, Groups, Genres, Queue, Log and the anime detail window |
 | [Hashing and identification](Hashing-and-Identification.md) | Adding files, the single-pass hashes and identifying files on AniDB |
 | [Managed folders and scans](Managed-Folders-and-Scans.md) | Folder rules, manual and scheduled scans, settle delay and safe removal of missing files |
 | [AniDB synchronization](AniDB-Synchronization.md) | The command queue, MyList edits and failure handling |
 | [Renaming files](Renaming-Files.md) | Previewing and applying a rename to one file |
 | [Exports](Exports.md) | Statistics and hash exports |
 | [External tools](External-Tools.md) | External players and AVDump |
-| [Options window](Options-Window.md) | Every section of **Tools → Options…** |
+| [Options window](Options-Window.md) | Every category of **Tools → Options…** |
 | [Updating Animatic](Updating-Animatic.md) | Checking for, verifying and installing a newer release |
 | [Migrating from AOM](Migrating-from-AOM.md) | Importing an AOM databank and AOM settings |
 

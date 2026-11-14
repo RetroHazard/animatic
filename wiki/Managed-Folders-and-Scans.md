@@ -69,7 +69,7 @@ the next file.
 A file still being copied or downloaded must not be hashed half-written. A discovered file is
 hashed only when both hold:
 
-1. its modification time is at least **Hash a file once unchanged for** (`action_delay_ms`,
+1. its modification time is at least **Hash a file once it is unchanged for** (`action_delay_ms`,
    default 500 ms, 0 to 600000) in the past, and
 2. its size and modification time did not change during one further wait of that length, which
    the scan observes once for all candidate files.

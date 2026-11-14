@@ -52,7 +52,7 @@ that is hashed and stored in the library is the absolute path as given.
 - **Failed files.** A missing, unreadable or locked file is not retried on its own. It stays in
   the queue as *failed* with a reason ("file not found (moved, renamed or deleted, or its drive is
   unavailable)", or the read error) until you add it again, retry failed files or clear the queue.
-- **Start hashing automatically** (Options, Hashing; on by default, imported from AOM's
+- **Start hashing automatically** (Options → Hashing; on by default, imported from AOM's
   `autostartHashing`): when Animatic starts and files are still queued, hashing resumes by
   itself once nothing else blocks it (no import review, restore or settings recovery notice is
   open and no other task is running). With it off nothing hashes at start: the Hashed files page and Overview show the

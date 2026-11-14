@@ -19,7 +19,7 @@ off unless you switch it on for that folder.
 ## Several files (batch rename)
 
 1. On **Hashed files** select the files you want to rename: click one, Ctrl+click to add or remove
-   files, Shift+click to select a range. **Select all shown** selects every listed file, so it
+   files, Shift+click to select a range. **Select all** selects every listed file, so it
    follows the search box; **Clear selection** clears the selection. It is the same selection
    that **Add to MyList…** uses, and a file that a new search hides drops out of it.
 2. Click **Rename N selected…**. The window **Batch rename** opens at once and shows
@@ -94,7 +94,7 @@ afterwards ([details](Managed-Folders-and-Scans.md#removing-folders-a-rename-emp
 
 ## Choosing how files are named
 
-**Tools → Options → Renaming pattern** has a **Naming convention** list. Pick one of the built-in
+**Tools → Options… → Renaming** has a **Naming convention** list. Pick one of the built-in
 conventions, or **Custom pattern** to write your own. Every choice shows an **Example** of the
 name it gives a fictitious file (episode 6, release version 2, group `ExGroup`):
 

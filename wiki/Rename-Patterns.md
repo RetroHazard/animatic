@@ -234,7 +234,7 @@ Expected `ab.mkv`.
 1. Open **Hashed files** and select a file that AniDB has identified (an identified file with
    its anime, episode and file rows in the library). Anime and episode details must be
    fetched for a built-in convention to be usable.
-2. Open **Tools → Options → Renaming pattern** and choose **Custom pattern**. The example
+2. Open **Tools → Options… → Renaming** and choose **Custom pattern**. The example
    line shows the name for a fictitious file as you type, and a red syntax error appears while
    the text does not compile.
 3. Press **Validate on selected file**. It runs the same planning as **Rename…** without

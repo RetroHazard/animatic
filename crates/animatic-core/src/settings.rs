@@ -31,6 +31,39 @@ pub enum Theme {
     System,
 }
 
+/// How status-tinted table rows are drawn.
+///
+/// Stored as `"Soft"` or `"Solid"`; a settings file without the field loads as `Soft`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RowStyle {
+    /// The row band is the panel colour tinted toward the status colour, text keeps the theme
+    /// colours and a marker bar in the full status colour sits at the left edge.
+    #[default]
+    Soft,
+    /// The legacy client look: the full status colour fills the row with readable text on it.
+    Solid,
+}
+
+impl RowStyle {
+    pub const ALL: [RowStyle; 2] = [RowStyle::Soft, RowStyle::Solid];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RowStyle::Soft => "Soft (tint and marker)",
+            RowStyle::Solid => "Solid (classic AOM)",
+        }
+    }
+}
+
+/// What `ui.colored_rows` and `ui.row_style` together ask of a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TintMode {
+    /// Rows are drawn plainly.
+    Off,
+    Soft,
+    Solid,
+}
+
 /// Automatic rename of identified files in a managed folder (roadmap M6.3).
 ///
 /// Stored as `"off"`, `"dry_run"` or `"on"`. A stored boolean (the pre-M6.3 field and the AOM
@@ -484,6 +517,18 @@ impl ColorSlot {
         )
     }
 
+    /// Slots that ask for the user's action (unidentified, CRC mismatch, duplicate): their
+    /// soft row tint is stronger than the tint of the expected states.
+    pub fn is_attention(self) -> bool {
+        matches!(
+            self,
+            ColorSlot::LocalFileUnknown
+                | ColorSlot::LocalFileInvalidCrc
+                | ColorSlot::FileCrcInvalid
+                | ColorSlot::LocalFileDuplicate
+        )
+    }
+
     /// Legacy default background as 0xRRGGBB.
     pub fn default_background(self) -> u32 {
         match self {
@@ -548,6 +593,8 @@ pub struct UiSettings {
     pub last_directory: String,
     /// Tint rows with the configured colours.
     pub colored_rows: bool,
+    /// How tinted rows are drawn when `colored_rows` is on.
+    pub row_style: RowStyle,
     pub colors: BTreeMap<String, SlotColor>,
     /// Column layout per table id.
     pub columns: BTreeMap<String, Vec<ColumnState>>,
@@ -569,6 +616,7 @@ impl Default for UiSettings {
             maximized: false,
             last_directory: String::new(),
             colored_rows: true,
+            row_style: RowStyle::Soft,
             colors: BTreeMap::new(),
             columns: BTreeMap::new(),
             tree_auto_expand: false,
@@ -583,6 +631,15 @@ impl Default for UiSettings {
 }
 
 impl UiSettings {
+    /// The row tinting to draw: off, or the chosen style.
+    pub fn tint_mode(&self) -> TintMode {
+        match (self.colored_rows, self.row_style) {
+            (false, _) => TintMode::Off,
+            (true, RowStyle::Soft) => TintMode::Soft,
+            (true, RowStyle::Solid) => TintMode::Solid,
+        }
+    }
+
     pub fn color(&self, slot: ColorSlot) -> SlotColor {
         self.colors
             .get(&format!("{slot:?}"))
@@ -1831,6 +1888,26 @@ x</renamingPattern>
         assert!(partial.updates.auto_check);
         let off: Settings = serde_json::from_str(r#"{"updates":{"auto_check":false}}"#).unwrap();
         assert!(!off.updates.auto_check);
+    }
+
+    #[test]
+    fn settings_files_without_row_style_load_as_soft_and_the_style_round_trips() {
+        let mut document = serde_json::to_value(Settings::default()).unwrap();
+        let ui = document["ui"].as_object_mut().unwrap();
+        assert_eq!(ui["row_style"], "Soft");
+        ui.remove("row_style");
+        let loaded: Settings = serde_json::from_value(document).unwrap();
+        assert_eq!(loaded.ui.row_style, RowStyle::Soft);
+        assert_eq!(loaded.ui.tint_mode(), TintMode::Soft);
+
+        let solid: Settings = serde_json::from_str(r#"{"ui":{"row_style":"Solid"}}"#).unwrap();
+        assert_eq!(solid.ui.tint_mode(), TintMode::Solid);
+        let round: Settings =
+            serde_json::from_str(&serde_json::to_string(&solid).unwrap()).unwrap();
+        assert_eq!(round.ui.row_style, RowStyle::Solid);
+        let off: Settings =
+            serde_json::from_str(r#"{"ui":{"colored_rows":false,"row_style":"Solid"}}"#).unwrap();
+        assert_eq!(off.ui.tint_mode(), TintMode::Off);
     }
 
     #[test]

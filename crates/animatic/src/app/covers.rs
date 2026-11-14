@@ -15,7 +15,7 @@ use crate::worker::{CoverJob, CoverOutcome, Worker};
 /// Largest size a cover is drawn at, in points.
 const MAX_SIZE: Vec2 = Vec2::new(180.0, 260.0);
 /// Size of the placeholder shown while there is no picture.
-const PLACEHOLDER_SIZE: Vec2 = Vec2::new(180.0, 120.0);
+const PLACEHOLDER_SIZE: Vec2 = Vec2::new(130.0, 80.0);
 /// Textures kept at once; pictures that are not on screen are dropped beyond this.
 const KEPT: usize = 16;
 

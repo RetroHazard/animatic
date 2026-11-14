@@ -23,7 +23,7 @@ library.
    and carry a database schema version that this version supports. A damaged file, a database
    that is not an Animatic library, a library written by a newer Animatic and the current
    library file itself are refused with a message, and your library stays exactly as it was.
-2. A confirmation window shows what the backup holds (anime, My list entries, hashed files,
+2. A confirmation window shows what the backup holds (anime, MyList entries, hashed files,
    queued commands, size). Choose **Restore** or **Cancel**.
 3. On **Restore** Animatic stops its background work, closes the database, keeps the current
    library next to it as `<database>.before-restore-YYYYMMDD-HHMMSS` (a damaged library is
@@ -76,7 +76,7 @@ running, or after it exited without a clean shutdown, can produce a copy that is
 recent changes or is inconsistent. Do not copy an open database "blind".
 
 1. **Finish or cancel background work.** Watch the status bar. Wait for a running job to
-   finish or press **Cancel**. Do not quit while it shows **N commands NOT saved yet**
+   finish or press **Cancel**. Do not quit while it shows **N commands not saved yet**
    (see [Database busy and unsaved commands](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands)).
 2. **Close Animatic** with **File → Quit** and make sure the process has ended. Quitting
    cancels a running job, drains accepted statistics and hash exports and writes settings (unless
@@ -113,7 +113,7 @@ recent changes or is inconsistent. Do not copy an open database "blind".
    ```
 
    Use a copy of the settings with **Work offline** ticked, so a check can never send
-   anything to AniDB, then look at the **Overview**, **My list**, **Hashed files** and
+   anything to AniDB, then look at the **Overview**, **MyList**, **Hashed files** and
    **Queue** pages. The SQLite command-line shell is not shipped with Animatic; if you have
    it, its `PRAGMA integrity_check;` or `.backup` command on a closed copy is an additional
    option, but that is SQLite's own feature and the project has not recorded using it.
@@ -192,8 +192,8 @@ For field-level behavior see the [Settings reference](Settings-Files.md#recovery
   replaces a good backup. A failed save removes the temporary file and leaves the old primary
   in place. A failure while rotating the backup is ignored, so the primary can be replaced
   while `settings.json.bak` is stale or absent.
-- **When saves happen:** **Save options**, applying reviewed AOM settings, **Dismiss first-run
-  card**, and closing the application. Edits in **Options** take effect in memory at once and
+- **When saves happen:** **Save options**, applying reviewed AOM settings, **Hide** on the
+  Overview's **Getting started** card, and closing the application. Edits in **Options** take effect in memory at once and
   are written when the application exits even if you never click **Save options** (unless
   the recovery guard holds), so a mistaken edit does not need a click to become permanent.
   A failure on exit is silent.
@@ -228,7 +228,7 @@ Do the following:
 1. Dismiss it with **OK** and look at **Tools → Options…**. The values come from the backup
    and can be one save behind.
 2. Decide whether to keep them. **Closing Animatic does not write settings** while the
-   recovery guard holds, and **Dismiss first-run card** does not write either. Your changes
+   recovery guard holds, and **Hide** on **Getting started** does not write either. Your changes
    in this session exist only in memory.
 3. To adopt the recovered settings, choose **Save options**. That writes them (including
    `offline: true`) over the unreadable primary. The invalid old primary does not replace the
