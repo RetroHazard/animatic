@@ -151,17 +151,18 @@ Each item below follows from the implementation.
 18. **`H` media properties are mostly empty** for files Animatic hashed itself.
 19. **`getanime` rebinding is ignored**; the first binding of a name wins.
 20. **`for` bodies must produce strings**, and unset accumulator variables read as `False`.
-21. **No iteration or recursion limit.** A runaway loop or self-calling function is not stopped
-    by the evaluator.
+21. **Runaway patterns stop with an error.** A loop over an enormous range, a function that
+    calls itself without end, or a text that keeps growing ends the run with a hard error once
+    it reaches the [evaluation limits](Rename-Language.md#user-functions); nothing is renamed.
 
 ## Diagnostics reference
 
 | Where it appears | Text (abridged) | Cause | Fix |
 |---|---|---|---|
-| Editor and preview | `The renaming pattern is empty. …` | Blank pattern | Write a pattern or use **Use stable default** |
+| Editor and preview | `The renaming pattern is empty. …` | Blank pattern | Write a pattern or choose a naming convention |
 | Editor and preview | `The renaming pattern has a syntax error: …` | See [Compile errors](Rename-Language.md#compile-errors) | Fix the construct near the quoted position |
-| Preview | `The stable default needs the anime title, which has not been fetched yet. …` | Title missing or the stand-in | Fetch the anime from AniDB |
-| Preview | `The stable default needs the episode number, which is not known yet. …` | Episode number 0 or unknown | Fetch the episode |
+| Preview | `The built-in naming convention needs the anime title, which has not been fetched yet. …` | Title missing or the stand-in | Fetch the anime from AniDB |
+| Preview | `The built-in naming convention needs the episode number, which is not known yet. …` | Episode number 0 or unknown | Fetch the episode |
 | Preview | `The renaming pattern failed to run: <message>` | Hard error (division by zero, bad conversion, unbound object, …) | Fix the expression; guard optional objects |
 | Preview | `The pattern ended with the truth value "True"/"False" instead of a file name. …` | The whole value is a Boolean | Make the last line the name |
 | Preview | `The pattern produced an empty file name; nothing would be renamed. …` | Empty result | Make the last line produce the name |
@@ -176,7 +177,7 @@ These patterns do not depend on the selected file's metadata. Paste one into the
 editor, choose an AniDB-identified hashed file and press **Validate on selected file**. The
 expected values come from reading the implementation. **Pasting replaces your pattern in the
 live settings**, and a normal exit saves them, so copy your own pattern text somewhere first
-and put it back (or use **Restore previous text** if you pressed **Use stable default**)
+and put it back (or use **Restore my custom pattern** if you chose a built-in convention)
 before closing the application.
 
 | Pattern | Expected result | Plan |
@@ -232,10 +233,10 @@ Expected `ab.mkv`.
 
 1. Open **Hashed files** and select a file that AniDB has identified (an identified file with
    its anime, episode and file rows in the library). Anime and episode details must be
-   fetched for the stable default to be usable.
-2. Open **Tools → Options → Renaming pattern**. The status line shows whether the text is
-   Empty, Stable default or Custom, and a red syntax error appears while the text does not
-   compile.
+   fetched for a built-in convention to be usable.
+2. Open **Tools → Options… → Renaming** and choose **Custom pattern**. The example
+   line shows the name for a fictitious file as you type, and a red syntax error appears while
+   the text does not compile.
 3. Press **Validate on selected file**. It runs the same planning as **Rename…** without
    touching any file: the evaluated result, red errors, yellow warnings, and, when the plan
    could be applied or the file already has that name, `The pattern is valid for this file.`
@@ -246,6 +247,6 @@ Editing the text clears the previous validation result. Validation uses the patt
 currently in the editor, saved or not.
 
 The rename unit tests (`crates/animatic-core/src/rename/tests.rs`, plus tests in `parser.rs`
-and `value.rs`) cover the default pattern output, counter widths, Unicode, `classify`,
+and `value.rs`) cover the built-in conventions' output, counter widths, Unicode, `classify`,
 user functions, target paths, reserved names and length limits. Run them with the commands in
 [Development](https://github.com/RetroHazard/animatic/blob/main/docs/development.md).

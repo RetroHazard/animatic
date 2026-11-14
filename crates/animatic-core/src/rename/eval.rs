@@ -6,6 +6,49 @@ use super::EvalError;
 use super::parser::{BinOp, Node};
 use super::value::{self, Value};
 
+/// Most expression evaluations one pattern run may perform. Real patterns need a few hundred;
+/// the limit stops a runaway `for` loop or a function that keeps calling itself.
+pub const MAX_STEPS: u32 = 100_000;
+/// Deepest nesting of evaluations (expressions inside expressions, for example the lines of a
+/// pattern, which are joined with `+`). Keeps evaluation from overflowing the thread's stack.
+pub const MAX_DEPTH: u32 = 600;
+/// Deepest nesting of function calls (a call in an argument of a call, or a user function
+/// calling itself). Calls use the most stack, so they have their own, lower limit.
+pub const MAX_CALL_DEPTH: u32 = 200;
+/// Largest text, in bytes, any value may hold. Far above every file system path limit.
+pub const MAX_TEXT: usize = 128 * 1024;
+
+fn too_much_work() -> EvalError {
+    EvalError::new(format!(
+        "The pattern stopped after {MAX_STEPS} steps; a loop or a function that calls itself \
+         probably never ends."
+    ))
+}
+
+fn too_deep() -> EvalError {
+    EvalError::new(
+        "The pattern nests too deeply (more than {MAX_DEPTH} expressions or {MAX_CALL_DEPTH} \
+         function calls inside each other); a function probably calls itself without end."
+            .replace("{MAX_DEPTH}", &MAX_DEPTH.to_string())
+            .replace("{MAX_CALL_DEPTH}", &MAX_CALL_DEPTH.to_string()),
+    )
+}
+
+fn too_long() -> EvalError {
+    EvalError::new(format!(
+        "The pattern built a text longer than {} KiB.",
+        MAX_TEXT / 1024
+    ))
+}
+
+/// A value within [`MAX_TEXT`].
+fn bounded(v: Value) -> Result<Value, EvalError> {
+    match &v {
+        Value::AStr(t) | Value::WStr(t) if t.len() > MAX_TEXT => Err(too_long()),
+        _ => Ok(v),
+    }
+}
+
 /// A bound object (anime, episode, file, group, local hash, mylist entry) exposing
 /// published properties by (case-insensitive) name.
 #[derive(Debug, Clone, Default)]
@@ -68,6 +111,12 @@ pub struct Evaluator<'a> {
     functions: Vec<UserFunction>,
     /// Soft (non fatal) errors, as the legacy evaluator's error list.
     pub errors: Vec<String>,
+    /// Evaluations so far in this run (see [`MAX_STEPS`]).
+    steps: u32,
+    /// Current evaluation nesting (see [`MAX_DEPTH`]).
+    depth: u32,
+    /// Current function call nesting (see [`MAX_CALL_DEPTH`]).
+    call_depth: u32,
 }
 
 impl<'a> Evaluator<'a> {
@@ -78,6 +127,9 @@ impl<'a> Evaluator<'a> {
             objects: Vec::new(),
             functions: Vec::new(),
             errors: Vec::new(),
+            steps: 0,
+            depth: 0,
+            call_depth: 0,
         }
     }
 
@@ -127,6 +179,9 @@ impl<'a> Evaluator<'a> {
 
     pub fn run(&mut self, tree: Option<&Node>) -> Result<Value, EvalError> {
         self.errors.clear();
+        self.steps = 0;
+        self.depth = 0;
+        self.call_depth = 0;
         match tree {
             None => Ok(Value::Bool(false)),
             Some(n) => self.eval(n),
@@ -157,7 +212,26 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    /// Evaluate one node within the run's limits ([`MAX_STEPS`], [`MAX_DEPTH`],
+    /// [`MAX_CALL_DEPTH`], [`MAX_TEXT`]).
     fn eval(&mut self, n: &Node) -> Result<Value, EvalError> {
+        self.steps += 1;
+        if self.steps > MAX_STEPS {
+            return Err(too_much_work());
+        }
+        let call = u32::from(matches!(n, Node::Call { .. }));
+        if self.depth >= MAX_DEPTH || self.call_depth + call > MAX_CALL_DEPTH {
+            return Err(too_deep());
+        }
+        self.depth += 1;
+        self.call_depth += call;
+        let v = self.eval_node(n);
+        self.depth -= 1;
+        self.call_depth -= call;
+        bounded(v?)
+    }
+
+    fn eval_node(&mut self, n: &Node) -> Result<Value, EvalError> {
         match n {
             Node::Literal(v) => Ok(v.clone()),
             Node::Not(r) => {
@@ -428,6 +502,9 @@ impl<'a> Evaluator<'a> {
                     return Ok(Value::WStr(s));
                 }
                 let missing = (width - len) as usize;
+                if missing.saturating_mul(fill.len_utf8()) > MAX_TEXT {
+                    return Err(too_long());
+                }
                 let rep = |k: usize| std::iter::repeat_n(fill, k).collect::<String>();
                 Ok(Value::WStr(match lname.as_str() {
                     "padl" => rep(missing) + &s,
@@ -449,7 +526,9 @@ impl<'a> Evaluator<'a> {
                     String::new()
                 };
                 let ignore_case = lname.ends_with('i');
-                Ok(Value::AStr(string_replace(&s, &f, &r, ignore_case)))
+                string_replace(&s, &f, &r, ignore_case)
+                    .map(Value::AStr)
+                    .ok_or_else(too_long)
             }
             "sc" => {
                 if n != 1 {
@@ -589,7 +668,7 @@ impl<'a> Evaluator<'a> {
                 while i <= to {
                     self.set_variable(&var, Value::Int(i));
                     let body = self.eval(&args[3])?;
-                    acc = value::var_add(acc, body)?;
+                    acc = bounded(value::var_add(acc, body)?)?;
                     i += 1;
                 }
                 Ok(acc)
@@ -684,7 +763,7 @@ impl<'a> Evaluator<'a> {
         let mut acc = Value::Empty;
         for b in &bodies {
             let v = self.eval(b)?;
-            acc = value::var_add(acc, v)?;
+            acc = bounded(value::var_add(acc, v)?)?;
         }
         Ok(acc)
     }
@@ -722,12 +801,24 @@ impl<'a> Evaluator<'a> {
 }
 
 /// `StringReplace(s, f, r, [rfReplaceAll] (+ rfIgnoreCase))`.
-fn string_replace(s: &str, f: &str, r: &str, ignore_case: bool) -> String {
+/// Replace every `f` in `s` with `r`; `None` once the result would exceed [`MAX_TEXT`].
+fn string_replace(s: &str, f: &str, r: &str, ignore_case: bool) -> Option<String> {
     if f.is_empty() {
-        return s.to_string();
+        return Some(s.to_string());
     }
     if !ignore_case {
-        return s.replace(f, r);
+        let mut out = String::with_capacity(s.len());
+        let mut rest = 0;
+        for (at, _) in s.match_indices(f) {
+            out.push_str(&s[rest..at]);
+            out.push_str(r);
+            rest = at + f.len();
+            if out.len() > MAX_TEXT {
+                return None;
+            }
+        }
+        out.push_str(&s[rest..]);
+        return (out.len() <= MAX_TEXT).then_some(out);
     }
     let hay: Vec<char> = s.chars().collect();
     let pat: Vec<char> = f.to_lowercase().chars().collect();
@@ -741,12 +832,15 @@ fn string_replace(s: &str, f: &str, r: &str, ignore_case: bool) -> String {
         if i + pat.len() <= hay.len() && lower[i..i + pat.len()] == pat[..] {
             out.push_str(r);
             i += pat.len();
+            if out.len() > MAX_TEXT {
+                return None;
+            }
         } else {
             out.push(hay[i]);
             i += 1;
         }
     }
-    out
+    (out.len() <= MAX_TEXT).then_some(out)
 }
 
 fn sentence_case(s: &str) -> String {

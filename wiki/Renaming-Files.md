@@ -7,7 +7,7 @@ off unless you switch it on for that folder.
 
 1. Open **Hashed files** and select a file that AniDB has identified (`AniDB` column shows `fid`).
    Unidentified files report `The selected file is not identified by AniDB`.
-2. Optionally edit or validate the pattern in **Tools → Options… → Renaming pattern**
+2. Optionally choose, edit or validate the pattern in **Tools → Options… → Renaming**
    (see [Options window](Options-Window.md)). The language is documented in the [rename language](Rename-Language.md).
 3. Click **Rename…**. Animatic evaluates the pattern against the local database (no network, no
    file access) and opens **Confirm rename** with the current path, the proposed new path, and any
@@ -19,7 +19,7 @@ off unless you switch it on for that folder.
 ## Several files (batch rename)
 
 1. On **Hashed files** select the files you want to rename: click one, Ctrl+click to add or remove
-   files, Shift+click to select a range. **Select all shown** selects every listed file, so it
+   files, Shift+click to select a range. **Select all** selects every listed file, so it
    follows the search box; **Clear selection** clears the selection. It is the same selection
    that **Add to MyList…** uses, and a file that a new search hides drops out of it.
 2. Click **Rename N selected…**. The window **Batch rename** opens at once and shows
@@ -50,7 +50,7 @@ A plan is blocked when: the pattern is empty or has a syntax error; the evaluati
 with a true/false value instead of text; it yields an empty name or a name with an unusable part
 (characters `< > : " | ? *`, control characters, empty folder names, reserved device names
 such as `CON`/`NUL`, or a component over 255 characters – UTF-16 units on Windows, bytes
-elsewhere); any evaluation warning occurred. The **stable default** pattern additionally requires the
+elsewhere); any evaluation warning occurred. The **built-in conventions** additionally require the
 anime title and a positive episode number to be known locally, so fetch the anime ("Refresh from
 AniDB" and run the queue) first. If the file already has the produced name, the dialog says
 nothing needs renaming.
@@ -83,22 +83,53 @@ only copy is never deleted. If the verified copy is in place and recorded but th
 be removed (for example a player holds it open), the rename counts as done and the log tells you
 that the old file remains as an extra copy you can delete yourself.
 
-The check for an existing destination and a same-drive rename are two separate steps, not one
-atomic operation: if another program creates a file at the destination in between, the rename
-can **overwrite** it (on Linux the system call replaces an existing file; Rust's rename also
-replaces existing files on Windows). A move to another drive never replaces a file that appears
-in between. A failure reports `Rename failed: <file>: <reason> (target <path>)` in the Log and may leave newly
+An existing destination is never replaced: the check happens before the move, and the move itself
+(an operating-system rename that refuses to replace, or for another drive a verified copy that
+is swapped in without replacing anything) fails if another program created a file there in
+between. A failure reports `Rename failed: <file>: <reason> (target <path>)` in the Log and may leave newly
 created empty folders. There is no undo and no AniDB notification. If the matching managed folder
 has **Remove emptied folders** on, the folders a successful rename left empty are removed
 afterwards ([details](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied)).
 
-Pattern tools in Options (nothing is saved until **Save options**, but see
-[Options window](Options-Window.md)): *Use stable default* (replace the text; the earlier text is
-kept so *Restore previous text* can undo it), *Validate on selected
-file* (dry run on the file selected on Hashed files; shows the result, diagnostics and `The pattern is
-valid for this file.`) and live syntax diagnostics. The built-in default uses a fixed two-digit
-episode minimum (`01`, `02`, … `100`); an existing custom pattern is never changed unless you
-choose *Use stable default*.
+## Choosing how files are named
+
+**Tools → Options… → Renaming** has a **Naming convention** list. Pick one of the built-in
+conventions, or **Custom pattern** to write your own. Every choice shows an **Example** of the
+name it gives a fictitious file (episode 6, release version 2, group `ExGroup`):
+
+| Convention | Example |
+|---|---|
+| [Group] Title - episode [CRC] (the default) | `[ExGroup] Reibun no Tabi - 06v2 [EB420C97].mkv` |
+| `Title - episode - episode title [group](CRC)` (AniDB O'Matic's default) | `Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv` |
+| Title - episode - episode title | `Reibun no Tabi - 06 - The Long Road.mkv` |
+| Title - S01E06 - episode title (media servers) | `Reibun no Tabi - S01E06 - The Long Road.mkv` |
+
+All of them name every AniDB episode type. AniDB numbers regular episodes and each other type
+separately, and the conventions write the type letter in front of the number: specials `S`,
+credits such as openings and endings `C`, trailers `T`, parodies `P` and other episodes `O`.
+A corrected release adds its version (`v2` to `v5`). With **[Group] Title - episode [CRC]**
+that gives names such as `[ExGroup] Reibun no Tabi - 10v2 [EB420C97].mkv`, `… - S15 […].mkv`,
+`… - C05 […].mkv` and `… - T08v2 […].mkv`: the AniDB O'Matic style that media players such as
+Kodi are often set up to recognize. Numbers have at least two digits; 100 and above keep all of
+theirs. The media server convention uses season 1 for regular episodes and season 0 for
+specials (`S00E01`); credits, trailers, parodies and other episodes keep their letter (`C05`),
+so a media server treats them as extras. Details: [Built-in naming
+conventions](Rename-Targets-and-Apply.md#built-in-naming-conventions).
+
+**Custom pattern** shows an editor, starting from the convention that was selected, and a
+**Pattern reference** button. The reference window explains how a pattern works and lists the
+values a pattern can read (titles, episode number and type, version, CRC, group, resolution,
+…), text functions, recipes (English titles, an optional group, a folder per anime, specials in a
+subfolder, openings and endings as `OP01` and `ED01`) and common mistakes. Every entry shows its
+result for the fictitious file, and **Copy** puts its code on the clipboard. The example line
+follows your edits as you type. The complete language is described in [Rename
+language](Rename-Language.md).
+
+Choosing a built-in convention while a custom pattern is in the editor keeps the custom text in
+memory: **Restore my custom pattern** puts it back. **Validate on selected file** is a dry run on
+the file selected on Hashed files; it shows the result, diagnostics and `The pattern is valid
+for this file.` Nothing is stored until **Save options** (but see [Options
+window](Options-Window.md)). A saved custom pattern is never changed by the application.
 
 ## Automatic rename (opt-in per managed folder)
 
@@ -138,7 +169,7 @@ settings review or the settings recovery notice is open, or while the Options wi
 - still exists on disk, and
 - has a plan that is valid for **Apply** with the current pattern: a pattern that does not
   compile pauses the whole pass with one `Automatic rename is paused` log line; warnings, a
-  missing title or episode number (stable default), an empty or true/false result or an unusable
+  missing title or episode number (built-in conventions), an empty or true/false result or an unusable
   name block the file.
 
 **Collisions and blocked plans are skipped and logged, never overwritten.** A file whose target
@@ -147,9 +178,8 @@ already exists, or that would get the same name as another file of the same pass
 scan or queue run that changes nothing neither repeats a note nor retries a failed move. A file
 is planned again when its path, its metadata, its folder mode or the pattern changes (or after
 Animatic restarts); a rename stopped by **Cancel** is tried again by the next pass. At most 20
-notes are logged per pass, followed by a count of the rest. As with a manual rename, the
-existing-target check and a same-drive rename are separate steps; the [limit described
-above](#what-applying-does) applies.
+notes are logged per pass, followed by a count of the rest. As with a manual rename, a file that
+appears at the target after the check is not replaced either; the move fails and is reported.
 
 Moves are reported like manual ones (`Renamed <old> to <new>`, `Rename failed: …`) followed by
 `Automatic rename finished: N renamed, M not renamed`. There is no undo and no AniDB notification.

@@ -9,8 +9,14 @@ and imports user-supplied AOM databanks without modifying the originals.
 - Read-only AOM databank import and reviewable, offline-first settings migration.
 - Single-pass ED2K-red, CRC32, MD5 and SHA-1 hashing; managed-folder scans (manual, at start or
   on an interval).
-- Searchable library views, anime details, local-file identification and MyList
-  watched/state editing.
+- A sidebar that groups the pages (Overview; Library: MyList, Anime, Advanced search, Hashed
+  files, Groups, Genres; Activity: Queue, Log; Options), an Overview with a **Getting started**
+  checklist and a **Needs attention** list, searchable library views, anime details, local-file
+  identification and MyList editing (state, watched, view date, storage, source and other,
+  removal after confirmation).
+- Keyboard shortcuts (`Ctrl+O`, `Ctrl+F`, `Ctrl+,`, `F5`, `Ctrl+Shift+S`, `Ctrl+1` … `Ctrl+9`,
+  `Esc`), a dark, light or system theme with a UI scale, and optional status colours for table
+  rows (soft tint or solid, as in AOM).
 - Durable synchronization queue with latest-intent edits, retained failures and
   restart-persistent cooldowns; AniDB's request spacing and once-a-day limits hold across
   runs and restarts.
@@ -19,7 +25,11 @@ and imports user-supplied AOM databanks without modifying the originals.
   display and never downloaded again (switch off with `anidb.download_covers`).
 - A user-requested MyList export from AniDB and a bounded, validated, all-or-nothing import of
   the downloaded file.
-- Compatible rename expressions with diagnostics, preview and explicit confirmation.
+- Renaming with a list of built-in naming conventions (the default is
+  `[Group] Title - episode [CRC]`) or compatible custom rename expressions with a live example,
+  an in-app pattern reference, diagnostics, preview and explicit confirmation; evaluation is
+  bounded so a runaway pattern fails with an error. An optional, off-by-default automatic
+  rename can be set per managed folder.
 - Configurable players with Open, Play and Enqueue actions and a chooser, a best-effort system
   tray with minimize-to-tray, AVDump integration and XML/INI statistics exports.
 - Safe settings-backup recovery that starts offline and preserves the original files.
@@ -31,8 +41,7 @@ and imports user-supplied AOM databanks without modifying the originals.
 Some functionality exists only in the Rust APIs or as persisted compatibility settings.
 The whole MyList is loaded through AniDB's MyList export (request it from the Tools menu,
 download the file from AniDB's web page, import it from the File menu), never entry by entry.
-There is **no automatic
-renaming, or media-deletion UI**. See the
+There is **no media-deletion UI**, and renaming is never implicit. See the
 [feature-parity matrix](https://github.com/RetroHazard/animatic/wiki/Feature-Parity) and
 [settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference) before relying on an imported option.
 

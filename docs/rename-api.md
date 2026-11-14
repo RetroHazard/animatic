@@ -11,12 +11,14 @@ the source-level entry points are:
 |---|---|
 | `Pattern::compile`, `Bindings`, `Evaluation`, `evaluate`, `target_path`, `EvalError` | [mod.rs](../crates/animatic-core/src/rename/mod.rs) |
 | `preprocess`, `compile`, `Node`, `CompileError` | [parser.rs](../crates/animatic-core/src/rename/parser.rs) |
-| `Evaluator`, `Object`, `DataSource` and the built-in functions | [eval.rs](../crates/animatic-core/src/rename/eval.rs) |
+| `Evaluator`, `Object`, `DataSource`, the built-in functions and the evaluation limits `MAX_STEPS` (100,000 evaluations), `MAX_DEPTH`, `MAX_CALL_DEPTH` and `MAX_TEXT` (128 KiB), beyond which `evaluate` returns an `EvalError` instead of running on | [eval.rs](../crates/animatic-core/src/rename/eval.rs) |
 | `Value` and the arithmetic/comparison helpers | [value.rs](../crates/animatic-core/src/rename/value.rs) |
 | `bindings_for_file`, `DbSource`, `anime_object`, `episode_object`, `file_object`, `group_object`, `hash_object`, `mylist_object`, `TITLE_PENDING` | [objects.rs](../crates/animatic-core/src/rename/objects.rs) |
 | `PatternKind`, `classify`, `check_pattern`, `Plan`, `plan`, `plan_local_file`, `Candidate`, `BatchRow`, `plan_batch` | [plan.rs](../crates/animatic-core/src/rename/plan.rs) |
 | `file_manager::{move_file, move_file_with, MoveControl, MoveOutcome, MoveMethod}` | [file_manager.rs](../crates/animatic-core/src/file_manager.rs) |
-| `DEFAULT_RENAME_PATTERN` | [settings.rs](../crates/animatic-core/src/settings.rs) and [default_pattern.txt](../crates/animatic-core/src/rename/default_pattern.txt) |
+| `DEFAULT_RENAME_PATTERN`, `AOM_RENAME_PATTERN` | [settings.rs](../crates/animatic-core/src/settings.rs), [fansub_pattern.txt](../crates/animatic-core/src/rename/fansub_pattern.txt) and [aom_pattern.txt](../crates/animatic-core/src/rename/aom_pattern.txt) |
+| `Preset`, `PRESETS`, `preset_for`, `sample_plan`, `sample_value` (built-in naming conventions and the fictitious sample file) | [presets.rs](../crates/animatic-core/src/rename/presets.rs) |
+| `SECTIONS`, `Section`, `Entry` (the in-application pattern reference) | [reference.rs](../crates/animatic-core/src/rename/reference.rs) |
 
 ## Example: plan a rename against fixed objects
 

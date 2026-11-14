@@ -45,7 +45,7 @@ templates or credentials on load or save.
 | Options → **Save options** | Yes; also applies theme and scale and closes Options |
 | Applying reviewed AOM settings | Yes, immediately (see [AOM import](#aom-settings-import)) |
 | Help → Check for updates…, Download and verify, Install | No; none of these writes the settings file. Only **Save options** (including the `updates.auto_check` checkbox) does |
-| Overview → "Dismiss first-run card" | Yes, unless the [recovery guard](#recovery-matrix) holds |
+| Overview → "Getting started" → **Hide** | Yes, unless the [recovery guard](#recovery-matrix) holds |
 | Closing the application | Yes, unless the guard holds; a failed exit save is silent. This is also when the window size, position and maximized state and the table column layouts reach the file |
 | Starting with neither file present | No; defaults are used and no file is created until the first save |
 
@@ -103,7 +103,7 @@ whose root is not an object (`[]`, `null`, `42`, `"text"`, `true` are all reject
 count as an empty-defaults file and never replace a backup).
 
 After a backup recovery the guard keeps the unreadable original untouched: the exit save and the
-first-run-card save are skipped, so recovered settings survive only in memory until you use
+Getting started **Hide** save are skipped, so recovered settings survive only in memory until you use
 **Save options** (or apply an AOM import). That explicit save writes the recovered values, including
 `offline: true`, over the primary (and, when the keystore works, writes the recovered credentials to
 it); untick the offline option afterwards if you want to go online.
@@ -213,7 +213,7 @@ Closing Animatic writes the complete file back, so the file then also contains e
 
 ## AOM settings import
 
-File → Import AOM settings… reads an AOM `local_settings.xml` (UTF-8 or UTF-16) on top of the
+File → Import → AOM settings… reads an AOM `local_settings.xml` (UTF-8 or UTF-16) on top of the
 defaults, shows a review window and, on **Apply imported settings**, saves it immediately
 (rotating the previous valid file into `settings.json.bak`), replaces the in-memory settings,
 forces `offline: true` and applies the theme and scale. Cancel changes nothing. XML containing no
@@ -221,8 +221,9 @@ recognized setting is rejected instead of resetting your configuration. The impo
 defaults of a fresh file, not from your current settings: **every value the XML does not mention
 (including your current API key, UDP server and port, theme and scale) is replaced
 by its default**, and the importer's own fallbacks for absent XML values (shown below) can differ
-from those defaults. The one exception is `updates.auto_check`: the apply step copies your current
-`updates` object into the imported settings before saving, because AOM has no such preference.
+from those defaults. The exceptions are the `updates` object (`updates.auto_check`) and the
+`media` object (`media.read_properties`, `media.ffprobe_path`): the apply step copies your current
+ones into the imported settings before saving, because AOM has no such preferences.
 The previous settings otherwise survive only in the backup file. Migration workflow:
 [Import AOM settings](Migrating-from-AOM.md#import-aom-settings).
 
@@ -248,7 +249,7 @@ Not touched by the import (they keep fresh-file defaults): `anidb.api_key`,
 `udp_server`, `local_port`, `idle_logout_minutes`, `auto_run_queue` (so an import never
 turns automatic queue runs on), `hashing.identify_after_hashing`,
 `avdump.executable`, `avdump.arguments`, `ui.theme`, `ui.zoom`, `ui.columns`,
-`ui.colored_rows`, and `ed2k_space_replacement`. After an import you therefore still have to
+`ui.colored_rows`, `ui.row_style`, and `ed2k_space_replacement`. After an import you therefore still have to
 review every managed folder before going online or scanning. The AniDB client identifiers are not
 settings, so an import neither sets nor needs them.
 Carriage returns are normalized in imported templates and patterns.

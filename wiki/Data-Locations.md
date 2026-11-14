@@ -35,7 +35,7 @@ Companion files you will meet:
 | `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
 | `animatic.sqlite3.instance` | While Animatic runs | The single-instance lock, next to the database (the canonical database path plus `.instance`). Holds a loopback port and a random token; removed when the window closes. A file left by a crash is detected and replaced; it is safe to delete with Animatic closed. See [Shell entries and the lock file](#shell-entries-and-the-lock-file). |
 | `covers/` | When an anime detail window downloads a cover | Same folder as the database. One file per cover, see [Cover pictures](#cover-pictures). Not part of library backups. |
-| `tools/ffprobe/` (`ffprobe` or `ffprobe.exe`, `LICENSE-ffmpeg.txt`) | After **Install ffprobe…** in Options → Media properties | Inside the database's folder (`tools` next to `animatic.sqlite3`, so `--database` or `ANIMATIC_DB` moves it too). Only these two files are kept (about 130 MB). Delete the folder to remove the tool; not included in backups or the library file. See [External tools](External-Tools.md#media-properties-ffprobe). |
+| `tools/ffprobe/` (`ffprobe` or `ffprobe.exe`, `LICENSE-ffmpeg.txt`) | After **Install ffprobe…** in Options → Players and tools → Media properties | Inside the database's folder (`tools` next to `animatic.sqlite3`, so `--database` or `ANIMATIC_DB` moves it too). Only these two files are kept (about 130 MB). Delete the folder to remove the tool; not included in backups or the library file. See [External tools](External-Tools.md#media-properties-ffprobe). |
 | `tools/.ffprobe-install-*/` | Briefly during that install | A private staging folder on the same drive, removed when the install ends; an interrupted one can be left behind and is safe to delete with Animatic closed. |
 
 Credentials are not in these files while the system keystore works: the AniDB password, API key and
@@ -48,8 +48,9 @@ the values stay in `settings.json` in plain text; the `.bak` copy holds the *pre
 control, shared backups and support requests
 ([troubleshooting](Troubleshooting.md); [details](Settings-Files.md#credentials-and-the-system-keystore)).
 Do not run two Animatic processes on the same settings
-file; they share temporary file names and are unsupported. Window size and position are not
-remembered between launches.
+file; they share temporary file names and are unsupported. The window's size, position and
+maximized state and the table layouts are kept in `settings.json` (see
+[window and layout state](Settings-Reference.md#window-and-layout-state)).
 
 ## Cover pictures
 
@@ -145,7 +146,7 @@ cargo run -p animatic -- $sample
 
 Keep the same shell session open (or note the printed folder name: `echo "$ROOT"` /
 `$root`) and use the same pair of overrides on every launch of the rehearsal profile. In the
-window, the sample is hashed, appears on **Hashed files** as `Unknown`, and (with the default
+window, the sample is hashed, appears on **Hashed files** as `Not identified`, and (with the default
 *Identify files with AniDB after hashing*) an identify command is waiting on **Queue**.
 Do not run the queue with fabricated credentials.
 

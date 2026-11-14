@@ -69,7 +69,7 @@ AniDB with unregistered client credentials.
 | `udp_last_send_ms`, `http_last_send_ms` | epoch **milliseconds** of the last UDP packet / HTTP request, saved before sending | `animatic_core::limits::DbLimitStore` for the process-wide limiter | the same store, once per process, when the first request of that protocol is made |
 | `auth_backoff_step` | consecutive `AUTH` attempts without a reply (1 to 6); `0` after a successful login | `DbLimitStore` | `DbLimitStore` |
 | `image_server` | the image host (bare host name, optional port) the last successful `AUTH` announced; anything else is never saved | the worker after a queue run (`Db::remember_image_server`) | cover requests (`Db::image_server`), which prefer it to `anidb.image_server` |
-| `mylist_stats` | JSON `{"fetched": <epoch seconds>, "stats": {…MylistStats fields…}}`: the latest `MYLISTSTATS` result with its arrival time (`StoredMylistStats`) | `Db::store_mylist_stats` (the `MylistStats` executor arm), replacing the previous value | `Db::mylist_stats_snapshot` (an unreadable value reads as absent), `LibraryProjection::account_stats`, Overview "AniDB account figures" |
+| `mylist_stats` | JSON `{"fetched": <epoch seconds>, "stats": {…MylistStats fields…}}`: the latest `MYLISTSTATS` result with its arrival time (`StoredMylistStats`) | `Db::store_mylist_stats` (the `MylistStats` executor arm), replacing the previous value | `Db::mylist_stats_snapshot` (an unreadable value reads as absent), `LibraryProjection::account_stats`, Overview "Your AniDB account" |
 | `legacy_import_source`, `legacy_import_date` | databank path, epoch seconds | legacy import | nothing in the application |
 | `legacy_dump_date` | largest dump-date tag found in the databank (`legacy_dump_date_tmp` is a transient staging key) | legacy import | nothing in the application |
 
@@ -216,8 +216,8 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 | Command | Prio | Transport and reply | Local effect | Enqueued by the desktop UI |
 |---|---|---|---|---|
 | `MylistAdd {file, edit}` | 0 | UDP (`FILE` for a hash reference), `MYLISTADD` | Stores the new entry; if present already, applies the edit | Yes: Hashed files "Add to MyList…" (`FileRef::Fid` for an identified file, `FileRef::Hash` otherwise) |
-| `MylistEdit {lid, edit}` | 0 | UDP `MYLISTADD edit=1` | `apply_edit_locally`; missing entry blocks the edit | Yes: My list state/watched, "Edit…" (state, watched, view date, storage, source, other) |
-| `MylistDelete {lid}` | 0 | UDP `MYLISTDEL` (211, or 411 = already gone) | Deletes the local entry only after the reply, and not when newer intent exists | Yes: My list "Remove from MyList…" (after confirmation) |
+| `MylistEdit {lid, edit}` | 0 | UDP `MYLISTADD edit=1` | `apply_edit_locally`; missing entry blocks the edit | Yes: MyList state/watched, "Edit…" (state, watched, view date, storage, source, other) |
+| `MylistDelete {lid}` | 0 | UDP `MYLISTDEL` (211, or 411 = already gone) | Deletes the local entry only after the reply, and not when newer intent exists | Yes: MyList "Remove from MyList…" (after confirmation) |
 | `Identify {size, ed2k, add}` | 1 | UDP `FILE` by hash; optional `MYLISTADD` by `fid` | `store_file_info`; mylist entry stored | Yes: after hashing an unidentified file, if enabled (and for an identified file only when its folder adds to MyList) |
 | `FetchFile {fid}` | 2 | UDP `FILE` by fid | `store_file_info` | Yes: full update (Tools menu or `--full-update`); re-hashing an identified file with `anidb.update_file_information` |
 | `FetchEpisode {eid}` | 2 | UDP `EPISODE` | `store_episode_info` | Yes: the episode "Refresh" button of the anime detail window |
@@ -225,7 +225,7 @@ Order of execution is `ORDER BY priority, id` over rows with `blocked = 0`.
 | `FetchAnime {aid}` | 3 | HTTP anime XML | `store_anime_xml` | Yes: detail "Refresh"; full update |
 | `MylistStats` | 3 | UDP `MYLISTSTATS` | Stored in `meta.mylist_stats` with the arrival time; the summary is also logged | Yes: Tools menu |
 | `TitlesDump` | 3 | HTTPS title dump | Spool then merge | Yes: Tools menu; full update |
-| `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry (queued edits overlaid), or deletes it if AniDB says it is gone and no local intent is queued | Yes: My list "Refresh entry" |
+| `MylistRefresh {lid}` | 4 | UDP `MYLIST` | Stores entry (queued edits overlaid), or deletes it if AniDB says it is gone and no local intent is queued | Yes: MyList "Refresh from AniDB" |
 | `MylistExport` | 3 | UDP `MYLISTEXPORT template=xml-plain-new` (217 queued, 318 already queued) | None; the file is imported separately. Guarded: once per 24 h | Yes: Tools → Request MyList export… (never scheduled, never by a full update) |
 | `MylistExportCancel` | 3 | UDP `MYLISTEXPORT cancel=1` (218, 319) | None | Yes: the same dialog's Cancel pending export |
 
@@ -341,7 +341,7 @@ Cooldown mechanics:
 - Stored as `meta.sync_cooldown` = `<until>\n<reason>`; `until` is rounded up to whole seconds.
 - `process_queue` checks it *before* constructing any client and refuses to run (and publishes
   a `Cooldown` event) while it is in the future. It therefore survives restarts and applies to
-  "Synchronize now" and "Run command queue" alike; "Retry failed" only unblocks rows.
+  "Run command queue" (Tools menu, Queue page and the shortcut) alike; "Retry failed" only unblocks rows.
 - Offline mode (`anidb.offline`) is checked first and leaves the queue untouched.
 - Inside one `UdpClient`, a server-error reply also arms an in-memory backoff (600/601/602:
   30 min, 604: 60 s) during which `ServerUnavailable` is returned without sending a packet, and
@@ -362,7 +362,7 @@ Cooldown mechanics:
 - A fresh cooldown does not take the maximum with an existing one; runs do not start while one
   is active, so none exists to compare.
 - Recovery: wait out the cooldown; correct the credentials in the Options window or settings
-  file (the client is built in; a `504`/`503` needs an Animatic update); use **Retry failed**; discard hopeless rows with **Clear queue**.
+  file (the client is built in; a `504`/`503` needs an Animatic update); use **Retry failed**; discard hopeless rows with **Clear queue…**.
   See [Troubleshooting](https://github.com/RetroHazard/animatic/wiki/Troubleshooting).
 
 ## AniDB server limits
@@ -753,7 +753,7 @@ proportional to the dump, during which other connections wait up to their busy t
 dump is rejected on any failure), conditional requests, protection against a valid but wrong
 dump and cancellation inside the dump (cancel acts between commands). The dump is not a MyList
 download: MyList rows come from legacy import, FILE replies for identified local files,
-`MYLISTADD` results, the (non-desktop) `MylistRefresh` and the
+`MYLISTADD` results, `MylistRefresh` (MyList **Refresh from AniDB**, one entry at a time) and the
 [MyList export import](#mylist-export-import).
 
 ## MyList export import
@@ -770,7 +770,7 @@ independent halves, both started by the user and never scheduled:
    dialog can open that page in the browser (a link the user follows, not a request Animatic
    sends). **Cancel pending export** queues `Command::MylistExportCancel`
    (`MYLISTEXPORT cancel=1`).
-2. **Import** (**File → Import MyList export…**, `Job::ImportMylistExport` on the worker,
+2. **Import** (**File → Import → MyList export…**, `Job::ImportMylistExport` on the worker,
    `Db::import_mylist_export`): reads the downloaded file locally. Nothing in the import touches
    the network.
 
@@ -859,7 +859,7 @@ Run in one write transaction after the whole file was validated.
 - **Absence is never established.** MyList rows the export does not list are **kept** and only
   counted (`not in the export` in the log line): the export is a snapshot that may be a day old,
   and an entry added since would otherwise be deleted. Removing local rows stays the job of the
-  acknowledged removal and of `Refresh entry`.
+  acknowledged removal and of **Refresh from AniDB** on MyList.
 - **Pending local intent wins** (rules 13 and 14). An entry with any queued add, edit or removal
   (blocked rows included) is not touched at all and counted as kept. The queue itself is not
   read-modified.
@@ -982,7 +982,8 @@ restart by itself. Failures in steps 1-4 happen before the executable is touched
 files placed in step 4 may remain after a later failure and are harmless. The staged files live in the
 temporary directory until the `VerifiedUpdate` is dropped.
 
-The desktop About window prefers the versioned license files for the running version. The updater thread
+The desktop About window prefers the versioned third-party notices for the running version and shows
+Animatic's own license from the text built into the executable. The updater thread
 owns the install, so a quit waits for it (see [Architecture](architecture.md#updater-thread)).
 
 **Tests.** Automated tests use synthetic archives and loopback servers only; they never contact GitHub or
@@ -1111,7 +1112,7 @@ durable contracts.
 | `hash` | `hash_file(&Path, Ed2kVariant, Control) -> Result<Hashes>`, `hash_bytes(&[u8], Ed2kVariant) -> Hashes`, `Control { cancel: &AtomicBool, pause: &AtomicBool, progress: &mut dyn FnMut(u64, u64) }`, `Hashes::{ed2k_link, export}`, `Ed2k`, `Ed2kVariant::{Red, Blue}`, `ED2K_CHUNK` |
 | `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>` (skips entries with the Windows system attribute when `exclude_system`; no effect elsewhere), `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path, MoveControl) -> Result<MoveOutcome>` (same-volume rename, or copy → verify against the stored ED2K → swap → record → remove the source when the rename fails with `CrossesDevices`), `move_file_with(.., &dyn Fn(&Path, &Path) -> io::Result<()>)` (injected rename step), `MoveControl { cancel, pause, progress: &mut dyn FnMut(u64, u64) }`, `MoveMethod::{Renamed, Copied}`, `MoveOutcome { method, source_left }`, `clear_emptied_folders(&FileManagerSettings, &Path) -> ClearedFolders { removed, errors }` (`clear_empty_folders`: removes the folders an Animatic move emptied, strictly below the matching manager root, only while completely empty), `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path`; `Db::local_file_record(i64) -> Result<Option<(String, Hashes)>>` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
-| `rename` | `Pattern::compile(&str)`, `evaluate(&Pattern, &Bindings, &dyn DataSource) -> Result<Evaluation, EvalError>`, `target_path(&Path, &str, &str)`, `plan::{plan, plan_local_file(&Db, &str, i64, &Path, &str) -> Plan, plan_batch(&Db, &str, &[Candidate]) -> Vec<BatchRow>, Candidate, BatchRow, classify, check_pattern, Plan, PatternKind}`, `objects::{bindings_for_file(&Db, i64, &str, &str), DbSource, ...}`, `eval::{Evaluator, Object, DataSource}`, `value::Value`, `parser` |
+| `rename` | `Pattern::compile(&str)`, `evaluate(&Pattern, &Bindings, &dyn DataSource) -> Result<Evaluation, EvalError>`, `target_path(&Path, &str, &str)`, `plan::{plan, plan_local_file(&Db, &str, i64, &Path, &str) -> Plan, plan_batch(&Db, &str, &[Candidate]) -> Vec<BatchRow>, Candidate, BatchRow, classify, check_pattern, Plan, PatternKind}`, `presets::{PRESETS, Preset, preset_for, sample_plan, sample_value}`, `reference::SECTIONS`, `objects::{bindings_for_file(&Db, i64, &str, &str), DbSource, ...}`, `eval::{Evaluator, Object, DataSource}`, `value::Value`, `parser` |
 | `settings` | `Settings::{load_with_recovery(&Path) -> Result<SettingsLoad>, save(&self, &Path), backup_path(&Path), keep_preferences_unknown_to_legacy(&mut self, &Settings)}`, `import_legacy_settings(&Path) -> Result<Settings>`, `AnidbSettings` (no client name or version: those are the constants `animatic_anidb::{UDP_CLIENT, UDP_CLIENT_VERSION, HTTP_CLIENT, HTTP_CLIENT_VERSION}`; old keys in a file are ignored and dropped on save), `FileManager(Settings)`, `HashingSettings`, `Player`, `AvdumpSettings`, `StatWhoreSettings`, `UiSettings`, `ColumnState`, `SortDirection`, `ColorSlot`, `SlotColor`, `UpdateSettings { auto_check }`, `DEFAULT_RENAME_PATTERN` |
 | `ui_state` | `placement_from_saved(Option<[f32; 4]>) -> WindowPlacement`, `window_to_save(position, size) -> Option<[f32; 4]>`, `column_id`, `merge_columns`, `ensure_layout`, `sort_of`, `cycle_sort`, `set_column_visible`, `row_colors(colored_rows, &colors, ColorSlot) -> Option<RowColors>`, `readable_text`, `contrast_ratio`, `local_file_slot`, `anime_slot`, `mylist_slot`, `MIN_WINDOW_SIZE`, `DEFAULT_WINDOW_SIZE`, `MIN_COLUMN_WIDTH` |
 | `atomic` | `write_atomic(&Path, &[u8]) -> io::Result<()>`, `write_atomic_with(&Path, FnOnce(&mut File) -> io::Result<()>)`: temporary file in the target folder, flush, rename over the target, remove the temporary file on failure (the parent folder must exist) |

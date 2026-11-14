@@ -13,6 +13,10 @@ the generated line for that pull request's squash commit.
 
 ### Added
 
+- About Animatic credits the developer and has buttons for the source code repository, the
+  documentation and the AniDB website; **View license** shows the license inside the app (the
+  text built into the executable, not a file that Windows must know how to open) and
+  **Third-party notices** opens the notices file shipped next to the program.
 - Calendar versioning (`YYYY.M.PATCH`, Cargo-compatible) for the workspace, internal
   dependency pins and `Cargo.lock`, starting with `2026.11.0`.
 - Release automation: `scripts/release.py` bumps the workspace version, internal
@@ -63,12 +67,12 @@ the generated line for that pull request's squash commit.
   `<database>.before-restore-YYYYMMDD-HHMMSS` and reloads; **Tools → Check library** runs
   `integrity_check` and `foreign_key_check` without repairing; **Tools → Compact library…** runs
   `VACUUM`. All run in the background while no other work is active.
-- MyList management: **My list** has an entry editor for state, watched, view date, storage,
+- MyList management: **MyList** has an entry editor for state, watched, view date, storage,
   source and other (a ticked empty field clears the value), **Remove from MyList…** with
-  confirmation and **Refresh entry**; **Hashed files** has **Add to MyList…** for several
+  confirmation and **Refresh from AniDB**; **Hashed files** has **Add to MyList…** for several
   selected files with an `Add queued` marker; **Groups** and the anime detail episode list have
-  **Refresh**. **Fetch mylist statistics** stores its result and shows it on the Overview as AniDB
-  account figures next to the local ones. Every change is queued first and survives restarts, and
+  **Refresh**. **Fetch MyList statistics** stores its result and shows it on the Overview under
+  **Your AniDB account** next to the local figures. Every change is queued first and survives restarts, and
   a removal deletes the local row only after AniDB acknowledges it.
 - Credentials live in the operating-system keystore (Windows Credential Manager, Linux Secret
   Service): the AniDB password, UDP API key and AVDump key are no longer written to
@@ -110,9 +114,11 @@ the generated line for that pull request's squash commit.
   refresh of its AniDB record, at most once per file per 7 days (off by default).
 - Animatic reopens with the window size, position and maximized state you left it with, and every
   table remembers its column widths, hidden columns and sort order (click a header to sort,
-  right-click it to choose columns). **Use status colors** tints rows in Hashed files, Anime,
-  Advanced search and My list by status, always with the status also written in the row.
-  **Theme: System** follows the operating system, and the saved theme and UI scale apply at
+  right-click it to choose columns). **Tint table rows by status** tints rows in Hashed files, Anime,
+  Advanced search and MyList by status, always with the status also written in the row;
+  **Row color style** chooses a *Soft* tint with a colored marker (default) or the *Solid* full-row
+  color of AniDB O'Matic.
+  **Theme: Same as the system** follows the operating system, and the saved theme and UI scale apply at
   launch. The AniDB client is built in and a release update never changes its registered
   version.
 - Managed folders honour two rules that were stored only: **Skip system files** makes scans ignore
@@ -125,7 +131,7 @@ the generated line for that pull request's squash commit.
   offline or during a ban or cooldown. It is kept in a `covers` folder next to the database for
   your own display only and never downloaded again. `anidb.download_covers` (default on, also in
   Options) turns downloads off; covers already on disk are still shown.
-- System tray (best effort): Options → System tray has *Show tray icon* and *Minimize to tray*. On
+- System tray (best effort): Options → Appearance → System tray has *Show tray icon* and *Minimize to tray*. On
   Windows the icon sits in the notification area; on Linux it uses the StatusNotifierItem protocol
   over D-Bus, with no extra system package. Its menu offers Show Animatic, Run command queue
   (disabled whenever Tools → Run command queue is) and Quit. Minimizing hides the window only while
@@ -135,7 +141,7 @@ the generated line for that pull request's squash commit.
   players with those argument templates, a chooser by player *Name* when several players exist,
   and an Options editor for every player's name and open, play and enqueue arguments, with add,
   remove and a single default.
-- **Tools → Request MyList export…** and **File → Import MyList export…**: AniDB prepares your
+- **Tools → Request MyList export…** and **File → Import → MyList export…**: AniDB prepares your
   whole MyList on request (up to 24 hours, downloaded from AniDB's export page); Animatic requests
   it at most once a day, never on a schedule. The downloaded `.tgz`, `.zip`, `.gz` or `.xml` file
   is read with strict size and structure limits and merged in one step: a damaged file changes
@@ -147,7 +153,7 @@ the generated line for that pull request's squash commit.
   files and the Overview show the queue with Resume hashing, Retry failed and Clear hash queue.
   **Start hashing automatically** resumes the queue at start. The hashing thread priority setting
   is kept only for AOM compatibility and has no effect.
-- Optional media properties through FFmpeg's `ffprobe` (Options → Media properties, off by
+- Optional media properties through FFmpeg's `ffprobe` (Options → Players and tools → Media properties, off by
   default, disabled until `ffprobe` is found): duration, resolution, frame rate, codecs, sample
   rate and bitrates of hashed files fill the hash export's media tokens. **Install ffprobe…**
   downloads a pinned LGPL build after you confirm its size, license and source, verifies its
@@ -174,9 +180,59 @@ the generated line for that pull request's squash commit.
   `http_client_name` or `http_client_version` load normally; the keys are ignored and dropped on
   the next save. A refused client (replies 503/504, or an HTTP client rejection) now says to update
   Animatic or report it, and the automatic queue run no longer waits for a client name.
+- Naming conventions for renaming: **Tools → Options… → Renaming** now has a **Naming
+  convention** list instead of only a pattern editor. Choose the fansub style
+  `[Group] Title - 06v2 [CRC]` (now the default for new settings; settings saved earlier keep
+  their pattern), AniDB O'Matic's `Title - 06v2 - Episode title [Group](CRC)`,
+  `Title - 06 - Episode title`, or `Title - S01E06 - Episode title` for media servers, and see
+  an example name at once. Every convention names all AniDB episode types: specials `S15`,
+  credits (openings and endings) `C05`, trailers `T08v2`, parodies and other episodes, with the
+  release version. **Custom pattern** opens the editor, starting from the selected convention,
+  with a live example and a **Pattern reference** window: how a pattern works, the values and
+  functions most patterns need, recipes (including openings and endings as `OP01`/`ED01`) and
+  common mistakes, each with its result for a sample file and a **Copy** button. Only the
+  pattern text is stored, so existing settings and saved custom patterns are unchanged; choosing
+  a convention over a custom pattern can be undone with **Restore my custom pattern**.
+- Keyboard shortcuts: `Ctrl+O` add files, `Ctrl+F` search the page, `Ctrl+,` Options, `F5` reload,
+  `Ctrl+Shift+S` run the command queue, `Ctrl+1` … `Ctrl+9` open the sidebar pages in order and
+  `Esc` close the topmost window. None acts while a modal dialog is open. **Help → Keyboard
+  shortcuts** lists them.
 
 ### Changed
 
+- User-interface refinement pass. The sidebar groups the pages under LIBRARY
+  (MyList, Anime, Advanced search, Hashed files, Groups, Genres) and ACTIVITY (Queue, Log) below
+  Overview, shows the pending (or red blocked) count on Queue, and ends with an **⚙ Options**
+  entry and a `N anime · N MyList entries` line. Page titles equal the sidebar labels, **My list**
+  is now **MyList** everywhere, and the search field has a **✕** clear button. New dark and light
+  palettes with an accent colour and readable secondary, warning and error text; dialogs open
+  centred without a collapse triangle.
+- Overview: a **Getting started** checklist for the first launch (account, folders, AOM import,
+  closed with **Hide** instead of **Dismiss first-run card**), a **Needs attention** zone with the
+  action for each item (hash queue, CRC mismatches, unidentified files, blocked or waiting
+  commands: **Open queue**, **Run command queue**, **Go online**), **Your library** and **Your
+  AniDB account** sections. **Add files…**, **Scan managed folders** and **Open hashed files**
+  replace the old buttons; **Refresh data** is gone (**File → Reload**, `F5`, remains).
+- Menus: File has **Import ▸** (AOM databank…, AOM settings…, MyList export…) and **Export ▸**
+  (Statistics…, Hashes…); **Refresh** is **Reload**; Tools starts with **Options…** and **Run
+  command queue**; Help has **Keyboard shortcuts**. Unavailable items say why when hovered.
+- Options: a category list (AniDB account, Appearance, Managed folders, Hashing, Renaming, Players
+  and tools, Exports, Updates) with a pinned footer holding **Close** and **Save options**; the
+  theme applies at once and the UI scale when the slider is released. **Edit pattern** buttons open
+  the Renaming category.
+- Status bar: a clickable **● Online** / **● Offline** button toggles *Work offline*; blocked
+  commands are a link to the Queue; `N commands not saved yet` (was `NOT saved yet`); errors are
+  shown in red as `⚠ message`, stay until the next message and open the Log.
+- Hashed files: the toolbar wraps and is grouped, buttons say why they are disabled, **Select all
+  shown** is **Select all**, **Open** is **Open file**, the count sits beside the buttons, the
+  AniDB column says `Not identified` (was `Unknown`) and the MyList column `Watched · lid N` /
+  `In MyList · lid N`.
+- Queue: **Synchronize now** is **Run command queue**; **Clear queue…** asks for confirmation
+  ("Discard commands") and is disabled while the queue is empty; empty Queue and Log pages explain
+  themselves and `ERROR` log lines are red. MyList: **Refresh entry** is **Refresh from AniDB**,
+  removing an entry asks in a dialog and the editor is titled **Edit MyList entry**. The anime
+  detail window is titled with the anime name, has its actions on top and opens **Episodes** as a
+  grid; sections without entries are disabled. MyList state names are the same everywhere.
 - CI now runs for pull requests targeting `main`, `main` pushes and manual runs, and never creates
   a GitHub Release, tag or push itself (ordinary runs check and build raw executables; only a
   release workflow calling it packages archives). A cheap `scope` job queries the
@@ -203,10 +259,22 @@ the generated line for that pull request's squash commit.
   Cargo registry and `cargo-about` caches current, rebuilding them only when the lockfile or
   toolchain changed, and reports *Main cache refresh*. A release builds only the clean, uncached
   release executables and notices. The license-notices job restores a Cargo registry cache
-  instead of downloading every crate.
+  instead of downloading every crate. `animatic-core` alone is compiled at `opt-level = 1` in
+  that profile, so the rename language's stack-limit tests run with frame sizes close to a shipped
+  build.
 - Releases are gated behind a reviewed merge and a tag at that merge, and are published directly.
   Prepare release labels its pull request `release`; merging it makes the new Auto release
   workflow dispatch Release with the merge commit, which validates it, builds the archives, then
   creates `vVERSION` at that commit and publishes the GitHub Release (previously a maintainer
   pushed the tag by hand and published a draft). Release no longer starts on a tag push. A dry
   Release run can rehearse the head of an unmerged release branch.
+
+### Fixed
+
+- Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
+  nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
+  pattern that loops or recurses without end, or builds an enormous text, now fails with an
+  error instead of freezing Animatic or crashing it with a stack overflow, which also matters
+  because the custom pattern example is computed as you type.
+- Reading media properties no longer flashes a console window on Windows for every `ffprobe`
+  run (searching for `ffprobe` and probing a file).

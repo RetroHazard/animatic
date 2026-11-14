@@ -69,7 +69,7 @@ fn titles() -> Fixture {
 }
 
 fn default_name(bindings: &Bindings) -> String {
-    let pattern = Pattern::compile(include_str!("default_pattern.txt")).unwrap();
+    let pattern = Pattern::compile(include_str!("aom_pattern.txt")).unwrap();
     let result = evaluate(&pattern, bindings, &titles()).unwrap();
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     result.result
@@ -127,11 +127,11 @@ fn custom_unpadded_and_unicode_patterns_are_unaffected() {
 #[test]
 fn built_in_defaults_are_recognized_but_custom_patterns_are_not() {
     assert_eq!(
-        classify(&include_str!("default_pattern.txt").replace('\n', "\r\n")),
-        PatternKind::StableDefault
+        classify(&include_str!("aom_pattern.txt").replace('\n', "\r\n")),
+        PatternKind::Preset(&super::presets::PRESETS[1])
     );
     assert_eq!(classify(" \r\n\t"), PatternKind::Empty);
-    let edited = include_str!("default_pattern.txt").replace("'v'", "'ver'");
+    let edited = include_str!("aom_pattern.txt").replace("'v'", "'ver'");
     assert_eq!(classify(&edited), PatternKind::Custom);
 }
 
@@ -171,7 +171,7 @@ fn plan_for(pattern: &str, bindings: &Bindings) -> plan::Plan {
 
 #[test]
 fn plan_with_the_default_pattern_yields_a_target_beside_the_file() {
-    let plan = plan_for(include_str!("default_pattern.txt"), &sample(12, 12, 1, 3));
+    let plan = plan_for(include_str!("aom_pattern.txt"), &sample(12, 12, 1, 3));
     assert!(plan.can_apply(), "{plan:?}");
     assert_eq!(
         plan.target.unwrap(),
@@ -226,7 +226,7 @@ fn plan_requires_fetched_metadata_for_the_stable_default_only() {
             .with("Id", Value::Int(1))
             .with("Name", Value::WStr(objects::TITLE_PENDING.into())),
     );
-    let stable = include_str!("default_pattern.txt");
+    let stable = include_str!("aom_pattern.txt");
     let blocked = plan::plan(stable, &pending_title, &titles(), old);
     assert!(
         blocked.target.is_none() && !blocked.errors.is_empty(),
@@ -287,4 +287,94 @@ fn component_length_limit_counts_what_the_file_system_counts() {
     assert!(target_path(old, &name(260), "").is_err());
     // 130 of them: 264 bytes (too long on POSIX) but only 134 UTF-16 units (fine on Windows).
     assert_eq!(target_path(old, &name(130), "").is_ok(), cfg!(windows));
+}
+
+/// Run `f` on a thread with a 1 MiB stack, the size of a Windows main (UI) thread, so a
+/// pattern that recursed without a limit would crash the test instead of passing.
+fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+fn run_error(source: &str) -> String {
+    let pattern = Pattern::compile(source).unwrap();
+    evaluate(&pattern, &sample(12, 12, 1, 3), &Fixture::default())
+        .err()
+        .unwrap_or_else(|| panic!("{source} ran to completion"))
+        .message
+}
+
+#[test]
+fn a_runaway_loop_stops_with_an_error_instead_of_hanging() {
+    let started = std::time::Instant::now();
+    let message = run_error("for('i', 1, 1000000000, 'x')");
+    assert!(message.contains("steps"), "{message}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
+#[test]
+fn texts_cannot_grow_without_bound() {
+    for source in [
+        "padl('x', 1000000000, '0')",
+        "pad('x', 1000000000)",
+        "replace(padl('a', 60000, 'a'), 'a', padl('b', 100, 'b'))",
+        "replacei(padl('a', 60000, 'a'), 'A', padl('b', 100, 'b'))",
+        "set('s', 'ab')\nfor('i', 1, 64, set('s', s + s))\ns",
+        "for('i', 1, 99999, 'xxxxxxxxxx')",
+    ] {
+        let message = run_error(source);
+        assert!(message.contains("KiB"), "{source}: {message}");
+    }
+}
+
+#[test]
+fn endless_recursion_ends_with_an_error_on_a_ui_sized_stack() {
+    let messages = on_small_stack(|| {
+        [
+            "function('f', 'y' + f(param1))\nf('a')",
+            "function('f', padl(join(' ', if(1, replace(f(param1), 'a', 'b'), 'c')), 1, '0'))\nf('a')",
+        ]
+        .map(run_error)
+    });
+    for message in messages {
+        assert!(message.contains("nests too deeply"), "{message}");
+    }
+}
+
+#[test]
+fn deeply_nested_text_is_a_compile_error_not_a_crash() {
+    let errors = on_small_stack(|| {
+        [
+            format!("{}'a'{}", "(".repeat(5000), ")".repeat(5000)),
+            format!("{}'a'", "not ".repeat(100_000)),
+            format!("{}1", "-".repeat(100_000)),
+            vec!["'a'"; 5000].join("\n"),
+        ]
+        .map(|source| Pattern::compile(&source).err().map(|e| e.message))
+    });
+    for error in errors {
+        assert!(error.unwrap().contains("nested too deeply"));
+    }
+}
+
+#[test]
+fn long_patterns_and_moderate_loops_stay_within_the_limits() {
+    let (lines, looped) = on_small_stack(|| {
+        let b = sample(12, 12, 1, 3);
+        let run = |source: &str| {
+            evaluate(&Pattern::compile(source).unwrap(), &b, &Fixture::default())
+                .map(|e| e.result.len())
+                .map_err(|e| e.message)
+        };
+        (
+            run(&vec!["'a'"; 500].join("\n")),
+            run("set('s', '')\nfor('i', 1, 5000, set('s', s + 'x'))\ns"),
+        )
+    });
+    assert_eq!(lines, Ok(500));
+    assert_eq!(looped, Ok(5000));
 }

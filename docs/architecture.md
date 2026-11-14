@@ -52,7 +52,7 @@ removing them turns old queue rows into blocked "unreadable queued command" rows
 | `hash` | One-pass ED2K (red/blue), CRC32, MD5, SHA-1; hash-export template expansion |
 | `file_manager` | Side-effect-free scan planning, hash-and-register, `move_file` (same-volume rename or verified cross-volume copy), missing-record removal |
 | `legacy` | Databank discovery, page decryption, record decoding, per-collection import |
-| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`) |
+| `rename` | Pattern parser/evaluator, database-backed `A`/`E`/`F`/`G`/`H`/`M` objects, path planning (`plan`, `plan_local_file`, `plan_batch`), built-in naming conventions with a fictitious sample file (`presets`) and the in-application pattern reference (`reference`) |
 | `settings` | Serializable settings, load-with-recovery, atomic save, AOM XML settings import |
 | `ui_state` | Pure rules for the saved window geometry, per-table column layout and sorting, and status row colours; no window code, so they are unit-tested |
 | `atomic` | `write_atomic`: temporary file in the target folder, flush, rename; used by the statistics and hash exports |
@@ -86,8 +86,10 @@ cover thread pass them to `UdpConfig`/`HttpClient::new`.
 `main.rs` (paths, environment, CLI flags, window, restart after `run_native`), `app.rs` (egui state, pages, dialogs,
 projection bookkeeping, the Software updates window), `app/covers.rs` (cover textures and the placeholder in the anime detail window), `app/player_actions.rs` (player chooser, Open in player/Enqueue, file context menu), `app/tray_ui.rs` (per-frame tray hook and the Options section), `tray.rs` (system tray, below), `table.rs` (`DataTable`: virtualized table with saved column layout, header sorting, column chooser, row tinting; the row sorters), `worker.rs` (jobs, events, queue runs, projection thread, updater thread), `worker/covers.rs` (the cover thread and picture decoding), `scheduler.rs` (scheduled folder scans, hash queue autostart request), `auto_queue.rs` (opt-in automatic queue runs), `session.rs` (the AniDB session kept between runs), `hash_jobs.rs` (worker side of the persistent hash queue).
 The Options row for the file-menu entry is `app/shell_menu.rs`; the pending hash queue panel is `app/hash_queue_panel.rs`.
+`style.rs` (type scale, spacing, dark and light palettes, the accent and the status colours as helpers such as `warn`, `error`, `ok`, `section`, `plural` and `destructive`) and `app/dialog.rs` (the one constructor of floating windows: centred, no collapse triangle, closed by Esc when topmost and not typing).
 `media.rs` (the media tools thread for `ffprobe` detection and install, and the body of `Job::ReadMedia`),
 `app/media_options.rs` (the Options section, the install confirmation and the read after hashing).
+`app/mylist_editor.rs` (the MyList entry editor, **Add to MyList…**, the removal dialog, the Refresh actions and the account figures), `app/mylist_export.rs` (the MyList export request dialog and the import picker), `app/refresh.rs` (**Full update…** preview and what hashing queues for a known file), `app/auto_rename.rs` (the automatic rename pass and its confirmation), `console.rs` (on Windows, attaches to the terminal that started the program so `--help` and startup errors are printed; a message box otherwise) and `icon.rs` (the cherry-blossom window and tray icon, decoded from `assets/animatic.png`).
 
 ## Runtime model
 
@@ -125,7 +127,7 @@ network work is cancelled on drop, and an install in progress is joined.
 SQLite is the shared state. WAL mode lets the projection thread and the UI read while the worker
 writes; only one writer proceeds at a time. Writers that read-modify-write use
 `Db::write_tx` (`BEGIN IMMEDIATE`, nested use through a savepoint). When the UI hits a busy
-database, a queued command is held in memory and shown as "NOT saved yet" (up to 1000, retried
+database, a queued command is held in memory and shown as "not saved yet" (up to 1000, retried
 every 500 ms, one final 5 s attempt at exit); commands still unsaved after that are lost and logged. A
 failed mylist edit is not deferred: it reports the error and nothing changes.
 
@@ -260,7 +262,7 @@ sequenceDiagram
     participant Net as animatic-anidb clients
     User->>UI: Edit MyList / identify file
     UI->>DB: persist command (queue_edit_mylist / queue_push)
-    User->>UI: Synchronize now / Run command queue
+    User->>UI: Run command queue
     UI->>Worker: Job::ProcessQueue(AnidbSettings)
     Worker->>DB: refuse while offline or in cooldown
     Worker->>Net: build UdpClient and HttpClient from settings, over the worker's one shared Limits
@@ -275,8 +277,9 @@ sequenceDiagram
     Worker->>Net: LOGOUT
 ```
 
-The queue runs only when the user asks (the Queue page or Tools menu); nothing starts it
-automatically. Offline mode leaves the queue untouched. Execution is **at-least-once**: a
+The queue runs when the user asks (**Run command queue** on the Queue page, in the Tools menu and the
+Overview, or `Ctrl+Shift+S`) or, only when `anidb.auto_run_queue` is on, from the automatic runs
+below. Offline mode leaves the queue untouched. Execution is **at-least-once**: a
 command is removed after its reply has been applied, so a crash in between replays it. Replays
 are safe by construction (edits are idempotent, an add that finds the entry returns the existing
 entry, a delete of a missing entry counts as done). A UDP timeout is also retried once inside
@@ -314,7 +317,7 @@ absence can remove a stale local MyList row.
 Details and limits: [queue semantics](storage-and-network.md#outbox-command-queue).
 
 The UI additionally keeps a short-lived in-memory overlay for the edited row, discarded once a
-projection requested after the write arrives. "Clear queue" deletes every row, blocked ones
+projection requested after the write arrives. "Clear queue…" (after a confirmation) deletes every row, blocked ones
 included, but does **not** revert optimistic local changes already applied to `mylist`.
 
 Adds, removals and refreshes use the plain queue (`queue_command`, with the same deferral when the
@@ -323,9 +326,9 @@ exists before AniDB answers; `LibraryProjection` derives `LocalFile::mylist_add_
 queue snapshot so **Hashed files** shows `Add queued`. A removal never touches the `mylist` row
 until `execute` has AniDB's `MYLISTDEL` reply (`mylist_deleted_on_anidb`, which keeps the row when
 newer intent was queued after the delete); `LibraryProjection::mylist_pending` (from
-`pending_by_lid`) shows `Edit queued`, `Removal queued` and the `blocked` forms on **My list**. The
+`pending_by_lid`) shows `Edit queued`, `Removal queued` and the `blocked` forms on **MyList**. The
 latest `MYLISTSTATS` result is stored in `meta.mylist_stats` with its arrival time and exposed as
-`LibraryProjection::account_stats`; the Overview labels it as AniDB account figures, apart from
+`LibraryProjection::account_stats`; the Overview labels it **Your AniDB account**, apart from
 the local counts.
 
 ### Library projections
@@ -378,7 +381,7 @@ independent user actions.
    template=xml-plain-new` through the worker's shared `Limits`; `217` is a success, `318`
    (already queued) completes as skipped and is reported, `317` is a permanent error for that
    command only. A full update never queues it and nothing schedules it.
-2. **File → Import MyList export…** picks the file the user downloaded from AniDB and submits
+2. **File → Import → MyList export…** picks the file the user downloaded from AniDB and submits
    `Job::ImportMylistExport`. The worker calls `Db::import_mylist_export`, which reads the file
    like the title dump (bounded by `ExportLimits`; tar/tgz/zip/gzip/plain XML told from the
    content), validates all of it while spooling into a private temporary SQLite database, and
@@ -393,7 +396,7 @@ Details, accepted XML structure and merge rules:
 ### Legacy migration
 
 1. `find_databank` accepts a `kowai` directory or an install directory containing one.
-2. **File > Import AOM databank...** submits `Job::ImportLegacy { source, temp_root, confirmed }`.
+2. **File > Import > AOM databank...** submits `Job::ImportLegacy { source, temp_root, confirmed }`.
    The worker calls `open_for_legacy_import`: when the database is not empty (`Db::is_empty`:
    no anime, MyList entry or local file) and the job is not `confirmed`, nothing is written and
    the job answers `Event::LegacyImportNeedsConfirmation`. The UI thread never inspects the
@@ -481,7 +484,7 @@ library).
 
 ### Legacy settings migration
 
-**File > Import AOM settings...** submits `Job::ImportLegacySettings`; the worker parses the
+**File > Import > AOM settings...** submits `Job::ImportLegacySettings`; the worker parses the
 XML and returns a typed event. The UI keeps the candidate pending behind a review window that
 reports counts and a generic credential warning, never values. While it is open, worker
 submissions are gated. Apply forces offline mode and **saves before activating**; a save
@@ -653,6 +656,20 @@ planning changes the filesystem. `plan_local_file` plans one identified file fro
 path already exists on disk or is already claimed by an earlier row of the batch (it only reads
 metadata).
 
+- **Naming conventions.** `rename::presets::PRESETS` lists four built-in conventions (default
+  `[Group] Title - episode [CRC]`, AOM's `Title - episode - episode title [group](CRC)`,
+  `Title - episode - episode title` and the media-server `Title - S01E06 - episode title`), each
+  one `*_pattern.txt`. Only the pattern text is stored: `preset_for` recognizes a text equal to a
+  convention (surrounding blanks and line endings ignored), so a saved custom or older pattern
+  is never rewritten and no settings migration exists. New settings start with the first
+  convention (`DEFAULT_RENAME_PATTERN`). Options → Renaming shows the list with an example from
+  `sample_plan`, a fictitious episode 6, version 2, planned against an in-memory data source (no
+  database or filesystem); **Custom pattern** opens the editor and the **Pattern reference**
+  window, whose text is `rename::reference::SECTIONS`. Because the example is recomputed as the
+  pattern is typed on the UI thread, evaluation is bounded (`eval::MAX_STEPS`, `MAX_DEPTH`,
+  `MAX_CALL_DEPTH`, `MAX_TEXT`; the parser stops at its own depth limit) and a pattern that
+  exceeds a limit fails with an error instead of freezing the window or overflowing the stack
+  (rule 7).
 - **Single file.** **Hashed files → Rename…** previews one file (the point reads of the local
   database run on the UI thread) and, on confirmation, submits `Job::RenameFiles` with one item.
 - **Batch.** Selecting files on **Hashed files** (the selection **Add to MyList…** shares) and **Rename N selected…** sends
@@ -841,7 +858,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 
 | Topic | Anchor |
 |---|---|
-| Pages and menus | `crates/animatic/src/app.rs`: `Page::ALL`, `top_bar`, `navigation`, `dashboard`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window`, `bottom_bar` |
+| Pages and menus | `crates/animatic/src/app.rs`: `Page::GROUPS` and `Page::all`, `top_bar`, `navigation`, `page_header`, `dashboard`, `attention`, `getting_started`, `mylist_page`, `anime_page`, `search_page`, `hashed_page`, `groups_page`, `genres_page`, `queue_page`, `log_page`, `anime_detail_window`, `settings_window` (with the `options_*` category methods and `OptionsPage`), `bottom_bar`, `handle_shortcuts` and `mod shortcuts`; `crates/animatic/src/style.rs`; `crates/animatic/src/app/dialog.rs` |
 | MyList editor, add, remove, refresh, account figures | `crates/animatic/src/app/mylist_editor.rs`: `MylistForm::build`, `mylist_toolbar`, `entry_editor_window`, `open_add_dialog`/`add_window`, `remove_window`, `click_selection`, `account_figures`; `library.rs`: `pending_by_lid`, `mark_pending_adds`; `store.rs`: `store_mylist_stats`, `mylist_stats_snapshot` |
 | Full update menu action, update known file information | `crates/animatic/src/app/refresh.rs`: `after_hash` (what hashing queues: identify, refresh a known file inside the 7-day window, nothing), `start_full_update_preview`/`full_update_window`; `worker.rs`: `plan_full_update` (shared by `preview_full_update` and `queue_full_update`, so the preview counts equal what is queued) |
 | Tables, sorting, columns, row colours, window state | `crates/animatic/src/table.rs`: `DataTable`, `data_table`, `Row::tint`, `sort_*`; `crates/animatic-core/src/ui_state.rs`: `merge_columns`, `ensure_layout`, `cycle_sort`, `row_colors`, `placement_from_saved`, `window_to_save`; `app.rs`: `track_window`, `viewport`, `apply_visuals` |
@@ -851,7 +868,7 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | Error classes and cooldowns | `crates/animatic-anidb/src/error.rs`; `udp.rs` reply mapping |
 | Request spacing, request guards, `AUTH` backoff | `crates/animatic-anidb/src/limits.rs` (`Limits`, constants); `crates/animatic-core/src/limits.rs` (`DbLimitStore`, guards); `sync::execute`; `worker.rs`: `Network`, `queue_full_update`; `app.rs`: `queue_titles_dump`, `queue_anime_refresh` |
 | Scan rules | `crates/animatic-core/src/file_manager.rs`: `plan_scan`, `has_system_attribute`, `move_file`, `clear_emptied_folders`; `settings.rs`: `FileManagerSettings::matching_manager_for`; `worker.rs`: `run_renames`, `clear_vacated_folders` |
-| Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames, AutoRename}`, `run_renames`, `run_auto_rename`, `apply_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui`; `crates/animatic-core/src/auto_rename.rs`: `plan_pass`, `AutoRenameMemory`, `folder_candidates`; `app/auto_rename.rs`: `pump_auto_rename`, `mode_control`, `auto_rename_enable_window` |
+| Rename | `crates/animatic-core/src/rename/plan.rs` (`plan`, `plan_local_file`, `plan_batch`), `rename/mod.rs` (`target_path`), `rename/eval.rs` (`MAX_STEPS`, `MAX_DEPTH`, `MAX_CALL_DEPTH`, `MAX_TEXT`), `rename/presets.rs` (`PRESETS`, `preset_for`, `sample_plan`, `sample_value`), `rename/reference.rs` (`SECTIONS`), `file_manager.rs`: `move_file`, `move_file_with`; `worker.rs`: `Job::{RenameFiles, PlanRenames, AutoRename}`, `run_renames`, `run_auto_rename`, `apply_renames`, `plan_renames`; `app.rs`: `preview_rename`, `rename_window`, `prepare_batch_rename`, `batch_rename_window`, `pattern_editor_ui`, `pattern_reference_window`; `crates/animatic-core/src/auto_rename.rs`: `plan_pass`, `AutoRenameMemory`, `folder_candidates`; `app/auto_rename.rs`: `pump_auto_rename`, `mode_control`, `auto_rename_enable_window` |
 | Exports | `crates/animatic-core/src/stats.rs`; `atomic.rs`: `write_atomic`; `library.rs`: `Db::export_local_hashes`; `hash.rs`: `Hashes::export`; `app.rs`: `export_statistics`, `export_hashes` (pick the file, submit the job); `worker.rs`: `Job::ExportStatistics`, `Job::ExportHashes`, `run_projections` |
 | External tools | `crates/animatic-core/src/external.rs`; `app/player_actions.rs`: `file_menu`, `player_toolbar`, `run_file_action`; `app.rs`: `play_selected` |
 | System tray | `crates/animatic/src/tray.rs`: `TrayController::update`, `icon_wanted`, `should_hide`, `MENU`, `platform` backends; `app/tray_ui.rs`: `tray_frame`, `tray_options_ui`; `app.rs`: `queue_run_allowed` |
@@ -863,3 +880,4 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | MyList export request and import | `crates/animatic-anidb/src/commands.rs`: `mylist_export`, `mylist_export_cancel`; `crates/animatic-core/src/sync.rs`: `Command::{MylistExport, MylistExportCancel}`, `execute`; `limits.rs`: `RequestKind::MylistExport`; `crates/animatic-core/src/mylist_export/`: `read_export`, `xml::read_document`, `Db::import_mylist_export`; `worker.rs`: `Job::ImportMylistExport`; `crates/animatic/src/app/mylist_export.rs`: `mylist_export_window`, `import_mylist_export` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |
 | Single instance, file-menu entry | `crates/animatic-core/src/instance.rs`: `start`, `Primary`, `Incoming`; `shell_integration.rs`: `ShellIntegration`, `Status`; `crates/animatic/src/app/shell_menu.rs`; `app.rs`: `process_handoff`, `apply_shell_integration`; `main.rs`: `instance::start` |
+| About window and license | `crates/animatic/src/app.rs`: `about_window` (developer credit from the package authors; **Source code**, **Documentation** and **AniDB website** buttons; **Third-party notices** opens the versioned or bundled `THIRD-PARTY-NOTICES.html` found next to the executable) and `license_window` (`include_str!` of the root `LICENSE`, kept LF by `.gitattributes`) |

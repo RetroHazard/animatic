@@ -15,7 +15,7 @@ Repository-specific engineering rules for coding agents live in
 | Workspace members | `animatic-core`, `animatic-anidb`, `animatic` | [`Cargo.toml`](../Cargo.toml) |
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
-| CI | Pull requests **targeting `main`** (a cheap `scope` job defers stacked children at runtime) and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. Enforcing it is a GitHub setting outside this repository (see [Pull request gate and branch protection](#pull-request-gate-and-branch-protection)) | [`ci.yml`](../.github/workflows/ci.yml) |
+| CI | Pull requests **targeting `main`**, plus the pull requests of a native stack on `main` (only the top one runs the checks; a cheap `scope` job defers other stacked children at runtime), and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. Enforcing it is a GitHub setting outside this repository (see [Pull request gate and branch protection](#pull-request-gate-and-branch-protection)) | [`ci.yml`](../.github/workflows/ci.yml) |
 | Distribution | GitHub Releases published when a `release`-labelled release pull request merges: the Release workflow tags the merge commit and publishes an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
@@ -101,6 +101,10 @@ Build profiles ([`Cargo.toml`](../Cargo.toml)):
 - `dev`: `opt-level = 1`, with all dependencies at `opt-level = 3` (so hashing, SQLite and
   rendering are usable without a release build, at the cost of a slower first dependency
   build).
+- `ci` (used by the CI checks): `dev` without optimization and with line tables only, so a
+  cold build is cheap; `animatic-core` alone stays at `opt-level = 1`, because the rename
+  language tests prove its nesting limits fit a 1 MiB UI-thread stack, and unoptimized frames
+  are several times larger than those of any shipped build.
 
 `Cargo.lock` is tracked. CI builds, tests and lints with `--locked`, so commit lockfile
 changes together with any dependency change or the run fails.
@@ -218,7 +222,7 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
    choose **Save options**. A fresh settings file has `offline` set to `false`, the
    built-in default folder rule adds identified files to MyList, and **Identify files with
    AniDB after hashing** is on by default, so hashing queues an Identify command. Nothing
-   runs unless you choose **Tools → Run command queue** or **Synchronize now**, but a smoke
+   runs unless you choose **Tools → Run command queue** or **Queue → Run command queue**, but a smoke
    test must never be one click from the network. The startup update check
    (`updates.auto_check`, default on) also contacts GitHub on a fresh profile; seed the isolated
    settings file with `{ "updates": { "auto_check": false }, "anidb": { "offline": true } }`
@@ -241,7 +245,7 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
 
 4. Exercise the changed path end to end (for example **File → Add files…**, the **Hashed
    files**, **Queue** and **Log** pages, **Tools → Scan managed folders**, the rename
-   preview/confirm window, or **File → Import AOM settings…** with a hand-written synthetic
+   preview/confirm window, or **File → Import → AOM settings…** with a hand-written synthetic
    XML file) and watch the status bar and the **Log** page for errors.
 5. Close the application and reopen it against the same files to confirm persistence (queue
    rows, settings, library rows).
@@ -405,7 +409,7 @@ is two years after its date):
    license text if it changed), the table in the transport section above and the sizes quoted in
    `wiki/External-Tools.md` and `wiki/Data-Locations.md`. `the_pinned_constants_are_well_formed`
    checks the shape (LGPL asset, HTTPS GitHub URL, 64 hex digits, size limit).
-5. Run the workspace checks, then a manual install on both platforms (Options → Media properties →
+5. Run the workspace checks, then a manual install on both platforms (Options → Players and tools → Media properties →
    **Install ffprobe…**) and one probe of a synthetic media file; a Linux run is not verified by
    the project until someone records one.
 
@@ -453,10 +457,23 @@ requests that each passed alone can still conflict on `main`, and nothing after 
 checks it. `ci.yml` itself never creates a GitHub Release, tag or push, so it cannot cut a
 release from a pull request or a development branch. A plain push
 to a development branch starts nothing. A pull request whose base is another development branch
-(a stacked child) may still start the workflow, because GitHub can evaluate the branch filter with
-`main` as context; the authoritative `scope` job therefore queries the pull request REST API for the
-actual base and, when it is not `main`, defers all code and expensive jobs under the separately named
-*Stacked PR (deferred)* job (never `Required checks`) until the pull request is retargeted to `main`.
+may still start the workflow. GitHub's native stacked pull requests (`main` ← #1 ← #2 …) start it
+for every pull request of the stack as if it targeted `main`, and GitHub evaluates the `main`
+ruleset, including the required `Required checks`, against each of them; a merge of the stack
+needs every pull request in it to pass. The authoritative `scope` job therefore queries the pull
+request REST API for the actual base and the `stack` (base, position and size). A pull request on
+`main` outside a stack, and the **top** pull request of a stack on `main`, run the full checks;
+the top one contains every layer of the stack, and its plan selects every job whatever its own
+layer changes (its diff against its own base would show only the top layer, for example
+documentation over lower Rust layers). The lower pull requests of the stack run nothing
+but `scope` and report a passing `Required checks` whose summary names the top as their cover,
+so a stack costs one full run per push instead of one per pull request. Because those lower
+results check nothing themselves, a change pushed to a lower branch must reach the top before
+the stack merges (GitHub's **Rebase stack**, or merging the lower branch upward), which reruns
+the top; merging a lower pull request on its own lands code that was checked only as part of the
+top. Any other pull request whose base is not `main` (a branch outside a stack on `main`) defers
+all code and expensive jobs under the separately named *Stacked PR (deferred)* job (never
+`Required checks`) until it is retargeted to `main`.
 A `scope` API error fails closed. To check a branch earlier, run the workflow manually
 (**Actions → CI → Run workflow**), which always runs the full checks on any branch and, with
 **executables** ticked, also uploads release executables. How releases are made is in
@@ -480,7 +497,8 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   an `edited` event that does not change the base (a title or body edit) **does start the
   workflow**, but its code-check jobs are intentionally skipped by job conditions. Such a run
   only reports a separately named job (*PR metadata (no code checks)*; see the workflow for the
-  exact name), which writes a run summary and passes; a stacked pull request likewise reports a
+  exact name), which writes a run summary and passes; a pull request on another branch that is
+  not in a stack on `main` likewise reports a
   passing *Stacked PR (deferred)* job. Neither ever emits a `Required checks` result, passing or
   skipped: a skipped or passing `Required checks` on the same commit could mask an earlier failed
   one. Only real code-check runs use the exact `Required checks` name, so a failed `Required
@@ -507,14 +525,15 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Check and package: installs or restores the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices`. Refresh: only fetches the registry and installs the renderer when their caches are missing |
   | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust and `quality` succeeded | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`. Check: locked Clippy with warnings denied, tests and rustdoc with warnings denied, all in the `ci` profile for the matrix target. Refresh: a cache lookup, and the check steps only on a miss. Package, or a manual run with **executables**: the release build and a `--help` smoke run, uploading `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
   | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust` and `notices`; wraps their executables and notices with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
-  | `required` (**Required checks**; *Main cache refresh* on a `main` push; *PR metadata (no code checks)* on a title or description edit; *Stacked PR (deferred)* when the actual base is not `main`) | every event, even when upstream jobs failed or were skipped | Fails closed unless every job the plan selected succeeded (see below). Under the metadata and stacked names it only writes a run summary and passes; those names are never required. A `main` push uses its own name because it normally runs no Rust checks |
+  | `required` (**Required checks**; *Main cache refresh* on a `main` push; *PR metadata (no code checks)* on a title or description edit; *Stacked PR (deferred)* when the actual base is not `main` and the pull request is not in a stack on `main`) | every event, even when upstream jobs failed or were skipped | Fails closed unless every job the plan selected succeeded (see below). Under the metadata and stacked names it only writes a run summary and passes; those names are never required. A lower pull request of a stack on `main` reports a passing **Required checks** without checks, covered by the top pull request's run. A `main` push uses its own name because it normally runs no Rust checks |
 
   **Quality first.** The expensive jobs need both `plan` and `quality`, so a failing quality
   check (tests, docs, workflow validation) stops the Windows and Linux Rust runners and the
   license job before they consume minutes; `required` still reports the failure. After `quality`
   passes, `notices` and `rust` run in parallel and do not depend on each other, so one failure
-  does not hide the other's diagnostics. Only `package` waits for both. The pull request is
-  not green, and no job claims it is, until the selected jobs have actually run and passed.
+  does not hide the other's diagnostics. Only `package` waits for both. A pull request is not
+  green until the selected jobs have actually run and passed, either on it or, for a lower pull
+  request of a stack on `main`, on the top pull request of the stack.
 - **Planner (`scripts/ci.py plan`):** reads `git diff --no-renames --name-only` between the pull
   request base and the merge commit (for `main`, the pushed range) and prints
   `rust=true|false` and `licenses=false|true`. Documentation-only changes (Markdown and
@@ -524,6 +543,7 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   `.cargo/` or a `rust-toolchain*` file select both because they affect packaging or CI itself;
   other Python under `scripts/` selects only `quality`. **Any path it does not recognize selects
   both**, so a new kind of file fails safe. A reusable call with a non-empty `ref`, `package: true`,
+  the top pull request of a stack whose own base is not `main`,
   a manual run, a merge-group run, a `main` push (so the caches are refreshed even after a
   toolchain release with no file change) and an unusable base commit (missing or all zeros) all
   run everything. An unreadable base fails the job; it is never treated as "nothing changed".
@@ -539,8 +559,11 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
 - **Build profiles:** check-mode Rust commands use the `ci` profile from the workspace
   [`Cargo.toml`](../Cargo.toml): the `dev` profile's semantics (debug assertions, overflow
   checks) with unoptimized dependencies and line-table-only debuginfo, where local `dev` builds
-  optimize every dependency. Clippy, the tests and rustdoc share one profile and one `--target`,
-  so rustdoc reuses Clippy's dependency metadata. Release executables use the `release` profile.
+  optimize every dependency. The one exception is `animatic-core`, compiled at `opt-level = 1`
+  (`[profile.ci.package.animatic-core]`) so the rename language's stack-limit tests see frame
+  sizes close to shipped builds. Clippy, the tests and rustdoc share one profile and one
+  `--target`, so rustdoc reuses Clippy's dependency metadata. Release executables use the
+  `release` profile.
 - **Pinned inputs and caching:** every third-party action is pinned to a full commit SHA.
   `actionlint` is downloaded from its GitHub release at a pinned version and verified against a
   pinned SHA-256, and `cargo-about` is pinned to an exact version (see the workflow). Check runs
@@ -692,9 +715,12 @@ manual run reports a check named `Required checks` on the branch commit, which s
 requirement. The reusable run inside Prepare release is reported under a different, prefixed
 name and does not.
 
-Stacked child pull requests (base other than `main`) run no code checks; they only report a
-passing *Stacked PR (deferred)* job. They get the checks when retargeted to `main`; a manual run
-on the branch gives earlier feedback.
+Pull requests in a native stack on `main` all need `Required checks`, because GitHub evaluates the
+`main` ruleset against each of them before the stack (or any pull request above the bottom one)
+can merge. Only the top pull request runs the full checks; the lower ones report a passing
+`Required checks` covered by it. A pull request whose base is another branch and that is not in
+such a stack runs no code checks; it only reports a passing *Stacked PR (deferred)* job and gets
+the checks when retargeted to `main`; a manual run on the branch gives earlier feedback.
 
 Also available to the maintainer, and equally unconfigured here: a `release` environment and a
 `v*` tag ruleset ([Releases](releases.md#repository-settings-the-maintainer-must-provide)).
@@ -739,9 +765,9 @@ This table maps a change to the places you will touch and the documentation to u
 | New table, column or index | [`db/schema.sql`](../crates/animatic-core/src/db/schema.sql) (idempotent) or a migration in [`db/mod.rs`](../crates/animatic-core/src/db/mod.rs); store writes and library read models | [Storage and network contracts](storage-and-network.md), [Architecture](architecture.md) |
 | New AniDB command | Request/reply in `animatic-anidb` `commands.rs`; a serializable `Command` with a priority and `describe()` in [`sync.rs`](../crates/animatic-core/src/sync.rs); execution and reply application in `core::sync::execute`; error classification in `error.rs` and `CommandError`. The retry, block and cooldown **policy** lives in the desktop worker (`fail_command` and `process_queue` in `worker.rs`), while core supplies the durable primitives (`queue_block`, `queue_deferred`, `set_sync_cooldown` and so on) | [Storage and network contracts](storage-and-network.md); [AniDB synchronization](https://github.com/RetroHazard/animatic/wiki/AniDB-Synchronization) if reachable from the UI |
 | New background job | `Job` and `Event` in [`worker.rs`](../crates/animatic/src/worker.rs); define progress, cancellation and failure; keep blocking work off the UI thread. An operation that must not share the normal worker's `cancel` flag or queue (the updater) gets its own thread, cancel flag and typed events | [Architecture](architecture.md) |
-| New page, menu item or dialog | `app.rs`; consume only projections and events | The matching [wiki page](https://github.com/RetroHazard/animatic/wiki) ([Main window](https://github.com/RetroHazard/animatic/wiki/Main-Window), [Library pages](https://github.com/RetroHazard/animatic/wiki/Library-Pages) or the task page) |
+| New page, menu item, shortcut or dialog | `app.rs` (a page also in `Page::GROUPS`, which fixes the sidebar order and the `Ctrl+1` … `Ctrl+9` numbering; shortcuts in `mod shortcuts` and the Help → Keyboard shortcuts list); open every floating window with `dialog::window` and close it with `dialog::escape_closes`; take colours from `style.rs` (`warn`, `error`, `ok`, `accent`) instead of fixed values; consume only projections and events | The matching [wiki page](https://github.com/RetroHazard/animatic/wiki) ([Main window](https://github.com/RetroHazard/animatic/wiki/Main-Window), [Library pages](https://github.com/RetroHazard/animatic/wiki/Library-Pages) or the task page) |
 | Updater, archive layout or release asset names | [`update.rs`](../crates/animatic-core/src/update.rs), `scripts/release.py` and `release.yml` together | [Releases](releases.md#in-app-updates), [Storage and network](storage-and-network.md#github-update-transport), [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic) |
-| Rename function, object or property | `rename/` (`parser`, `eval`, `objects`, `plan`); tests in `rename/tests.rs` | [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language); record deliberate differences from AOM |
+| Rename function, object, property or naming convention | `rename/` (`parser`, `eval`, `objects`, `plan`; built-in conventions in `presets.rs` with one `*_pattern.txt` each, which `.gitattributes` keeps LF; the in-app pattern reference in `reference.rs`); tests in `rename/tests.rs`; keep evaluation within the limits in `eval.rs` | [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language), [Rename patterns](https://github.com/RetroHazard/animatic/wiki/Rename-Patterns); record deliberate differences from AOM |
 | Public API of a library crate | Rust doc comments on the item | The generated `cargo doc` output is the API reference |
 | Version, changelog, packaging, CI or workflow | [`scripts/release.py`](../scripts/release.py), [`scripts/ci.py`](../scripts/ci.py), their tests and `.github/workflows/` | [Releases](releases.md) and the README, wiki ([Installation](https://github.com/RetroHazard/animatic/wiki/Installation), [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic)) and `AGENTS.md` claims about distribution or CI |
 
@@ -776,8 +802,8 @@ replace those constants with material copied from an installation.
 Runtime data and where it lands:
 
 - The default settings and database live in per-user directories outside the checkout (see
-  [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the settings file holds the AniDB password, API key
-  and AVDump key in plain text, and the database holds your viewing history and file paths.
+  [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the AniDB password, API key and AVDump key live in
+  the operating-system keystore, or in plain text in the settings file when none is available, and the database holds your viewing history and file paths.
   Statistics and hash exports are user-chosen files that reveal the same kind of information.
 - The legacy import writes decrypted intermediates to a marked `animatic-legacy-import-*` folder
   in the system temporary directory and removes it when it ends; the desktop application offers

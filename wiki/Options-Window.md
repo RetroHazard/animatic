@@ -1,42 +1,45 @@
-Open with **Tools → Options…**. It is one scrolling window; sections in order: AniDB account,
-Appearance, System tray, Hashing, Managed folders, Statistics export, External player, AVDump, Media properties,
-Renaming pattern,
-Updates, and a read-only list of MyList state names. **Save options** at the bottom writes the file, applies
-theme and scale and closes the window.
+Open with **Tools → Options…** (`Ctrl+,`), the **⚙ Options** entry at the bottom of the sidebar, or the
+buttons of the Overview's Getting started card. The window has a list of **categories** on the left
+and the controls of the chosen category on the right, in this order: **AniDB account**, **Appearance**,
+**Managed folders**, **Hashing**, **Renaming**, **Players and tools**, **Exports** and **Updates**. A footer
+that always stays visible has **Close** and **Save options** and the note "Changes are used right
+away. Save options writes them to the settings file." **Save options** writes the file, applies
+theme and scale and closes the window. **Esc** or the title-bar button also closes it.
 
 **Edits are live.** Controls change the in-memory settings as you type. Closing the window with
-its title-bar button does not revert them: the edited values stay in effect (for example for the next
+**Close**, **Esc** or its title-bar button does not revert them: the edited values stay in effect (for example for the next
 queue run) and are written when the application exits normally. Only **Save options** writes
-immediately. Exceptions: when settings were **recovered from a backup**, exit and the Overview
-dismiss button do not write; only **Save options** or an applied import do (a recovery notice says so).
-Theme and scale are applied at launch, on **Save options** and on an applied import (`Theme: System`
-follows the operating system's light or dark mode). The window's size, position and maximized state
+immediately. Exceptions: when settings were **recovered from a backup**, exit and the Overview's
+**Hide** button do not write; only **Save options** or an applied import do (a recovery notice says so).
+A theme change is applied at once, the UI scale when you release the slider; both are also applied at launch, on **Save options**
+and on an applied import (`Theme: Same as the system` follows the operating system's light or dark mode).
+The window's size, position and maximized state
 and the table column layouts are not Options controls: they are kept as you use the window and
 written with the settings.
 
-| Section | Controls | Status |
+| Category | Controls | Status |
 |---|---|---|
 | AniDB account | Username, Password (masked), API key (shown in clear); a read-only line "AniDB client: animatic v1 (UDP), animatichttp v1 (HTTP)" | Used by sync and AVDump. The two clients are Animatic's own registered AniDB clients, built in and fixed: there is no client name or version to enter, and Animatic updates never change them ([client registration](First-Launch.md#anidb-client-registration)) |
-| | Work offline | Active |
-| | Run the command queue automatically; Log out of AniDB when idle for N min (1–30, enabled only with the automatic option) | Active, **off by default**; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session). The settings reach the background timer when Options is closed, not while you edit |
-| | Download anime covers when a detail window opens | Active (default on); see [Cover](Library-Pages.md#cover) |
-| | Update known file information | Active: re-hashing an identified file queues a refresh of its AniDB record (at most every 7 days per file); off by default |
-| Appearance | Theme (Dark/Light/System), UI scale 0.75–2.0 | Active; applied at launch and on Save |
-| | Use status colors | Active: tints table rows by status (CRC mismatch, unidentified, watched, in MyList); each status is also written in the row. Applies immediately. See [Main window](Main-Window.md#sorting-columns-and-row-colors) |
-| System tray | Show tray icon, Minimize to tray | Active. Both are disabled, with a yellow explanation, where the system has no tray (see [System tray](Main-Window.md#system-tray)) |
+| | *Synchronization:* Work offline (keep commands queued) | Active; the status bar's **● Online** / **● Offline** button toggles the same setting |
+| | *Synchronization:* Run the command queue automatically; Log out of AniDB when idle for N min (1–30, enabled only with the automatic option) | Active, **off by default**; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session). The settings reach the background timer when Options is closed, not while you edit |
+| | *Downloads:* Download anime covers when a detail window opens | Active (default on); see [Cover](Library-Pages.md#cover) |
+| | *Downloads:* Update known file information | Active: re-hashing an identified file queues a refresh of its AniDB record (at most every 7 days per file); off by default |
+| Appearance | Theme (Dark, Light, Same as the system), UI scale 0.75–2.0 | Active; the theme applies at once, the scale when you release the slider |
+| | Status colors: Tint table rows by status; Row color style | Active: tints table rows by status (CRC mismatch, unidentified, watched, in MyList); each status is also written in the row. **Soft (tint and marker)** blends the color into the background with a marker bar at the row's left edge; **Solid (classic AOM)** fills the whole row (the style choice is disabled while the tint is off). Applies immediately. See [Main window](Main-Window.md#sorting-columns-and-row-colors) |
+| | System tray: Show tray icon, Minimize to tray | Active. Both are disabled, with a yellow explanation, where the system has no tray (see [System tray](Main-Window.md#system-tray)) |
+| Managed folders | Per-rule fields (including *Skip system files* and *Remove emptied folders*), Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Skip system files* applies on Windows only; *Remove emptied folders* acts after a [rename](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). *Auto rename* is a selector: Off, Dry run (log only) or On; choosing On first shows a dry-run list of what would be renamed now and needs **Turn on automatic rename**, see [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). The rule's **Add to MyList** checkbox and *Set …* fields are the [MyList policy](Managed-Folders-and-Scans.md) |
+| | *Folder scanning:* scan at start, scan on a schedule every N minutes (5–10080), hash a file once it is unchanged for N ms, pause between hashed files | Active; see [scheduled scans](Managed-Folders-and-Scans.md#scheduled-scans) and [settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing). Scan settings reach the background timer when Options is closed, not while you edit |
 | Hashing | Start hashing automatically | Active: resumes the [persistent hash queue](Hashing-and-Identification.md#hash-queue) when Animatic starts (once nothing else blocks it); off shows the pending count with **Resume hashing** instead. Applies at the next start |
 | | Identify files with AniDB after hashing | Active |
 | | Add "Hash with Animatic" to the file menu | Active, off by default; applied by **Save options**, see [File-menu entry](#file-menu-entry) |
 | | Restrict file extensions + list | The picker filter; the list also always drives [scans](Managed-Folders-and-Scans.md) |
-| | Hash export template, Export %length% in minutes | Active for [hash export](Exports.md#hash-export) |
-| Managed folders | Per-rule fields (including *Skip system files* and *Remove emptied folders*), Add folder rule, Remove folder rule (user-created rules only) | See [scans](Managed-Folders-and-Scans.md); *Skip system files* applies on Windows only; *Remove emptied folders* acts after a [rename](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). *Auto rename* is a selector: Off, Dry run (log only) or On; choosing On first shows a dry-run list of what would be renamed now and needs **Turn on automatic rename**, see [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder) |
-| | Folder scanning: scan at start, scan on a schedule every N minutes (5–10080), hash a file once unchanged for N ms, pause between hashed files | Active; see [scheduled scans](Managed-Folders-and-Scans.md#scheduled-scans) and [settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing). Scan settings reach the background timer when Options is closed, not while you edit |
-| Statistics export | Enable, Format, Output file | Active |
-| External player | Per player: Name, Executable, Open/Play/Enqueue arguments, Default player, Remove player; Add player | Active; see [External tools](External-Tools.md) |
-| AVDump | Enable, Executable, Arguments, API key | Active |
-| Media properties | The detected `ffprobe` (version, where it came from, path), *ffprobe path* + **Detect**, *Read media properties after hashing* (disabled until `ffprobe` is found), **Install ffprobe…** (confirmation with size, license and source), **Read missing properties now** | Active, off by default; see [External tools](External-Tools.md#media-properties-ffprobe) |
-| Renaming pattern | Editor, Use stable default, Restore previous text, Validate on selected file | Active |
-| Updates | Check for updates at startup (`updates.auto_check`, default on) | Active; see [Updating Animatic](Updating-Animatic.md) |
+| Renaming | Naming convention list (four built-in conventions or Custom pattern), live example, custom pattern editor, Pattern reference window, Restore my custom pattern, Validate on selected file | Active, see [Choosing how files are named](Renaming-Files.md#choosing-how-files-are-named). The **Edit pattern in Options** buttons of the rename previews open this category |
+| Players and tools | *External players:* per player Name, Executable, Open/Play/Enqueue arguments, Default player, Remove player; Add player | Active; see [External tools](External-Tools.md) |
+| | *AVDump:* Enable AVDump integration, Executable, Arguments, AVDump API key | Active |
+| | *Media properties:* the detected `ffprobe` (version, where it came from, path), *ffprobe path* + **Detect**, *Read media properties after hashing* (disabled until `ffprobe` is found), **Install ffprobe…** (confirmation with size, license and source), **Read missing properties now** | Active, off by default; see [External tools](External-Tools.md#media-properties-ffprobe) |
+| Exports | *Hash export:* the template for File → Export → Hashes…, Export %length% in minutes | Active for [hash export](Exports.md#hash-export) |
+| | *Statistics export:* Write statistics after library updates, Format (XML or INI), Output file | Active; see [statistics export](Exports.md#statistics-export) |
+| Updates | Check for updates at startup (`updates.auto_check`, default on); a read-only list of the MyList state names (*MyList states*) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
 Not in Options (JSON only): UDP server, local port, image server (the fallback host for covers),
 row colors, `ed2k_space_replacement`.

@@ -22,7 +22,7 @@ Linux-specific statements are reading of the code.
 | Capability | Status |
 |---|---|
 | Rename one selected, AniDB-identified hashed file after a preview and explicit confirmation (**Hashed files → Rename…**) | Implemented |
-| Edit the pattern, reset it to the stable default, restore the replaced text and validate it on the selected file (**Tools → Options → Renaming pattern**) | Implemented |
+| Choose a built-in naming convention or write a custom pattern with an in-app reference and a live example, restore the replaced custom text and validate it on the selected file (**Tools → Options → Renaming**) | Implemented |
 | Per-folder rename destination (`base_path`, shown as **Rename destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
 | Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
 | Automatic renaming during or after a scan | **Opt-in per managed folder** (Options > Managed folders > **Auto rename**: Off, Dry run, On; off by default). Dry run only logs the plans; On renames identified files through the same verified worker job, and choosing On first shows a dry-run list to confirm. Collisions and blocked plans are skipped and logged, never overwritten. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). |
@@ -45,8 +45,8 @@ Renaming is deliberately split so that nothing touches the file system until the
 
 - **Evaluate** is pure with respect to the file system. The database-backed data source only
   reads.
-- **Plan** adds validation: a syntax-checked pattern, the metadata rule for the stable
-  default, the empty/boolean result rules, warning blocking and path validation. A plan that
+- **Plan** adds validation: a syntax-checked pattern, the metadata rule for the built-in
+  conventions, the empty/boolean result rules, warning blocking and path validation. A plan that
   `can_apply()` is *allowed* to be applied; it has not been applied and the destination may
   still exist.
 - **Apply** is the only stage that changes anything, and it runs on the background worker.
@@ -206,7 +206,7 @@ the context decoration `In "<31 characters around the position>..." near "<next 
 
 In the application the text is shown as `The renaming pattern has a syntax error: <message>`
 with line breaks normalized. A blank pattern is reported separately as
-`The renaming pattern is empty. Use the stable default, or write a pattern whose last
+`The renaming pattern is empty. Choose a naming convention, or write a pattern whose last
 expression is the new file name.`
 
 ## Values, truthiness and coercion
@@ -376,8 +376,12 @@ x
   concatenate, and numbers are added.
 - A function must be defined on an **earlier line** than its first call. Calling an undefined
   function yields `False`, silently.
-- There is no recursion-depth or iteration limit in the evaluator. Do not write a function
-  that calls itself or a `for` with an enormous range.
+- Every run has limits: 100,000 evaluation steps per run, 600 expressions or 200 function calls nested inside each
+  other, texts of at most 128 KiB, and about 1,000 levels of parentheses or lines when the
+  pattern is compiled.
+  A function that calls itself without end or a `for` with an enormous range stops with a
+  hard error (`The renaming pattern failed to run: …`) instead of freezing or crashing
+  Animatic. Ordinary patterns, including several hundred lines, stay far below them.
 
 ## Differences from AOM and limits
 
@@ -385,25 +389,30 @@ Deliberate differences stated in the source and project rules:
 
 - Strings are Unicode throughout, with no ANSI round trips.
 - A relative result resolves against the **file's own folder**.
-- The stable default uses a fixed two-digit counter; counts stored in the database do not
+- The built-in conventions use a fixed two-digit counter; counts stored in the database do not
   influence it.
 - Empty results, Boolean-only results, hard errors and any evaluation warning block the rename
   instead of producing or guessing a name.
 - File-name validity uses the strictest rules on every platform (Windows reserved characters
   and device names including `¹ ² ³`), with a length unit that depends on the build platform.
-- The stable default needs fetched title and episode data; a pending-title stand-in is never
-  used to name a file with it.
+- The built-in conventions need fetched title and episode data; a pending-title stand-in is
+  never used to name a file with them.
+- Evaluation is bounded (see [User functions](#user-functions)): AOM had no limit, so a
+  pattern that loops or recurses without end, or builds an enormous text, fails here instead of
+  hanging.
 - Renaming is manual and confirmed, except for a managed folder you explicitly set to **On**
   (opt-in per folder, off by default, never implicit; collisions are skipped, never overwritten).
 
 Limits:
 
-- One file per confirmation; no batch or dry run over many files.
+- Batch rename acts on the files you select and automatic rename on the identified files of the
+  folders you switched on; there is no rename of a whole library in one action, and no
+  automatic numbering or other name made up after a collision.
 - No variable list, step trace or debugger in the application; `Evaluation::variables` is
   available through the Rust API only.
-- No collision handling beyond the non-atomic "destination already exists" check (which can lose
-  a race and overwrite a file created in between), and no folder clean-up.
-- The evaluator has no execution budget (loops, recursion).
+- A target that already exists is refused (the file is skipped), never replaced and never given
+  another name. Folders a rename leaves empty are removed only through the opt-in **Remove
+  emptied folders** setting.
 - Production AniDB behavior and Linux runtime were not exercised while documenting.
 
 ## Source map
@@ -415,8 +424,8 @@ Limits:
 | Evaluator, functions, variables, user functions, title selection | [eval.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/eval.rs) |
 | Bound objects, property values, language resolution | [objects.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/objects.rs) |
 | Result handling, target path, name validation | [mod.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/mod.rs) |
-| Plan, classification, stable-default metadata rule | [plan.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/plan.rs) |
-| Default pattern | [default_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/default_pattern.txt) |
+| Plan, classification, built-in-convention metadata rule | [plan.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/plan.rs) |
+| Built-in conventions | [fansub_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/fansub_pattern.txt) (default), [aom_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/aom_pattern.txt), [presets.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/presets.rs) |
 | Behavior tests | [tests.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/tests.rs) |
 | Apply | [file_manager.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/file_manager.rs) (`move_file`) |
 | Preview and editor UI | [app.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic/src/app.rs) (`preview_rename`, `rename_window`, `pattern_editor_ui`) |

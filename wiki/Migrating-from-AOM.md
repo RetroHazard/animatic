@@ -14,7 +14,7 @@ existing database made while Animatic is closed (the database file plus its `-wa
 Animatic asks for confirmation when that database already holds data, but it cannot undo an
 import.
 
-1. **File → Import AOM databank…** (or the Overview first-run card). Choose the `kowai` folder or
+1. **File → Import → AOM databank…** (or the Overview "Getting started" card). Choose the `kowai` folder or
    the AOM folder directly above it; the folder picker does not list the `.data` files inside.
    The `kowai` folder must directly contain `mylist.data`, `local_files.data` or `animes.data`,
    else Animatic says `No AOM databank found in <folder> (choose the AOM folder or its kowai
@@ -57,7 +57,7 @@ What happens (`legacy::import::import_databank`):
   import does not supply return to their defaults (so imported anime have no "fetched" marker
   and a later title-list merge may replace their titles). Rows that exist only in your database,
   and the command queue, are left alone. Re-importing the same databank converges to the same
-  result. Because of that, **File → Import AOM databank…** asks first when the database already
+  result. Because of that, **File → Import → AOM databank…** asks first when the database already
   holds anime, MyList entries or hashed local files: **Import into a database that has data?**
   explains that rows with the same ids will be replaced. **Continue** starts the import,
   **Cancel** changes nothing. To keep the current database untouched, cancel and start Animatic
@@ -70,7 +70,7 @@ What happens (`legacy::import::import_databank`):
   until an identify reply for their file says otherwise (see [Hashing and identification](Hashing-and-Identification.md)).
 - To bring an imported library up to date with your whole AniDB account, request a MyList
   export and import the downloaded file (**Tools → Request MyList export…**, then **File →
-  Import MyList export…**; see [Full-account MyList import](AniDB-Synchronization.md#full-account-mylist-import)).
+  Import → MyList export…**; see [Full-account MyList import](AniDB-Synchronization.md#full-account-mylist-import)).
   It fills what the databank lacked and refreshes state and watched data; it never deletes
   entries, so entries you removed on AniDB since the databank was made stay until you remove
   them here.
@@ -102,7 +102,7 @@ What happens (`legacy::import::import_databank`):
 
 Imports AOM's `local_settings.xml` (UTF-16 or UTF-8). It is read-only for the source file.
 
-1. **File → Import AOM settings…**, choose the XML. **Starting an import cancels whatever job is
+1. **File → Import → AOM settings…**, choose the XML. **Starting an import cancels whatever job is
    currently running**, then reads the file on the worker. All worker actions (add files, import
    databank, scan, queue) stay disabled until the review ends.
 2. **Review imported AOM settings** shows counts (managed folders, players, hash extensions) and
@@ -121,17 +121,18 @@ and applying overwrites your settings file. A save first tries to copy your prev
 holds the *previous* settings, including credentials you may have since removed (blanked once the
 keystore holds credentials), and is only loaded
 automatically when the primary is missing or invalid. Copy your settings file yourself first if you
-may want it back. The one exception is `updates.auto_check`: AOM has no such preference, so applying an
-import keeps your current value.
+may want it back. The exceptions are the `updates` and `media` objects (`updates.auto_check`,
+`media.read_properties`, `media.ffprobe_path`): AOM has no such preferences, so applying an
+import keeps your current values.
 
 What is read: username and password, image server, file-information flag, hashing flags and extension
 list, hash export template, rename pattern, statistics export settings, AVDump enable and key, last
 folder, folder rules (with their MyList policy), players, window/tray/tree preferences and row
 colors, the folder-scan settle delay and AOM's pause between scans (which becomes the scan interval
 of the [scheduled scan](Managed-Folders-and-Scans.md#scheduled-scans), left switched off). Several
-of those have no effect in Animatic (see the
-[settings reference](Settings-Files.md#aom-settings-import)). Applying saves the credentials like any
+of those have no effect in Animatic (see
+[Settings files](Settings-Files.md#aom-settings-import) and the [settings reference](Settings-Reference.md)). Applying saves the credentials like any
 save: into the system keystore when one is available, otherwise in plain text in the settings file
 ([details](Settings-Files.md#credentials-and-the-system-keystore)). After
 applying: review folder rules and players, check
-*Remove missing*/*Add to mylist*, then clear **Work offline** only when ready.
+*Remove missing*/*Add to MyList*, then clear **Work offline** only when ready.

@@ -1,7 +1,9 @@
 # Files embedded into the binaries with include_str! must have the same bytes on every
 # platform. Without this, a Windows checkout with core.autocrlf=true embeds CRLF.
-crates/animatic-core/src/rename/default_pattern.txt text eol=lf
+crates/animatic-core/src/rename/*_pattern.txt text eol=lf
 crates/animatic-core/src/db/schema.sql text eol=lf
+# Shown by Help → About Animatic → View license.
+/LICENSE text eol=lf
 
 # Application icon (crates/animatic/assets), embedded with include_bytes! and the Windows resource compiler.
 *.png binary

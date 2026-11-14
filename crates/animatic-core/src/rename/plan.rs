@@ -6,29 +6,28 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::objects::{DbSource, TITLE_PENDING, bindings_for_file};
+use super::presets::{Preset, preset_for};
 use super::{Bindings, DataSource, Pattern, Value, evaluate, target_path};
 use crate::db::Db;
 use crate::file_manager::normalize;
-use crate::settings::DEFAULT_RENAME_PATTERN;
 
-/// How a pattern relates to the built-in default.
+/// How a pattern relates to the built-in naming conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternKind {
     /// Blank: nothing can be renamed with it.
     Empty,
-    /// The stable built-in default.
-    StableDefault,
+    /// One of the built-in conventions ([`super::presets::PRESETS`]).
+    Preset(&'static Preset),
     /// Any other pattern; never altered by the application.
     Custom,
 }
 
-/// Recognize the built-in default by its text (line endings and surrounding blanks ignored).
+/// Recognize a built-in convention by its text (line endings and surrounding blanks ignored).
 pub fn classify(pattern: &str) -> PatternKind {
-    let text = pattern.trim();
-    if text.is_empty() {
+    if pattern.trim().is_empty() {
         PatternKind::Empty
-    } else if text.lines().eq(DEFAULT_RENAME_PATTERN.trim().lines()) {
-        PatternKind::StableDefault
+    } else if let Some(preset) = preset_for(pattern) {
+        PatternKind::Preset(preset)
     } else {
         PatternKind::Custom
     }
@@ -38,7 +37,7 @@ pub fn classify(pattern: &str) -> PatternKind {
 pub fn check_pattern(source: &str) -> Result<Pattern, String> {
     if source.trim().is_empty() {
         return Err(
-            "The renaming pattern is empty. Use the stable default, or write a \
+            "The renaming pattern is empty. Choose a naming convention, or write a \
                     pattern whose last expression is the new file name."
                 .into(),
         );
@@ -84,9 +83,9 @@ impl Plan {
     }
 }
 
-/// Metadata the stable default builds its name from; while one is still a placeholder the
-/// name would contain stand-in text.
-fn stable_default_gaps(b: &Bindings) -> Vec<String> {
+/// Metadata every built-in convention builds its name from; while one is still a placeholder
+/// the name would contain stand-in text.
+fn preset_gaps(b: &Bindings) -> Vec<String> {
     let mut gaps = Vec::new();
     let title = b
         .anime
@@ -96,8 +95,8 @@ fn stable_default_gaps(b: &Bindings) -> Vec<String> {
         .unwrap_or_default();
     if title.trim().is_empty() || title == TITLE_PENDING {
         gaps.push(
-            "The stable default needs the anime title, which has not been fetched yet. Fetch \
-             the anime's information from AniDB first."
+            "The built-in naming convention needs the anime title, which has not been fetched \
+             yet. Fetch the anime's information from AniDB first."
                 .to_string(),
         );
     }
@@ -107,8 +106,8 @@ fn stable_default_gaps(b: &Bindings) -> Vec<String> {
         .is_some_and(|e| matches!(e.prop("EpisodeNo"), Some(Value::Int(n)) if *n > 0));
     if !numbered {
         gaps.push(
-            "The stable default needs the episode number, which is not known yet. Fetch the \
-             episode's information from AniDB first."
+            "The built-in naming convention needs the episode number, which is not known yet. \
+             Fetch the episode's information from AniDB first."
                 .to_string(),
         );
     }
@@ -116,15 +115,15 @@ fn stable_default_gaps(b: &Bindings) -> Vec<String> {
 }
 
 /// Evaluate `pattern_source` once for the file at `old` and validate every step. Never panics.
-/// Only the stable built-in default requires fetched title and episode metadata; any other
+/// Only the built-in conventions require fetched title and episode metadata; any other
 /// pattern is judged by its own result and warnings.
 pub fn plan(pattern_source: &str, b: &Bindings, source: &dyn DataSource, old: &Path) -> Plan {
     let pattern = match check_pattern(pattern_source) {
         Ok(p) => p,
         Err(e) => return Plan::blocked(e),
     };
-    if classify(pattern_source) == PatternKind::StableDefault {
-        let gaps = stable_default_gaps(b);
+    if matches!(classify(pattern_source), PatternKind::Preset(_)) {
+        let gaps = preset_gaps(b);
         if !gaps.is_empty() {
             return Plan {
                 errors: gaps,

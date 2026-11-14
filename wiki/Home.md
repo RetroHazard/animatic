@@ -22,15 +22,15 @@ Coming from AOM? Read [Migrating from AOM](Migrating-from-AOM.md) before the fir
 
 | Page | Read it for |
 |---|---|
-| [Main window](Main-Window.md) | Layout, status bar and progress, searching and tables, menus |
-| [Library pages](Library-Pages.md) | Overview, My list, Anime, Advanced search, Hashed files, Groups, Genres, Queue, Log and the anime detail window |
+| [Main window](Main-Window.md) | Layout, status bar and progress, searching and tables, menus, keyboard shortcuts |
+| [Library pages](Library-Pages.md) | Overview, MyList, Anime, Advanced search, Hashed files, Groups, Genres, Queue, Log and the anime detail window |
 | [Hashing and identification](Hashing-and-Identification.md) | Adding files, the single-pass hashes and identifying files on AniDB |
 | [Managed folders and scans](Managed-Folders-and-Scans.md) | Folder rules, manual and scheduled scans, settle delay and safe removal of missing files |
 | [AniDB synchronization](AniDB-Synchronization.md) | The command queue, MyList edits and failure handling |
 | [Renaming files](Renaming-Files.md) | Previewing and applying a rename to one file |
 | [Exports](Exports.md) | Statistics and hash exports |
 | [External tools](External-Tools.md) | External players and AVDump |
-| [Options window](Options-Window.md) | Every section of **Tools → Options…** |
+| [Options window](Options-Window.md) | Every category of **Tools → Options…** |
 | [Updating Animatic](Updating-Animatic.md) | Checking for, verifying and installing a newer release |
 | [Migrating from AOM](Migrating-from-AOM.md) | Importing an AOM databank and AOM settings |
 
@@ -42,7 +42,7 @@ Coming from AOM? Read [Migrating from AOM](Migrating-from-AOM.md) before the fir
 | [Settings files](Settings-Files.md) | Loading, saving, backup recovery, credentials in the system keystore and the AOM settings import |
 | [Rename language](Rename-Language.md) | Syntax, values and coercion, variables and user functions |
 | [Rename functions and objects](Rename-Functions-and-Objects.md) | Every built-in function and object property |
-| [Rename targets and apply](Rename-Targets-and-Apply.md) | How a result becomes a path, blocking rules and the stable default pattern |
+| [Rename targets and apply](Rename-Targets-and-Apply.md) | How a result becomes a path, blocking rules and the built-in naming conventions |
 | [Rename patterns](Rename-Patterns.md) | Worked patterns, pitfalls, diagnostics and how to verify a pattern |
 
 ## Troubleshooting

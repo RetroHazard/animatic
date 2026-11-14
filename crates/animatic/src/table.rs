@@ -8,9 +8,9 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use animatic_core::library::LibraryProjection;
-use animatic_core::settings::{ColumnState, SortDirection};
+use animatic_core::settings::{ColumnState, RowStyle, SortDirection};
 use animatic_core::ui_state::{self, MIN_COLUMN_WIDTH, RowColors};
-use eframe::egui::{self, Align, Color32, Layout, RichText};
+use eframe::egui::{self, Align, Color32, Layout, RichText, Stroke, pos2};
 use egui_extras::{Column, TableBuilder};
 
 /// The sorted column of a table as (column id, direction); `None` keeps the default order.
@@ -223,6 +223,7 @@ impl TableBodyView<'_> {
                 shown: &shown,
                 next: 0,
                 tint: None,
+                marked: false,
             });
         });
     }
@@ -235,6 +236,8 @@ pub struct Row<'s, 'a, 'b> {
     shown: &'s [bool],
     next: usize,
     tint: Option<RowColors>,
+    /// The soft marker bar has been painted at the left edge of the row.
+    marked: bool,
 }
 
 impl Row<'_, '_, '_> {
@@ -242,8 +245,9 @@ impl Row<'_, '_, '_> {
         self.row.index()
     }
 
-    /// Tints the cells added after this call, with readable text on top. `None` leaves the
-    /// row as it is. Colour is only ever an extra: the status is also written in the row.
+    /// Tints the cells added after this call: a soft band with a marker bar, or a solid fill
+    /// with readable text on top, as the colours say. `None` leaves the row as it is. Colour
+    /// is only ever an extra: the status is also written in the row.
     pub fn tint(&mut self, colors: Option<RowColors>) {
         self.tint = colors;
     }
@@ -255,9 +259,10 @@ impl Row<'_, '_, '_> {
             return;
         }
         let tint = self.tint;
+        let marker = !std::mem::replace(&mut self.marked, true);
         self.row.col(|ui| {
             if let Some(colors) = tint {
-                paint_tint(ui, colors);
+                paint_tint(ui, colors, marker);
             }
             add_cell_contents(ui);
         });
@@ -268,16 +273,67 @@ fn rgb(value: u32) -> Color32 {
     Color32::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
 }
 
-/// Fills the whole cell (including the gaps between cells and rows) and makes the cell's text
-/// the colour chosen for that background.
-fn paint_tint(ui: &mut egui::Ui, colors: RowColors) {
+fn packed(color: Color32) -> u32 {
+    (u32::from(color.r()) << 16) | (u32::from(color.g()) << 8) | u32::from(color.b())
+}
+
+/// Width in points of the full-colour marker bar at the left edge of a soft row.
+const MARKER_WIDTH: f32 = 3.0;
+/// Smallest contrast of theme text on a soft row band (WCAG AA for body text).
+const MIN_TEXT_CONTRAST: f64 = 4.5;
+
+/// Soft row band: the panel colour blended toward the status colour `slot`, weaker for the
+/// expected states than for those asking for action, and weakened further until the theme
+/// `text` colour reads on it at [`MIN_TEXT_CONTRAST`].
+fn soft_fill(panel: Color32, text: Color32, slot: u32, attention: bool, dark: bool) -> Color32 {
+    let mut k: f32 = match (attention, dark) {
+        (false, true) => 0.14,
+        (false, false) => 0.22,
+        (true, true) => 0.26,
+        (true, false) => 0.32,
+    };
+    loop {
+        let fill = panel.lerp_to_gamma(rgb(slot), k);
+        if k <= 0.0 || ui_state::contrast_ratio(packed(fill), packed(text)) >= MIN_TEXT_CONTRAST {
+            return fill;
+        }
+        k = (k - 0.02).max(0.0);
+    }
+}
+
+/// Paints the whole cell (including the gaps between cells and rows). Soft: the tinted band,
+/// plus the marker bar when this is the first visible cell of the row; the cell keeps the
+/// theme's text and widget visuals. Solid: the full status colour, with the cell's text in the
+/// colour chosen for that background.
+fn paint_tint(ui: &mut egui::Ui, colors: RowColors, marker: bool) {
     let half_gap = ui.spacing().item_spacing * 0.5;
-    let fill = ui.max_rect().expand2(half_gap);
-    ui.painter()
-        .with_clip_rect(ui.clip_rect().expand2(half_gap))
-        .rect_filled(fill, 0.0, rgb(colors.background));
+    let band = ui.max_rect().expand2(half_gap);
+    // `with_clip_rect` only narrows the cell's clip, which left the gaps (and the marker bar,
+    // which sits in the gap) unpainted; the band needs the clip widened by the same half gap.
+    let mut painter = ui.painter().clone();
+    painter.set_clip_rect(ui.clip_rect().expand2(half_gap));
+    let status = rgb(colors.background);
+    if colors.style == RowStyle::Soft {
+        let visuals = ui.visuals();
+        let fill = soft_fill(
+            visuals.panel_fill,
+            visuals.text_color(),
+            colors.background,
+            colors.attention,
+            visuals.dark_mode,
+        );
+        painter.rect_filled(band, 0.0, fill);
+        if marker {
+            let bar = egui::Rect::from_min_max(
+                band.left_top(),
+                pos2(band.left() + MARKER_WIDTH, band.bottom()),
+            );
+            painter.rect_filled(bar, 0.0, status);
+        }
+        return;
+    }
+    painter.rect_filled(band, 0.0, status);
     let text = rgb(colors.text);
-    let background = rgb(colors.background);
     let visuals = ui.visuals_mut();
     visuals.override_text_color = Some(text);
     visuals.hyperlink_color = text;
@@ -292,13 +348,14 @@ fn paint_tint(ui: &mut egui::Ui, colors: RowColors) {
         (&mut visuals.widgets.open, 0.22),
     ] {
         widget.fg_stroke.color = text;
-        let fill = background.lerp_to_gamma(text, mix);
+        let fill = status.lerp_to_gamma(text, mix);
         widget.weak_bg_fill = fill;
         widget.bg_fill = fill;
     }
-    // A selected row keeps a visible highlight and readable text on the tinted background.
-    visuals.selection.bg_fill = background.lerp_to_gamma(text, 0.35);
-    visuals.selection.stroke.color = text;
+    // A selected row keeps a visible highlight and readable text on the solid background; the
+    // heavier outline in the text colour keeps it apparent on any status colour.
+    visuals.selection.bg_fill = status.lerp_to_gamma(text, 0.35);
+    visuals.selection.stroke = Stroke::new(2.0, text);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -595,5 +652,76 @@ mod tests {
             }],
         );
         assert_eq!(sort_key(&layouts, "groups"), descending("votes"));
+    }
+
+    /// Panel and text colours of both themes: egui's own and Animatic's palettes.
+    fn theme_colours() -> Vec<(&'static str, Color32, Color32, bool)> {
+        let ctx = egui::Context::default();
+        crate::style::install(&ctx);
+        let mut themes = Vec::new();
+        for (name, dark) in [("dark", true), ("light", false)] {
+            let egui_default = if dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            };
+            let theme = if dark {
+                egui::Theme::Dark
+            } else {
+                egui::Theme::Light
+            };
+            let app = ctx.style_of(theme).visuals.clone();
+            themes.push((
+                name,
+                egui_default.panel_fill,
+                egui_default.text_color(),
+                dark,
+            ));
+            themes.push((name, app.panel_fill, app.text_color(), dark));
+        }
+        themes
+    }
+
+    #[test]
+    fn soft_row_bands_keep_theme_text_readable_for_every_default_slot() {
+        for (theme, panel, text, dark) in theme_colours() {
+            for slot in animatic_core::settings::ColorSlot::ALL {
+                let fill = soft_fill(
+                    panel,
+                    text,
+                    slot.default_background(),
+                    slot.is_attention(),
+                    dark,
+                );
+                assert!(
+                    ui_state::contrast_ratio(packed(fill), packed(text)) >= 4.5,
+                    "{slot:?} on {theme}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn soft_row_bands_tint_the_panel_and_attention_is_stronger() {
+        for (theme, panel, text, dark) in theme_colours().into_iter().skip(1).step_by(2) {
+            let expected = soft_fill(panel, text, 0xFF7070, false, dark);
+            let attention = soft_fill(panel, text, 0xFF7070, true, dark);
+            assert_ne!(expected, panel, "{theme}: tint must show");
+            let distance = |c: Color32| {
+                let d = |a: u8, b: u8| i32::from(a).abs_diff(i32::from(b));
+                d(c.r(), panel.r()) + d(c.g(), panel.g()) + d(c.b(), panel.b())
+            };
+            assert!(distance(attention) > distance(expected), "{theme}");
+        }
+    }
+
+    #[test]
+    fn soft_bands_weaken_the_tint_until_the_text_reads() {
+        // A white slot colour at the full attention blend would be too light for the text.
+        let panel = Color32::from_rgb(30, 32, 37);
+        let text = Color32::from_rgb(200, 203, 210);
+        let fill = soft_fill(panel, text, 0xFFFFFF, true, true);
+        assert!(ui_state::contrast_ratio(packed(fill), packed(text)) >= 4.5);
+        assert_ne!(fill, panel);
     }
 }

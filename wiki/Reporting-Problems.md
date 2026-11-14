@@ -25,7 +25,7 @@ Sanitize first, then use the
    numbers and session text with `<id>`; any user name, password or API key with
    placeholders.
 2. Keep exact message wording (for example `AniDB sync paused until <time>: <reason>`), the
-   status-bar indicators (**Offline**, **N blocked**, **N commands NOT saved yet**), and what
+   status-bar indicators (**● Offline**, **N blocked commands**, **N commands not saved yet**), and what
    you clicked. Those usually identify the problem without any personal data.
 3. Never post settings files or databases. If a settings detail matters, describe the field
    and value type (for example "`anidb.offline` is true"), not the file.
@@ -45,7 +45,7 @@ Animatic X.Y.Z, Windows (local build). Settings loaded normally.
 Steps: Tools -> Run command queue, offline unticked.
 Result: Log "<time>  ERROR  <command>: authentication: login failed: wrong username or password"
         then "Command blocked: 3 queued commands blocked: authentication: ..."
-Status bar: "3 blocked". Retry failed + Synchronize now repeats the same error.
+Status bar: "3 blocked commands". Retry failed + Run command queue repeats the same error.
 ```
 
 The repository's bug report form asks for these fields and requires you to confirm that the

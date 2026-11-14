@@ -178,6 +178,14 @@ pub(crate) fn run_bounded(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // ffprobe is a console program: without this Windows opens (and at once closes) a console
+    // window for every run, because Animatic itself has none to share.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = command
         .spawn()
         // The kind only: the message may name paths of the user's system.

@@ -1,5 +1,5 @@
 How a pattern's result becomes a target path, what blocks a rename, how a rename is applied,
-and the stable built-in pattern.
+and the built-in naming conventions.
 
 ## From result to target path
 
@@ -17,8 +17,8 @@ every double backslash `\\` into a single `\`. The `Evaluation` also reports:
 `plan::plan` applies these checks in order and stops at the first failure:
 
 1. The pattern must not be blank and must compile. Otherwise one error, no result.
-2. If the pattern is the [stable default](#the-stable-default-pattern), the anime title must be
-   known and the episode number positive (see below).
+2. If the pattern is a [built-in naming convention](#built-in-naming-conventions), the anime
+   title must be known and the episode number positive (see below).
 3. The pattern runs. A hard error becomes `The renaming pattern failed to run: <message>`.
 4. A **Boolean final value is an error**: `The pattern ended with the truth value "True"
    instead of a file name. Make its last expression the new name (for example a variable
@@ -31,13 +31,13 @@ every double backslash `\\` into a single `\`. The `Evaluation` also reports:
 
 Warnings do not stop the steps above, but any warning makes the plan non-applicable.
 
-**Metadata rule.** Only the stable default insists on fetched metadata: an anime title that is
-non-blank and not the `[Title not yet available]` stand-in, and an episode number greater than
-zero. Failing either gives
-`The stable default needs the anime title, which has not been fetched yet. Fetch the anime's
-information from AniDB first.` or
-`The stable default needs the episode number, which is not known yet. Fetch the episode's
-information from AniDB first.` Every other pattern is judged only by its own result. **A
+**Metadata rule.** Only the built-in conventions insist on fetched metadata: an anime title
+that is non-blank and not the `[Title not yet available]` stand-in, and an episode number greater
+than zero. Failing either gives
+`The built-in naming convention needs the anime title, which has not been fetched yet. Fetch the
+anime's information from AniDB first.` or
+`The built-in naming convention needs the episode number, which is not known yet. Fetch the
+episode's information from AniDB first.` Every other pattern is judged only by its own result. **A
 custom pattern that uses `A.Name` will happily produce `[Title not yet available]` in a file
 name.** Guard it if that matters:
 
@@ -112,10 +112,11 @@ rename skipped!`
 Not checked: the total path length (Windows `MAX_PATH`), name collisions that differ only in
 case, Unicode normalization, or whether a folder exists. Nothing is replaced silently: a
 character that is not allowed makes the rename fail with a message. Sanitizing is the
-pattern's job, as the stable default does. A trailing dot or space is the exception: it is
+pattern's job, as the built-in conventions do. A trailing dot or space is the exception: it is
 removed from each component, so `Show.` becomes `Show`.
 
-Because the default pattern limits titles by **characters** (`limit(…, 90)`, `200`, `235`),
+Because the built-in conventions limit titles by **characters** (for example `limit(atitle, 150)`
+and `230` for the whole name in the default, `90`, `200` and `235` in the AniDB O'Matic pattern),
 a title made of multi-byte characters can still exceed 255 **bytes** on a POSIX build, and the
 plan then reports a length problem. This is a reading of the code; Linux was not exercised.
 
@@ -192,10 +193,51 @@ is `Renamed`, `Renamed (copied and verified)` or `Not renamed: <reason>`; a coll
 file created after the preview is reported as `destination already exists`. Chains inside one
 batch (file A to the current name of file B) are blocked, not ordered.
 
-## The stable default pattern
+## Built-in naming conventions
 
-The text is the file `crates/animatic-core/src/rename/default_pattern.txt`; the constant
-`settings::DEFAULT_RENAME_PATTERN` includes it. This listing is a copy for reading; the file is
+The **Naming convention** list in Options offers four built-in patterns. Choosing one puts its
+text into `renaming_pattern`; the setting stores only text, so a text equal to a convention
+(compared line by line after trimming, CRLF or LF) shows as that convention and anything else
+as **Custom pattern**. `rename::presets::PRESETS` lists them; each text is a file in
+`crates/animatic-core/src/rename/`.
+
+| Convention | File | Example (episode 6, version 2, group `ExGroup`) |
+|---|---|---|
+| [Group] Title - episode [CRC], the default for new settings | `fansub_pattern.txt` | `[ExGroup] Reibun no Tabi - 06v2 [EB420C97].mkv` |
+| `Title - episode - episode title [group](CRC)`, AniDB O'Matic's default | `aom_pattern.txt` | `Reibun no Tabi - 06v2 - The Long Road [ExGroup](EB420C97).mkv` |
+| Title - episode - episode title | `episode_title_pattern.txt` | `Reibun no Tabi - 06 - The Long Road.mkv` |
+| Title - S01E06 - episode title (media servers) | `media_server_pattern.txt` | `Reibun no Tabi - S01E06 - The Long Road.mkv` |
+
+Shared rules: the series title is `x-jat`, else English, else `A.Name`; the episode title (where
+used) is English, else `x-jat`, else Japanese, else `E.Name`; the episode number is padded to
+[two digits](#fixed-two-digit-counter); the CRC is `H.Crc32`, else `F.Crc`, upper-cased; and the
+same clean-up as the default replaces characters that are not allowed in file names.
+
+Episode types and versions:
+
+| AniDB episode | [Group] and AniDB O'Matic conventions | Title - episode - episode title | Media servers |
+|---|---|---|---|
+| Regular 10, version 2 | `10v2` | `10` | `S01E10` |
+| Special 15 | `S15` | `S15` | `S00E15` |
+| Credit (opening or ending) 5 | `C05` | `C05` | `C05` |
+| Trailer 8, version 2 | `T08v2` | `T08` | `T08` |
+| Parody 1 / other 2 | `P01` / `O02` | `P01` / `O02` | `P01` / `O02` |
+
+The **[Group]** convention leaves out the group, including its brackets, when the file has no
+group, and the CRC when there is none. AniDB has a single credit type for openings and endings;
+the Pattern reference has a recipe that names them `OP01` and `ED01` from the episode title.
+The rename unit tests check every row above.
+
+## The AniDB O'Matic pattern
+
+New settings use the **[Group] Title - episode [CRC]** convention (`fansub_pattern.txt`, the
+constant `settings::DEFAULT_RENAME_PATTERN`). It shares every part described below except the
+layout: `[group] title - number [CRC].extension`, with no episode title, and no group text at all
+when the file has no group. This section lists AniDB O'Matic's own default, the
+`Title - episode - episode title [group](CRC)` convention.
+
+The text is the file `crates/animatic-core/src/rename/aom_pattern.txt`; the constant
+`settings::AOM_RENAME_PATTERN` includes it. This listing is a copy for reading; the file is
 the source of truth.
 
 ```
@@ -250,7 +292,7 @@ Two details of the clean-up are easy to miss. The double-space replacement is a 
 three consecutive spaces become two, not one. Titles containing `\` are turned into spaces
 because the result would otherwise create folders.
 
-For the synthetic sample used in [Working patterns](Rename-Patterns.md#working-patterns) the default produces:
+For the synthetic sample used in [Working patterns](Rename-Patterns.md#working-patterns) this pattern produces:
 
 ```
 Example Series - 03v2 - The Long Road [ExGroup](EB420C97).mkv
@@ -268,25 +310,24 @@ The rename unit tests check this for several totals and counts.
 
 | Situation | Pattern text |
 |---|---|
-| New settings (no settings file) | The stable default |
+| New settings (no settings file) | The [Group] Title - episode [CRC] convention |
 | A saved `settings.json` that contains `renaming_pattern` | Kept exactly as saved. The application never rewrites a saved pattern. |
 | A saved file without `renaming_pattern` | The default fills the missing field |
 | Imported AOM settings with a non-blank `general/renamingPattern` | That text, with `\r\n` converted to `\n`, replaces the pattern |
 | Imported AOM settings with a blank pattern | The existing/default pattern stays |
-| **Use stable default** in Options | Replaces the editor text with the default; the replaced text is kept in memory |
-| **Restore previous text** (appears after **Use stable default**) | Puts the replaced text back; used once |
+| Choosing a built-in convention in Options | Replaces the text with the convention; a replaced custom text is kept in memory |
+| **Restore my custom pattern** (appears after a custom text was replaced) | Puts the custom text back; used once |
+| Choosing **Custom pattern** | Keeps the text and opens the editor, so a convention is the starting point |
 
-**Use stable default** is enabled only when the current text is not already the default. The
-hover text in the application says nothing is stored until **Save options**; in the
-implementation the edit changes the in-memory settings immediately, like every other Options
-field, and is written by **Save options**, by a normal exit, or later. The editor classifies
+Choosing a convention changes the in-memory settings immediately, like every other Options
+field; it is written by **Save options**, by a normal exit, or later. The section classifies
 the text with `classify`:
 
 | Kind | When |
 |---|---|
 | Empty | blank |
-| Stable default | the lines equal the default's lines (the default is compared after trimming the whole text; CRLF versus LF makes no difference) |
-| Custom | anything else, including a one-character edit of the default |
+| Preset | the lines equal a built-in convention's lines (compared after trimming the whole text; CRLF versus LF makes no difference) |
+| Custom | anything else, including a one-character edit of a convention |
 
 A **Custom** pattern, including an old default whose counter width depended on cached totals,
 is never altered by the application.

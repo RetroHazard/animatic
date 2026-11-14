@@ -199,7 +199,10 @@ impl AnimaticApp {
         let mut cancel = false;
         egui::Modal::new(egui::Id::unique("auto_rename_enable")).show(ctx, |ui| {
             ui.set_width(720.0);
-            ui.heading(format!("Turn on automatic rename for “{}”?", enable.name));
+            crate::style::section(
+                ui,
+                format!("Turn on automatic rename for “{}”?", enable.name),
+            );
             ui.add_space(6.0);
             ui.label(
                 "From now on, identified files in this folder are renamed with the current \

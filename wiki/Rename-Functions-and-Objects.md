@@ -5,7 +5,9 @@ values and coercion are in [Rename language](Rename-Language.md).
 
 Function names are case-insensitive. "Count" is the accepted number of arguments; any other
 count produces a warning (blocking) and a neutral return value. "Returns" gives the value type
-because truthiness and later coercion depend on it.
+because truthiness and later coercion depend on it. No function can build a text longer than
+128 KiB (padding, replacing and joining stop with a hard error instead), and a whole run is
+bounded; see the [evaluation limits](Rename-Language.md#user-functions).
 
 ### Control flow and variables
 
@@ -201,7 +203,7 @@ file Animatic hashed itself they read `0`, `0.0`, empty or `False`.
 | Property | Type | Value |
 |---|---|---|
 | `Id` | Int | Row id |
-| `Crc32`, `Md5`, `Sha1`, `Ed2k` | AStr | Hash texts; `Crc32` is what the stable default prefers over `F.Crc` |
+| `Crc32`, `Md5`, `Sha1`, `Ed2k` | AStr | Hash texts; `Crc32` is what the built-in conventions prefer over `F.Crc` |
 | `Size` | Int64 | Bytes |
 | `FPS`, `Length` | Double | Frames per second; length (a `Double`, so it cannot be passed to string functions) |
 | `VideoFourCC`, `VideoCompression`, `VideoCodec` | AStr | Video identifiers |
