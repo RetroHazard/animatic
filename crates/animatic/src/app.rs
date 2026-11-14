@@ -2413,14 +2413,19 @@ impl AnimaticApp {
         Ok(())
     }
 
-    fn save_settings(&mut self) {
+    /// Writes the settings file; whether it was written (a failure is reported to the user).
+    fn save_settings(&mut self) -> bool {
         match self.write_settings() {
             Ok(()) => {
                 self.settings_guard.user_saved = true;
                 self.settings_notice = None;
                 self.log("Settings saved");
+                true
             }
-            Err(e) => self.error(format!("Could not save settings: {e}")),
+            Err(e) => {
+                self.error(format!("Could not save settings: {e}"));
+                false
+            }
         }
     }
 
@@ -4705,10 +4710,14 @@ impl AnimaticApp {
                 });
             });
         if save {
-            self.save_settings();
+            // The window stays open when the file could not be written, so the edits remain
+            // in view to try again; the error is in the status bar and the log.
+            let saved = self.save_settings();
             self.apply_visuals(ctx);
             self.media_settings_saved();
-            self.settings_open = false;
+            if saved {
+                self.settings_open = false;
+            }
             self.apply_shell_integration(exe.as_deref());
         }
         if !open || close || dialog::escape_closes(ctx, shown.as_ref()) {

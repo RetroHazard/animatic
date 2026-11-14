@@ -19,6 +19,8 @@ the generated line for that pull request's squash commit.
   truncated before Pause and Cancel; the full message shows on hover.
 - While a settings import or its review is pending, **Tools → Run command queue** now explains
   that it is disabled (`An import is in progress`), like the button on the Queue page.
+- **Save options** keeps the Options window open when the settings file cannot be written, so
+  the edits stay in view to try again; the window closes only after a successful save.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 
