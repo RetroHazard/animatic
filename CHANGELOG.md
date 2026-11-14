@@ -11,6 +11,8 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+## 2026.11.0-rc.1 - 2026-11-14
+
 ### Added
 
 - MyList is grouped by anime: one collapsible row per anime (episode count, group, common
@@ -222,6 +224,8 @@ the generated line for that pull request's squash commit.
   `Ctrl+Shift+S` run the command queue, `Ctrl+1` … `Ctrl+9` open the sidebar pages in order and
   `Esc` close the topmost window. None acts while a modal dialog is open. **Help → Keyboard
   shortcuts** lists them.
+- improve AOM library workflows and reliability \(\#1\) (1b95ff9)
+- add verified GitHub application updates \(\#4\) (c34800a)
 
 ### Changed
 
@@ -326,3 +330,26 @@ the generated line for that pull request's squash commit.
   because the custom pattern example is computed as you type.
 - Reading media properties no longer flashes a console window on Windows for every `ffprobe`
   run (searching for `ffprobe` and probing a file).
+- embed the default rename pattern with LF on every platform \(\#10\) (495b693)
+
+### Documentation
+
+- document user workflows and developer contracts \(\#2\) (97b4e88)
+
+### Tests
+
+- stop the UDP test fixture from losing requests on Windows \(\#13\) (5e38908)
+
+### Build and CI
+
+- add CalVer preparation and cross-platform draft releases \(\#3\) (ee013cc)
+- gate pull requests and main with scoped independent checks \(\#5\) (667791a)
+
+### Maintenance
+
+- preserve initial Animatic implementation (a258f81)
+
+### Other changes
+
+- Implement the roadmap \(M1–M8\) \(\#15\) (bc8040c)
+- Rename naming conventions, rename-language limits, silent ffprobe \(\#16\) (7b0cfc9)

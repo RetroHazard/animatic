@@ -10,8 +10,8 @@ repository.workspace = true
 build = "build.rs"
 
 [dependencies]
-animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb" }
-animatic-core = { version = "2026.11.0", path = "../animatic-core" }
+animatic-anidb = { version = "2026.11.0-rc.1", path = "../animatic-anidb" }
+animatic-core = { version = "2026.11.0-rc.1", path = "../animatic-core" }
 anyhow = "1.0.104"
 chrono = "0.4.45"
 crossbeam-channel = "0.5.17"
@@ -41,7 +41,7 @@ zbus = "5.19.0"
 
 [dev-dependencies]
 # Test fixtures only: a manual clock, an in-memory limit store and loopback servers.
-animatic-anidb = { version = "2026.11.0", path = "../animatic-anidb", features = ["test-support"] }
+animatic-anidb = { version = "2026.11.0-rc.1", path = "../animatic-anidb", features = ["test-support"] }
 tempfile = "3.27.0"
 
 # Embeds assets/animatic.ico as the Windows executable icon (build.rs).
