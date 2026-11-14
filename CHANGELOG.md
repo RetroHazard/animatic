@@ -27,6 +27,9 @@ the generated line for that pull request's squash commit.
 - The notice shown when AniDB's HTTP API rejects Animatic's client registration no longer sends
   you to an HTTP client setting in Options (there is none); it says to update Animatic.
 - The **AVDump API key** field in Options → Players and tools is masked like the AniDB password.
+- Renaming a single hashed file (Hashed files → Rename…) now checks whether the new path is
+  already taken and blocks Confirm rename with the message the batch rename uses, instead of
+  failing with `destination already exists` after the click.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 

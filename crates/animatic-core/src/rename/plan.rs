@@ -1,6 +1,6 @@
 //! Validated rename planning: turns a pattern and one file's metadata into either a target path
 //! or explicit reasons why renaming must not happen. Nothing here changes the file system;
-//! [`plan_batch`] only looks whether a target path is already taken.
+//! [`plan_local_file`] and [`plan_batch`] only look whether a target path is already taken.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -156,12 +156,22 @@ pub fn plan(pattern_source: &str, b: &Bindings, source: &dyn DataSource, old: &P
 }
 
 /// Plan the rename of the identified file `fid` stored at `path`, reading its metadata from `db`.
-/// `base_path` is the file manager's rename destination (empty: the file's own folder).
+/// `base_path` is the file manager's rename destination (empty: the file's own folder). Besides
+/// the diagnostics of [`plan`], the plan is blocked (an error is added, so [`Plan::can_apply`] is
+/// false) when its target path is already taken by a file or folder on disk.
 pub fn plan_local_file(db: &Db, pattern: &str, fid: i64, path: &Path, base_path: &str) -> Plan {
-    match bindings_for_file(db, fid, &path.to_string_lossy(), base_path) {
+    let mut plan = match bindings_for_file(db, fid, &path.to_string_lossy(), base_path) {
         Ok(bindings) => plan(pattern, &bindings, &DbSource { db }, path),
-        Err(e) => Plan::blocked(e),
+        Err(e) => return Plan::blocked(e),
+    };
+    if plan.can_apply()
+        && let Some(target) = &plan.target
+        && target.symlink_metadata().is_ok()
+    {
+        plan.errors
+            .push("A file or folder already exists at the target path".into());
     }
+    plan
 }
 
 /// One hashed library file offered to [`plan_batch`].
@@ -184,8 +194,8 @@ pub struct BatchRow {
 }
 
 /// Plan every candidate with `pattern`, in order, one row each. Besides the diagnostics of
-/// [`plan_local_file`], a row is blocked (an error is added, so [`Plan::can_apply`] is false) when
-/// its target path is already taken by a file on disk, or when an earlier row of the batch
+/// [`plan_local_file`] (which include a target path already taken by a file on disk), a row is
+/// blocked (an error is added, so [`Plan::can_apply`] is false) when an earlier row of the batch
 /// already claims the same target. Reads file metadata but changes nothing.
 pub fn plan_batch(db: &Db, pattern: &str, files: &[Candidate]) -> Vec<BatchRow> {
     let mut claimed: HashMap<String, PathBuf> = HashMap::new();
@@ -204,9 +214,6 @@ pub fn plan_batch(db: &Db, pattern: &str, files: &[Candidate]) -> Vec<BatchRow> 
                         "{} would get the same name; only the first of the two can be renamed",
                         first.display()
                     ));
-                } else if target.symlink_metadata().is_ok() {
-                    plan.errors
-                        .push("A file or folder already exists at the target path".into());
                 } else {
                     claimed.insert(normalize(&target), file.path.clone());
                 }
@@ -315,6 +322,28 @@ mod batch_tests {
             rows[4].plan.errors[0].contains("not identified"),
             "{:?}",
             rows[4]
+        );
+    }
+
+    #[test]
+    fn a_single_file_plan_is_blocked_when_the_target_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::memory().unwrap();
+        let free = identified(&db, dir.path(), 1, 1);
+        let taken = identified(&db, dir.path(), 2, 2);
+        std::fs::write(dir.path().join("Synthetic Show 2.mkv"), b"another file").unwrap();
+
+        let free = plan_local_file(&db, PATTERN, 1, &free.path, "");
+        assert!(free.can_apply(), "{free:?}");
+        assert_eq!(
+            free.target.as_deref(),
+            Some(dir.path().join("Synthetic Show 1.mkv").as_path())
+        );
+        let taken = plan_local_file(&db, PATTERN, 2, &taken.path, "");
+        assert!(!taken.can_apply(), "{taken:?}");
+        assert_eq!(
+            taken.errors,
+            ["A file or folder already exists at the target path"]
         );
     }
 
