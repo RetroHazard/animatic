@@ -38,6 +38,8 @@ the generated line for that pull request's squash commit.
   trimmed, so a long error-heavy session grew the log without bound.
 - Options → Hashing → **Restrict file extensions** keeps what you type while the box is
   focused, so a comma after the last extension no longer vanishes before the next one is typed.
+- Closing Options with the sidebar **Options** button now refreshes the file-menu status line
+  the next time Options opens, like every other way of closing it.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 

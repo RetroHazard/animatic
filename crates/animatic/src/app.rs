@@ -2846,7 +2846,11 @@ impl AnimaticApp {
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
                         .clicked()
                     {
-                        self.settings_open = !self.settings_open;
+                        if self.settings_open {
+                            self.close_options();
+                        } else {
+                            self.settings_open = true;
+                        }
                     }
                     // One count per row so neither wraps in the narrow sidebar. The layout
                     // grows upwards: Options is the bottom row, the counts sit above it with the
@@ -4711,16 +4715,22 @@ impl AnimaticApp {
             self.apply_visuals(ctx);
             self.media_settings_saved();
             if saved {
-                self.settings_open = false;
+                self.close_options();
             }
             self.apply_shell_integration(exe.as_deref());
         }
         if !open || close || dialog::escape_closes(ctx, shown.as_ref()) {
-            self.settings_open = false;
+            self.close_options();
         }
-        if !self.settings_open {
-            self.shell.options_closed();
-        }
+    }
+
+    /// Closes Options. Every way of closing it (Close, the title bar, Escape, a successful
+    /// save, the sidebar toggle) comes here, so what Options showed is read again on the next
+    /// opening.
+    fn close_options(&mut self) {
+        self.settings_open = false;
+        self.shell.options_closed();
+        self.extensions_edit = None;
     }
 
     fn options_account(&mut self, ui: &mut egui::Ui) {
