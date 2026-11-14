@@ -11,6 +11,8 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+## 2026.11.0-rc.2 - 2026-11-14
+
 ### Fixed
 
 - A long status message (for example an automatic rename's dry-run summary with full paths) is
