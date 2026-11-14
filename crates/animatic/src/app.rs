@@ -1023,34 +1023,21 @@ impl AnimaticApp {
     /// Adds to the log page without replacing the status line (background results nobody
     /// waits for).
     fn note(&mut self, text: impl Into<String>) {
-        self.logs.push(format!(
-            "{}  {}",
-            chrono::Local::now().format("%H:%M:%S"),
-            text.into()
-        ));
+        push_log_line(&mut self.logs, &text.into(), "");
     }
 
     fn log(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
         self.status_error = false;
-        self.logs.push(format!(
-            "{}  {text}",
-            chrono::Local::now().format("%H:%M:%S")
-        ));
-        if self.logs.len() > 2_000 {
-            self.logs.drain(..500);
-        }
+        push_log_line(&mut self.logs, &text, "");
     }
 
     fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
         self.status_error = true;
-        self.logs.push(format!(
-            "{}  ERROR  {text}",
-            chrono::Local::now().format("%H:%M:%S")
-        ));
+        push_log_line(&mut self.logs, &text, "ERROR  ");
     }
 
     fn process_update_events(&mut self, ctx: &egui::Context) {
@@ -6434,6 +6421,22 @@ fn menu_entry<'a>(
     egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut))
 }
 
+/// Most lines the session log keeps; past it the oldest [`LOG_TRIM`] lines are dropped.
+const LOG_LIMIT: usize = 2_000;
+const LOG_TRIM: usize = 500;
+
+/// Append a timestamped line to the session log (`prefix` marks its kind, such as `ERROR  `)
+/// and trim the log. Every way of writing to the log goes through here.
+fn push_log_line(logs: &mut Vec<String>, text: &str, prefix: &str) {
+    logs.push(format!(
+        "{}  {prefix}{text}",
+        chrono::Local::now().format("%H:%M:%S")
+    ));
+    if logs.len() > LOG_LIMIT {
+        logs.drain(..LOG_TRIM);
+    }
+}
+
 /// Categories of the Options window, in the order of its list.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum OptionsPage {
@@ -6719,6 +6722,16 @@ mod tests {
             )
             .unwrap();
         LibraryProjection::load(&db).unwrap()
+    }
+
+    #[test]
+    fn the_session_log_is_trimmed_whatever_kind_of_line_fills_it() {
+        let mut logs = Vec::new();
+        for i in 0..=LOG_LIMIT {
+            push_log_line(&mut logs, &format!("line {i}"), "ERROR  ");
+        }
+        assert_eq!(logs.len(), LOG_LIMIT + 1 - LOG_TRIM);
+        assert!(logs[0].ends_with("ERROR  line 500"), "{}", logs[0]);
     }
 
     #[test]

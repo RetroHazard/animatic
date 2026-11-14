@@ -34,6 +34,8 @@ the generated line for that pull request's squash commit.
   pausing a job that finished) used to leave the next run paused.
 - `Ctrl+F` on a page without a search box (Overview, Queue, Log) no longer makes the next page
   that has one grab the focus later; on Advanced search it focuses the Title or AniDB ID field.
+- The session log is trimmed at 2000 lines whatever wrote the line; errors and notes were never
+  trimmed, so a long error-heavy session grew the log without bound.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 
