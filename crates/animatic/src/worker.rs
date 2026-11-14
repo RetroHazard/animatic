@@ -1881,7 +1881,7 @@ impl Network {
 }
 
 /// Run the AniDB command queue until it is empty, cancelled, blocked or put on cooldown: the
-/// user's run (**Synchronize now**, **Run command queue**), which sends every runnable command.
+/// user's run (**Run command queue**), which sends every runnable command.
 fn process_queue(
     db_path: &Path,
     settings: AnidbSettings,

@@ -13,9 +13,10 @@ the generated line for that pull request's squash commit.
 
 ### Added
 
-- About Animatic credits the developer and has buttons for the source code repository and the
-  documentation; View license shows the license inside the app instead of asking Windows which
-  program opens the extensionless `LICENSE` file.
+- About Animatic credits the developer and has buttons for the source code repository, the
+  documentation and the AniDB website; **View license** shows the license inside the app (the
+  text built into the executable, not a file that Windows must know how to open) and
+  **Third-party notices** opens the notices file shipped next to the program.
 - Calendar versioning (`YYYY.M.PATCH`, Cargo-compatible) for the workspace, internal
   dependency pins and `Cargo.lock`, starting with `2026.11.0`.
 - Release automation: `scripts/release.py` bumps the workspace version, internal
@@ -114,7 +115,9 @@ the generated line for that pull request's squash commit.
 - Animatic reopens with the window size, position and maximized state you left it with, and every
   table remembers its column widths, hidden columns and sort order (click a header to sort,
   right-click it to choose columns). **Tint table rows by status** tints rows in Hashed files, Anime,
-  Advanced search and MyList by status, always with the status also written in the row.
+  Advanced search and MyList by status, always with the status also written in the row;
+  **Row color style** chooses a *Soft* tint with a colored marker (default) or the *Solid* full-row
+  color of AniDB O'Matic.
   **Theme: Same as the system** follows the operating system, and the saved theme and UI scale apply at
   launch. The AniDB client is built in and a release update never changes its registered
   version.
@@ -190,11 +193,6 @@ the generated line for that pull request's squash commit.
   common mistakes, each with its result for a sample file and a **Copy** button. Only the
   pattern text is stored, so existing settings and saved custom patterns are unchanged; choosing
   a convention over a custom pattern can be undone with **Restore my custom pattern**.
-- Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
-  nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
-  pattern that loops or recurses without end, or builds an enormous text, now fails with an
-  error instead of freezing Animatic or crashing it with a stack overflow, which also matters
-  because the custom pattern example is computed as you type.
 - Keyboard shortcuts: `Ctrl+O` add files, `Ctrl+F` search the page, `Ctrl+,` Options, `F5` reload,
   `Ctrl+Shift+S` run the command queue, `Ctrl+1` … `Ctrl+9` open the sidebar pages in order and
   `Esc` close the topmost window. None acts while a modal dialog is open. **Help → Keyboard
@@ -261,10 +259,22 @@ the generated line for that pull request's squash commit.
   Cargo registry and `cargo-about` caches current, rebuilding them only when the lockfile or
   toolchain changed, and reports *Main cache refresh*. A release builds only the clean, uncached
   release executables and notices. The license-notices job restores a Cargo registry cache
-  instead of downloading every crate.
+  instead of downloading every crate. `animatic-core` alone is compiled at `opt-level = 1` in
+  that profile, so the rename language's stack-limit tests run with frame sizes close to a shipped
+  build.
 - Releases are gated behind a reviewed merge and a tag at that merge, and are published directly.
   Prepare release labels its pull request `release`; merging it makes the new Auto release
   workflow dispatch Release with the merge commit, which validates it, builds the archives, then
   creates `vVERSION` at that commit and publishes the GitHub Release (previously a maintainer
   pushed the tag by hand and published a draft). Release no longer starts on a tag push. A dry
   Release run can rehearse the head of an unmerged release branch.
+
+### Fixed
+
+- Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
+  nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
+  pattern that loops or recurses without end, or builds an enormous text, now fails with an
+  error instead of freezing Animatic or crashing it with a stack overflow, which also matters
+  because the custom pattern example is computed as you type.
+- Reading media properties no longer flashes a console window on Windows for every `ffprobe`
+  run (searching for `ffprobe` and probing a file).

@@ -166,13 +166,16 @@ verified their output against its schema, so work on a copy and re-check the res
 - Do not run two Animatic processes on the same settings file either. Saves share the same
   `settings.json.tmp` and `settings.json.bak.tmp` names, so concurrent saves can fail or
   cross-write; the outcome is not a predictable "last writer wins".
-- Do not run two Animatic instances against the same database. The source contains no
-  application-level instance lock; SQLite's file locking and busy timeouts are the only
-  protection, and the second instance will compete for the write lock.
+- Do not run two Animatic instances against the same database. The lock file next to the database
+  only lets a launch that is given media files hand them to the running window
+  ([One window per database](Running-Animatic.md#one-window-per-database)); a launch without files
+  opens another window, and SQLite's file locking and busy timeouts are the only protection, so the
+  second instance will compete for the write lock.
 
 ## Settings problems
 
-For field-level behavior see the [Settings reference](Settings-Files.md#recovery-matrix).
+For field-level behavior see the [Settings reference](Settings-Reference.md) and, for loading and
+recovery, [Settings files](Settings-Files.md#recovery-matrix).
 
 ### How loading and saving work
 
@@ -259,8 +262,8 @@ place as a recovery step; it may be incomplete.
 
 Move `settings.json` and `settings.json.bak` into a backup folder (a copy that still holds
 credentials if no system keystore was available) and start Animatic: with neither file present it uses defaults and creates no
-file until you save. A fresh configuration has `offline` set to `false` and no client
-name, so the first thing to do is open **Tools → Options…**, tick **Work offline**, and save.
+file until you save. A fresh configuration has `offline` set to `false` and no account, so the
+first thing to do is open **Tools → Options…**, tick **Work offline**, and save.
 
 ## Disk space, temporary files and leftovers
 

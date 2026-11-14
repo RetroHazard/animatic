@@ -143,8 +143,9 @@ Rules that matter:
   attempt counter of every blocked command, merges multiple edits of the same MyList entry into
   the latest, and does not touch the cooldown. It does not clear **Last error** text; a stale
   message can remain until the command is retried or removed.
-- **Clear queue** deletes **every** queued command, including unsynchronized MyList edits and
-  blocked commands. It asks for no confirmation. It does not undo the optimistic local state
+- **Clear queue…** (the red button on the Queue page, enabled while the queue is not empty) deletes
+  **every** queued command, including unsynchronized MyList edits and
+  blocked commands, after you confirm **Discard commands** in the "Clear the command queue?" dialog. It does not undo the optimistic local state
   those edits already applied, so the local view can then disagree with AniDB. It does not
   clear the cooldown. There is no per-command discard in the interface; to drop one command you
   must clear the whole queue, so make a backup first when other work is pending.

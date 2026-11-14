@@ -1,5 +1,5 @@
 //! Full-account MyList import through a MyList export: **Tools → Request MyList export…** and
-//! **File → Import MyList export…**.
+//! **File → Import → MyList export…**.
 //!
 //! No AniDB API returns a whole MyList, and walking it entry by entry is the bulk extraction
 //! AniDB forbids. AniDB instead prepares an export on request (UDP `MYLISTEXPORT`, which can take
@@ -75,7 +75,7 @@ impl AnimaticApp {
                     "3. Download the file from AniDB's export page in your browser (AniDB \
                      offers no way to fetch it from here).",
                 );
-                ui.label("4. Choose File → Import MyList export… and pick the downloaded file.");
+                ui.label("4. Choose File → Import → MyList export… and pick the downloaded file.");
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(
@@ -145,7 +145,7 @@ impl AnimaticApp {
         self.export_ui.open = open && !escape;
     }
 
-    /// **File → Import MyList export…**: pick the downloaded file and import it on the worker.
+    /// **File → Import → MyList export…**: pick the downloaded file and import it on the worker.
     pub(super) fn import_mylist_export(&mut self) {
         if let Some(reason) = self.library_task_blocker() {
             self.error(format!("MyList export not imported: {reason}"));

@@ -162,7 +162,7 @@ their columns (all sortable except the queue, whose order is the run order):
 | `advanced-results` | Advanced search | same as `anime_table` |
 | `mylist_table` | MyList | `anime`, `episode`, `group`, `state`, `watched`, `size`, `queue` |
 | `local_table` | Hashed files | `file`, `size`, `anidb`, `mylist`, `crc`, `path` |
-| `groups` | Groups | `name`, `short_name`, `rating`, `votes`, `website` |
+| `groups` | Groups | `name`, `short_name`, `rating`, `votes`, `website`, `refresh` |
 | `genres` | Genres | `genre`, `anime` |
 | `queue_table` | Queue | `id`, `command`, `status`, `last_error` (no sorting) |
 

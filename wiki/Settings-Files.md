@@ -221,8 +221,9 @@ recognized setting is rejected instead of resetting your configuration. The impo
 defaults of a fresh file, not from your current settings: **every value the XML does not mention
 (including your current API key, UDP server and port, theme and scale) is replaced
 by its default**, and the importer's own fallbacks for absent XML values (shown below) can differ
-from those defaults. The one exception is `updates.auto_check`: the apply step copies your current
-`updates` object into the imported settings before saving, because AOM has no such preference.
+from those defaults. The exceptions are the `updates` object (`updates.auto_check`) and the
+`media` object (`media.read_properties`, `media.ffprobe_path`): the apply step copies your current
+ones into the imported settings before saving, because AOM has no such preferences.
 The previous settings otherwise survive only in the backup file. Migration workflow:
 [Import AOM settings](Migrating-from-AOM.md#import-aom-settings).
 
@@ -248,7 +249,7 @@ Not touched by the import (they keep fresh-file defaults): `anidb.api_key`,
 `udp_server`, `local_port`, `idle_logout_minutes`, `auto_run_queue` (so an import never
 turns automatic queue runs on), `hashing.identify_after_hashing`,
 `avdump.executable`, `avdump.arguments`, `ui.theme`, `ui.zoom`, `ui.columns`,
-`ui.colored_rows`, and `ed2k_space_replacement`. After an import you therefore still have to
+`ui.colored_rows`, `ui.row_style`, and `ed2k_space_replacement`. After an import you therefore still have to
 review every managed folder before going online or scanning. The AniDB client identifiers are not
 settings, so an import neither sets nor needs them.
 Carriage returns are normalized in imported templates and patterns.

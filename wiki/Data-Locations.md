@@ -48,8 +48,9 @@ the values stay in `settings.json` in plain text; the `.bak` copy holds the *pre
 control, shared backups and support requests
 ([troubleshooting](Troubleshooting.md); [details](Settings-Files.md#credentials-and-the-system-keystore)).
 Do not run two Animatic processes on the same settings
-file; they share temporary file names and are unsupported. Window size and position are not
-remembered between launches.
+file; they share temporary file names and are unsupported. The window's size, position and
+maximized state and the table layouts are kept in `settings.json` (see
+[window and layout state](Settings-Reference.md#window-and-layout-state)).
 
 ## Cover pictures
 

@@ -45,8 +45,8 @@ Renaming is deliberately split so that nothing touches the file system until the
 
 - **Evaluate** is pure with respect to the file system. The database-backed data source only
   reads.
-- **Plan** adds validation: a syntax-checked pattern, the metadata rule for the stable
-  default, the empty/boolean result rules, warning blocking and path validation. A plan that
+- **Plan** adds validation: a syntax-checked pattern, the metadata rule for the built-in
+  conventions, the empty/boolean result rules, warning blocking and path validation. A plan that
   `can_apply()` is *allowed* to be applied; it has not been applied and the destination may
   still exist.
 - **Apply** is the only stage that changes anything, and it runs on the background worker.
@@ -405,11 +405,14 @@ Deliberate differences stated in the source and project rules:
 
 Limits:
 
-- One file per confirmation; no batch or dry run over many files.
+- Batch rename acts on the files you select and automatic rename on the identified files of the
+  folders you switched on; there is no rename of a whole library in one action, and no
+  automatic numbering or other name made up after a collision.
 - No variable list, step trace or debugger in the application; `Evaluation::variables` is
   available through the Rust API only.
-- No collision handling beyond the non-atomic "destination already exists" check (which can lose
-  a race and overwrite a file created in between), and no folder clean-up.
+- A target that already exists is refused (the file is skipped), never replaced and never given
+  another name. Folders a rename leaves empty are removed only through the opt-in **Remove
+  emptied folders** setting.
 - Production AniDB behavior and Linux runtime were not exercised while documenting.
 
 ## Source map
@@ -421,7 +424,7 @@ Limits:
 | Evaluator, functions, variables, user functions, title selection | [eval.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/eval.rs) |
 | Bound objects, property values, language resolution | [objects.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/objects.rs) |
 | Result handling, target path, name validation | [mod.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/mod.rs) |
-| Plan, classification, stable-default metadata rule | [plan.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/plan.rs) |
+| Plan, classification, built-in-convention metadata rule | [plan.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/plan.rs) |
 | Built-in conventions | [fansub_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/fansub_pattern.txt) (default), [aom_pattern.txt](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/aom_pattern.txt), [presets.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/presets.rs) |
 | Behavior tests | [tests.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/rename/tests.rs) |
 | Apply | [file_manager.rs](https://github.com/RetroHazard/animatic/blob/main/crates/animatic-core/src/file_manager.rs) (`move_file`) |
