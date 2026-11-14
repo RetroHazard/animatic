@@ -231,8 +231,11 @@ left, `type · year · N episodes · AniDB <id>`, the description if one is stor
 listed with its count: **Episodes (N)** (open by default, a grid of episode number, name and a **Refresh** button that queues `Fetch episode N`), **Titles** (language
 code and text), **Genres**, **Relations** (relation
 kind and title; clicking one switches the window to that anime, and shows `No detail record is
-available.` if it is not stored), **Reviews** (author or `Anonymous`, rating, body). A section with
-no entries shows `(0)` and cannot be opened.
+available.` if it is not stored), **Reviews** (author or `Anonymous`, rating, body). Review bodies
+keep AniDB's formatting: `[b]`, `[i]`, `[u]`, `[s]` and `[url]` tags show as emphasised (brighter),
+italic, underlined, struck-through and link-coloured text (links are not clickable), `<br />` as a line
+break and character references such as `&amp;` as the character; other bracketed text is shown
+as written. A section with no entries shows `(0)` and cannot be opened.
 
 - **Open on AniDB** opens `https://anidb.net/anime/<id>` in your browser.
 - **Refresh from AniDB** queues `Fetch anime N` (HTTP API). Nothing is sent until you run the

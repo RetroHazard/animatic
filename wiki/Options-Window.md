@@ -19,7 +19,7 @@ written with the settings.
 
 | Category | Controls | Status |
 |---|---|---|
-| AniDB account | Username, Password (masked), API key (shown in clear); a read-only line "AniDB client: animatic v1 (UDP), animatichttp v1 (HTTP)" | Used by sync and AVDump. The two clients are Animatic's own registered AniDB clients, built in and fixed: there is no client name or version to enter, and Animatic updates never change them ([client registration](First-Launch.md#anidb-client-registration)) |
+| AniDB account | Username, Password (masked), API key (optional; shown in clear); a read-only line "AniDB client: animatic v1 (UDP), animatichttp v1 (HTTP)" | Used by sync and AVDump. The API key only turns on an encrypted session; leave it empty for an unencrypted one. The two clients are Animatic's own registered AniDB clients, built in and fixed: there is no client name or version to enter, and Animatic updates never change them ([client registration](First-Launch.md#anidb-client-registration)) |
 | | *Synchronization:* Work offline (keep commands queued) | Active; the status bar's **● Online** / **● Offline** button toggles the same setting |
 | | *Synchronization:* Run the command queue automatically; Log out of AniDB when idle for N min (1–30, enabled only with the automatic option) | Active, **off by default**; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session). The settings reach the background timer when Options is closed, not while you edit |
 | | *Downloads:* Download anime covers when a detail window opens | Active (default on); see [Cover](Library-Pages.md#cover) |
@@ -39,7 +39,7 @@ written with the settings.
 | | *Media properties:* the detected `ffprobe` (version, where it came from, path), *ffprobe path* + **Detect**, *Read media properties after hashing* (disabled until `ffprobe` is found), **Install ffprobe…** (confirmation with size, license and source), **Read missing properties now** | Active, off by default; see [External tools](External-Tools.md#media-properties-ffprobe) |
 | Exports | *Hash export:* the template for File → Export → Hashes…, Export %length% in minutes | Active for [hash export](Exports.md#hash-export) |
 | | *Statistics export:* Write statistics after library updates, Format (XML or INI), Output file | Active; see [statistics export](Exports.md#statistics-export) |
-| Updates | Check for updates at startup (`updates.auto_check`, default on); a read-only list of the MyList state names (*MyList states*) | Active; see [Updating Animatic](Updating-Animatic.md) |
+| Updates | Check for updates at startup (`updates.auto_check`, default on), an explanation that the check reads Animatic's GitHub releases (contacting only GitHub, never AniDB) and a link to the releases page; a read-only list of the MyList state names (*MyList states*) | Active; see [Updating Animatic](Updating-Animatic.md) |
 
 Not in Options (JSON only): UDP server, local port, image server (the fallback host for covers),
 row colors, `ed2k_space_replacement`.

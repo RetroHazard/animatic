@@ -271,6 +271,15 @@ the generated line for that pull request's squash commit.
 
 ### Fixed
 
+- Review bodies in the anime detail window show their formatting (bold, italic, underline,
+  strike-through, links, line breaks, `&amp;`-style characters) instead of raw `[b]` tags and
+  `<br />`.
+- Typing in a managed folder's Name no longer closes that folder's section in Options.
+- The status bar's Online/Offline dot is centred on the text.
+- About Animatic shows its three link buttons on one row, and the license window opens wide
+  enough that the license's lines do not wrap.
+- Options labels the API key as optional, and the Updates page says that update checks read
+  Animatic's GitHub releases page and links to it.
 - Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
   nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
   pattern that loops or recurses without end, or builds an enormous text, now fails with an

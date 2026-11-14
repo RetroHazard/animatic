@@ -38,6 +38,7 @@ mod mylist_editor;
 mod mylist_export;
 mod player_actions;
 mod refresh;
+mod review_markup;
 mod shell_menu;
 mod tray_ui;
 
@@ -2146,7 +2147,7 @@ impl AnimaticApp {
                     env!("CARGO_PKG_AUTHORS").replace(':', ", ")
                 ));
                 ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     for (label, url) in [
                         ("Source code", repository.to_string()),
                         ("Documentation", format!("{repository}/wiki")),
@@ -2200,10 +2201,25 @@ impl AnimaticApp {
         if !self.license_open {
             return;
         }
+        // Wide enough for the longest line, so the license does not wrap at its default size;
+        // narrower screens and a resized window still wrap.
+        let style = ctx.global_style();
+        let font = egui::TextStyle::Monospace.resolve(&style);
+        let text_width = ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(LICENSE.to_owned(), font, Color32::PLACEHOLDER)
+                .size()
+                .x
+        });
+        // `default_width` is the outer width: add the window frame and the scroll bar.
+        let width = text_width
+            + egui::Frame::window(&style).total_margin().sum().x
+            + style.spacing.scroll.allocated_width()
+            + 8.0;
         let mut open = true;
         let shown = dialog::window(ctx, "Animatic license")
             .open(&mut open)
-            .default_width(560.0)
+            .default_width(width.min(ctx.content_rect().width() * 0.9))
             .max_height(ctx.content_rect().height() * 0.8)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -4203,7 +4219,7 @@ impl AnimaticApp {
                             });
                             ui.label(format::rating(review.rating));
                         });
-                        ui.label(&review.body);
+                        ui.label(review_markup::layout(ui, &review.body));
                         ui.separator();
                     }
                 });
@@ -4342,7 +4358,17 @@ impl AnimaticApp {
                     .desired_width(FIELD_WIDTH),
             );
         });
-        field(ui, "API key", &mut self.settings.anidb.api_key);
+        ui.horizontal(|ui| {
+            let label = field_label(ui, "API key (optional)").on_hover_text(
+                "The UDP API key from your AniDB profile. When set, the AniDB session is \
+                 encrypted; leave it empty for an unencrypted session.",
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.anidb.api_key)
+                    .desired_width(FIELD_WIDTH),
+            )
+            .labelled_by(label.id);
+        });
         if let Some(notice) = self.credential_storage.notice() {
             ui.colored_label(style::warn(ui.visuals()), notice);
         }
@@ -4515,7 +4541,10 @@ impl AnimaticApp {
             } else {
                 manager.name.clone()
             };
-            ui.collapsing(label, |ui| {
+            // Keyed by position, not by the name: typing in Name must not close the section.
+            egui::CollapsingHeader::new(label)
+                .id_salt(("options-managed-folder", index))
+                .show(ui, |ui| {
                             field(ui, "Name", &mut manager.name);
                             field(ui, "Path", &mut manager.path);
                             field(ui, "Rename destination", &mut manager.base_path);
@@ -4767,12 +4796,20 @@ impl AnimaticApp {
             &mut self.settings.updates.auto_check,
             "Check for updates at startup",
         );
+        let repository = env!("CARGO_PKG_REPOSITORY");
         ui.label(
             RichText::new(
-                "Contacts github.com, not AniDB, and is skipped in offline mode. Nothing is \
-                 downloaded or installed without your confirmation.",
+                "Looks for a newer stable Animatic release on Animatic's GitHub releases page. \
+                 Only GitHub (github.com and its download servers) is contacted, anonymously; \
+                 never AniDB. Skipped in offline mode. Nothing is downloaded or installed \
+                 without your confirmation.",
             )
             .weak(),
+        );
+        let releases = format!("{repository}/releases");
+        ui.hyperlink_to(
+            releases.trim_start_matches("https://").to_string(),
+            &releases,
         );
         style::section(ui, "MyList states");
         ui.label(RichText::new("The states a MyList entry can have on AniDB:").weak());
@@ -5130,21 +5167,26 @@ impl AnimaticApp {
                     let offline = self.settings.anidb.offline;
                     let (text, color, hint) = if offline {
                         (
-                            "● Offline",
+                            "Offline",
                             style::warn(ui.visuals()),
                             "Work offline is on: commands stay queued and nothing is sent to \
                              AniDB. Click to go online.",
                         )
                     } else {
                         (
-                            "● Online",
+                            "Online",
                             style::ok(ui.visuals()),
                             "Work offline is off: queued commands are sent when the command \
                              queue runs. Click to work offline.",
                         )
                     };
+                    // The dot is painted, not a "●" glyph: the glyph sits above the text's
+                    // centre in the UI font.
+                    let dot = egui::Atom::paint(egui::Vec2::splat(8.0), move |ui, args| {
+                        ui.painter().circle_filled(args.rect.center(), 4.0, color);
+                    });
                     if ui
-                        .add(egui::Button::new(RichText::new(text).color(color)).small())
+                        .add(egui::Button::new((dot, RichText::new(text).color(color))).small())
                         .on_hover_text(hint)
                         .clicked()
                     {
