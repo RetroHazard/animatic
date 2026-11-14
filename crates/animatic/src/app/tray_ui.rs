@@ -1,6 +1,6 @@
 //! Application side of the system tray: the per-frame hook and the Options section.
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 use super::AnimaticApp;
 use crate::tray::{Availability, TrayController, TrayRequest, unavailable_reason};
@@ -39,7 +39,7 @@ impl AnimaticApp {
 
     /// Options → System tray.
     pub(super) fn tray_options_ui(&mut self, ui: &mut egui::Ui) {
-        ui.heading("System tray");
+        crate::style::section(ui, "System tray");
         let availability = self
             .tray
             .as_ref()
@@ -53,13 +53,14 @@ impl AnimaticApp {
                     .on_hover_text(
                         "Minimizing hides the window; click the tray icon or choose Show \
                          Animatic to bring it back. Closing the window still quits.",
-                    );
+                    )
+                    .on_disabled_hover_text("Needs the tray icon. Closing the window still quits.");
             });
         });
         match &availability {
             Availability::Unavailable(reason) => {
                 ui.colored_label(
-                    Color32::YELLOW,
+                    crate::style::warn(ui.visuals()),
                     format!(
                         "No system tray is available here: {reason}. The tray icon and minimize \
                          to tray stay off, so the window is never hidden without a way back."
@@ -69,14 +70,7 @@ impl AnimaticApp {
             Availability::Checking => {
                 ui.label(RichText::new("Checking for a system tray…").weak());
             }
-            Availability::Available => {
-                ui.label(
-                    RichText::new(
-                        "Minimize to tray needs the icon. Closing the window still quits.",
-                    )
-                    .weak(),
-                );
-            }
+            Availability::Available => {}
         }
     }
 }

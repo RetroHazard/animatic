@@ -222,7 +222,7 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
    choose **Save options**. A fresh settings file has `offline` set to `false`, the
    built-in default folder rule adds identified files to MyList, and **Identify files with
    AniDB after hashing** is on by default, so hashing queues an Identify command. Nothing
-   runs unless you choose **Tools → Run command queue** or **Synchronize now**, but a smoke
+   runs unless you choose **Tools → Run command queue** or **Queue → Run command queue**, but a smoke
    test must never be one click from the network. The startup update check
    (`updates.auto_check`, default on) also contacts GitHub on a fresh profile; seed the isolated
    settings file with `{ "updates": { "auto_check": false }, "anidb": { "offline": true } }`
@@ -245,7 +245,7 @@ Automated tests cover the worker and core, not the egui surface. For a UI change
 
 4. Exercise the changed path end to end (for example **File → Add files…**, the **Hashed
    files**, **Queue** and **Log** pages, **Tools → Scan managed folders**, the rename
-   preview/confirm window, or **File → Import AOM settings…** with a hand-written synthetic
+   preview/confirm window, or **File → Import → AOM settings…** with a hand-written synthetic
    XML file) and watch the status bar and the **Log** page for errors.
 5. Close the application and reopen it against the same files to confirm persistence (queue
    rows, settings, library rows).
@@ -409,7 +409,7 @@ is two years after its date):
    license text if it changed), the table in the transport section above and the sizes quoted in
    `wiki/External-Tools.md` and `wiki/Data-Locations.md`. `the_pinned_constants_are_well_formed`
    checks the shape (LGPL asset, HTTPS GitHub URL, 64 hex digits, size limit).
-5. Run the workspace checks, then a manual install on both platforms (Options → Media properties →
+5. Run the workspace checks, then a manual install on both platforms (Options → Players and tools → Media properties →
    **Install ffprobe…**) and one probe of a synthetic media file; a Linux run is not verified by
    the project until someone records one.
 
@@ -559,8 +559,11 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
 - **Build profiles:** check-mode Rust commands use the `ci` profile from the workspace
   [`Cargo.toml`](../Cargo.toml): the `dev` profile's semantics (debug assertions, overflow
   checks) with unoptimized dependencies and line-table-only debuginfo, where local `dev` builds
-  optimize every dependency. Clippy, the tests and rustdoc share one profile and one `--target`,
-  so rustdoc reuses Clippy's dependency metadata. Release executables use the `release` profile.
+  optimize every dependency. The one exception is `animatic-core`, compiled at `opt-level = 1`
+  (`[profile.ci.package.animatic-core]`) so the rename language's stack-limit tests see frame
+  sizes close to shipped builds. Clippy, the tests and rustdoc share one profile and one
+  `--target`, so rustdoc reuses Clippy's dependency metadata. Release executables use the
+  `release` profile.
 - **Pinned inputs and caching:** every third-party action is pinned to a full commit SHA.
   `actionlint` is downloaded from its GitHub release at a pinned version and verified against a
   pinned SHA-256, and `cargo-about` is pinned to an exact version (see the workflow). Check runs
@@ -762,9 +765,9 @@ This table maps a change to the places you will touch and the documentation to u
 | New table, column or index | [`db/schema.sql`](../crates/animatic-core/src/db/schema.sql) (idempotent) or a migration in [`db/mod.rs`](../crates/animatic-core/src/db/mod.rs); store writes and library read models | [Storage and network contracts](storage-and-network.md), [Architecture](architecture.md) |
 | New AniDB command | Request/reply in `animatic-anidb` `commands.rs`; a serializable `Command` with a priority and `describe()` in [`sync.rs`](../crates/animatic-core/src/sync.rs); execution and reply application in `core::sync::execute`; error classification in `error.rs` and `CommandError`. The retry, block and cooldown **policy** lives in the desktop worker (`fail_command` and `process_queue` in `worker.rs`), while core supplies the durable primitives (`queue_block`, `queue_deferred`, `set_sync_cooldown` and so on) | [Storage and network contracts](storage-and-network.md); [AniDB synchronization](https://github.com/RetroHazard/animatic/wiki/AniDB-Synchronization) if reachable from the UI |
 | New background job | `Job` and `Event` in [`worker.rs`](../crates/animatic/src/worker.rs); define progress, cancellation and failure; keep blocking work off the UI thread. An operation that must not share the normal worker's `cancel` flag or queue (the updater) gets its own thread, cancel flag and typed events | [Architecture](architecture.md) |
-| New page, menu item or dialog | `app.rs`; consume only projections and events | The matching [wiki page](https://github.com/RetroHazard/animatic/wiki) ([Main window](https://github.com/RetroHazard/animatic/wiki/Main-Window), [Library pages](https://github.com/RetroHazard/animatic/wiki/Library-Pages) or the task page) |
+| New page, menu item, shortcut or dialog | `app.rs` (a page also in `Page::GROUPS`, which fixes the sidebar order and the `Ctrl+1` … `Ctrl+9` numbering; shortcuts in `mod shortcuts` and the Help → Keyboard shortcuts list); open every floating window with `dialog::window` and close it with `dialog::escape_closes`; take colours from `style.rs` (`warn`, `error`, `ok`, `accent`) instead of fixed values; consume only projections and events | The matching [wiki page](https://github.com/RetroHazard/animatic/wiki) ([Main window](https://github.com/RetroHazard/animatic/wiki/Main-Window), [Library pages](https://github.com/RetroHazard/animatic/wiki/Library-Pages) or the task page) |
 | Updater, archive layout or release asset names | [`update.rs`](../crates/animatic-core/src/update.rs), `scripts/release.py` and `release.yml` together | [Releases](releases.md#in-app-updates), [Storage and network](storage-and-network.md#github-update-transport), [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic) |
-| Rename function, object or property | `rename/` (`parser`, `eval`, `objects`, `plan`); tests in `rename/tests.rs` | [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language); record deliberate differences from AOM |
+| Rename function, object, property or naming convention | `rename/` (`parser`, `eval`, `objects`, `plan`; built-in conventions in `presets.rs` with one `*_pattern.txt` each, which `.gitattributes` keeps LF; the in-app pattern reference in `reference.rs`); tests in `rename/tests.rs`; keep evaluation within the limits in `eval.rs` | [Rename language](https://github.com/RetroHazard/animatic/wiki/Rename-Language), [Rename patterns](https://github.com/RetroHazard/animatic/wiki/Rename-Patterns); record deliberate differences from AOM |
 | Public API of a library crate | Rust doc comments on the item | The generated `cargo doc` output is the API reference |
 | Version, changelog, packaging, CI or workflow | [`scripts/release.py`](../scripts/release.py), [`scripts/ci.py`](../scripts/ci.py), their tests and `.github/workflows/` | [Releases](releases.md) and the README, wiki ([Installation](https://github.com/RetroHazard/animatic/wiki/Installation), [Updating Animatic](https://github.com/RetroHazard/animatic/wiki/Updating-Animatic)) and `AGENTS.md` claims about distribution or CI |
 
@@ -799,8 +802,8 @@ replace those constants with material copied from an installation.
 Runtime data and where it lands:
 
 - The default settings and database live in per-user directories outside the checkout (see
-  [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the settings file holds the AniDB password, API key
-  and AVDump key in plain text, and the database holds your viewing history and file paths.
+  [Data locations](https://github.com/RetroHazard/animatic/wiki/Data-Locations)); the AniDB password, API key and AVDump key live in
+  the operating-system keystore, or in plain text in the settings file when none is available, and the database holds your viewing history and file paths.
   Statistics and hash exports are user-chosen files that reveal the same kind of information.
 - The legacy import writes decrypted intermediates to a marked `animatic-legacy-import-*` folder
   in the system temporary directory and removes it when it ends; the desktop application offers

@@ -190,7 +190,7 @@ controls or exports suggest, or where it could exceed AniDB's limits.
 - **Problem:** today's limits apply only within one client instance and one run.
   - The UDP `Pacer` (2 s between the first five packets of a burst, then 4 s) belongs to each
     `UdpClient`, and `HttpClient::pace` (2 s) to each `HttpClient`. `process_queue` builds new
-    clients for every run, so repeated **Synchronize now** clicks restart the burst allowance,
+    clients for every run, so repeated **Run command queue** clicks (then labelled **Synchronize now**) restart the burst allowance,
     and every run logs in and out again.
   - `HttpClient::titles_dump`, `image` and `get_bytes` are not paced at all.
   - Nothing limits the title dump: `meta.titles_dump_date` is written but never read, and
@@ -275,7 +275,7 @@ items expose the commands in the desktop application.
 
 ### M3.1 Edit storage, source, other and view date
 
-- **Change:** add an entry editor (detail panel or dialog) to **My list** with the four fields,
+- **Change:** add an entry editor (detail panel or dialog) to **MyList** with the four fields,
   including the "checked empty means clear" semantics that the folder policy already uses.
 - **Acceptance:** edits survive a restart, merge with a pending state or watched edit, and a
   stale acknowledgement does not undo a newer edit.
@@ -301,7 +301,7 @@ items expose the commands in the desktop application.
 ### M3.4 Refresh an entry, episode or group
 
 - **Change:** add **Refresh** actions that queue `MylistRefresh`, `FetchEpisode` and `FetchGroup`
-  from **My list**, the anime detail episode table and **Groups**.
+  from **MyList**, the anime detail episode table and **Groups**.
 - **Acceptance:** the refreshed data replaces the cached rows and keeps pending local intent.
 - **Depends:** M1.8 for any minimum age the rules require.
 
@@ -483,6 +483,9 @@ activity, and runs on the worker (rules 1, 2, 8 and 15).
   system theme.
 - **Acceptance:** colour is never the only signal, because each status also has a text or icon
   cue.
+- **Shipped as:** Options → Appearance has **Tint table rows by status** and a **Row color
+  style**: *Soft* (default; a light tint plus a coloured marker at the start of the row) or
+  *Solid* (the whole row in the status colour, as in AOM).
 
 ### M7.4 Player open and enqueue actions
 

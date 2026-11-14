@@ -7,7 +7,7 @@ off unless you switch it on for that folder.
 
 1. Open **Hashed files** and select a file that AniDB has identified (`AniDB` column shows `fid`).
    Unidentified files report `The selected file is not identified by AniDB`.
-2. Optionally edit or validate the pattern in **Tools → Options… → Renaming pattern**
+2. Optionally choose, edit or validate the pattern in **Tools → Options… → Renaming**
    (see [Options window](Options-Window.md)). The language is documented in the [rename language](Rename-Language.md).
 3. Click **Rename…**. Animatic evaluates the pattern against the local database (no network, no
    file access) and opens **Confirm rename** with the current path, the proposed new path, and any
@@ -19,7 +19,7 @@ off unless you switch it on for that folder.
 ## Several files (batch rename)
 
 1. On **Hashed files** select the files you want to rename: click one, Ctrl+click to add or remove
-   files, Shift+click to select a range. **Select all shown** selects every listed file, so it
+   files, Shift+click to select a range. **Select all** selects every listed file, so it
    follows the search box; **Clear selection** clears the selection. It is the same selection
    that **Add to MyList…** uses, and a file that a new search hides drops out of it.
 2. Click **Rename N selected…**. The window **Batch rename** opens at once and shows
@@ -83,18 +83,17 @@ only copy is never deleted. If the verified copy is in place and recorded but th
 be removed (for example a player holds it open), the rename counts as done and the log tells you
 that the old file remains as an extra copy you can delete yourself.
 
-The check for an existing destination and a same-drive rename are two separate steps, not one
-atomic operation: if another program creates a file at the destination in between, the rename
-can **overwrite** it (on Linux the system call replaces an existing file; Rust's rename also
-replaces existing files on Windows). A move to another drive never replaces a file that appears
-in between. A failure reports `Rename failed: <file>: <reason> (target <path>)` in the Log and may leave newly
+An existing destination is never replaced: the check happens before the move, and the move itself
+(an operating-system rename that refuses to replace, or for another drive a verified copy that
+is swapped in without replacing anything) fails if another program created a file there in
+between. A failure reports `Rename failed: <file>: <reason> (target <path>)` in the Log and may leave newly
 created empty folders. There is no undo and no AniDB notification. If the matching managed folder
 has **Remove emptied folders** on, the folders a successful rename left empty are removed
 afterwards ([details](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied)).
 
 ## Choosing how files are named
 
-**Tools → Options → Renaming pattern** has a **Naming convention** list. Pick one of the built-in
+**Tools → Options… → Renaming** has a **Naming convention** list. Pick one of the built-in
 conventions, or **Custom pattern** to write your own. Every choice shows an **Example** of the
 name it gives a fictitious file (episode 6, release version 2, group `ExGroup`):
 
@@ -179,9 +178,8 @@ already exists, or that would get the same name as another file of the same pass
 scan or queue run that changes nothing neither repeats a note nor retries a failed move. A file
 is planned again when its path, its metadata, its folder mode or the pattern changes (or after
 Animatic restarts); a rename stopped by **Cancel** is tried again by the next pass. At most 20
-notes are logged per pass, followed by a count of the rest. As with a manual rename, the
-existing-target check and a same-drive rename are separate steps; the [limit described
-above](#what-applying-does) applies.
+notes are logged per pass, followed by a count of the rest. As with a manual rename, a file that
+appears at the target after the check is not replaced either; the move fails and is reported.
 
 Moves are reported like manual ones (`Renamed <old> to <new>`, `Rename failed: …`) followed by
 `Automatic rename finished: N renamed, M not renamed`. There is no undo and no AniDB notification.

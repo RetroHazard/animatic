@@ -4,6 +4,8 @@ description = "Animatic - a modern AniDB client and anime library manager (succe
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 
 build = "build.rs"
 

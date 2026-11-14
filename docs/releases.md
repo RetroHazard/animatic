@@ -131,7 +131,8 @@ been run against a real GitHub release or on Linux by the project.
   overwritten if a different file exists. The old `LICENSE`, `THIRD-PARTY-NOTICES.html`,
   `README.md`, `CHANGELOG.md` and `docs/` stay as they were until the user replaces them from a new
   archive by hand (so the bundled guides can lag the executable), and the About window shows the
-  versioned license files for the running version. Profiles, databases, settings and media are never touched.
+  versioned third-party notices for the running version (its own license text is built into the
+  executable). Profiles, databases, settings and media are never touched.
 - **Limits.** Metadata 1 MiB, `SHA256SUMS` 64 KiB, archive 256 MiB, extracted executable 512 MiB,
   each license file 8 MiB. A release whose archive would exceed them cannot be installed by the
   updater; raise the limits in `update.rs` and document them when the binary grows.

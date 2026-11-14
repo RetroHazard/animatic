@@ -234,7 +234,7 @@ Expected `ab.mkv`.
 1. Open **Hashed files** and select a file that AniDB has identified (an identified file with
    its anime, episode and file rows in the library). Anime and episode details must be
    fetched for a built-in convention to be usable.
-2. Open **Tools → Options → Renaming pattern** and choose **Custom pattern**. The example
+2. Open **Tools → Options… → Renaming** and choose **Custom pattern**. The example
    line shows the name for a fictitious file as you type, and a red syntax error appears while
    the text does not compile.
 3. Press **Validate on selected file**. It runs the same planning as **Rename…** without
@@ -247,6 +247,6 @@ Editing the text clears the previous validation result. Validation uses the patt
 currently in the editor, saved or not.
 
 The rename unit tests (`crates/animatic-core/src/rename/tests.rs`, plus tests in `parser.rs`
-and `value.rs`) cover the default pattern output, counter widths, Unicode, `classify`,
+and `value.rs`) cover the built-in conventions' output, counter widths, Unicode, `classify`,
 user functions, target paths, reserved names and length limits. Run them with the commands in
 [Development](https://github.com/RetroHazard/animatic/blob/main/docs/development.md).

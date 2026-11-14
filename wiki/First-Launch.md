@@ -13,19 +13,21 @@ check, see [status](Installation.md#status-and-limits)):
    Details: [Settings problems](Backups-and-Recovery.md#settings-problems).
 2. **Status bar** shows "Loading library…" and then "Ready". The left panel lists nine
    pages; **Overview** is shown.
-3. **Overview first-run card** ("Bring your AniDB O'Matic library forward") appears
-   because `first_launch` defaults to true. Use it to import a databank
-   ([migration](Migrating-from-AOM.md#migrate-an-aom-databank)) or **Dismiss first-run card**.
-   Dismissing writes the settings file immediately (a first save), unless the settings were
+3. **Overview "Getting started" card** appears
+   because `first_launch` defaults to true. It is a checklist (account, folders) with a button
+   that opens the matching Options category, and an AOM import box
+   ([migration](Migrating-from-AOM.md#migrate-an-aom-databank)). **Hide** removes the card.
+   Hiding writes the settings file immediately (a first save), unless the settings were
    recovered from a backup. A normal exit also saves the settings.
-4. **Open Tools → Options…** and, before anything else:
-   - tick **Work offline (keep commands queued)** and press **Save options**. The factory
+4. **Open Tools → Options…** (`Ctrl+,`) and, before anything else:
+   - tick **Work offline (keep commands queued)** under **AniDB account → Synchronization** and press **Save options**
+     (or click **● Online** in the status bar, which switches to **● Offline**). The factory
      default is *not* offline;
    - leave **Username/Password/API key** empty until you have your AniDB account at hand;
    - decide whether the managed-folder rule **Default** (which adds identified files to
      MyList as "On HDD", unwatched) is what you want. See
      [managed folders](Managed-Folders-and-Scans.md).
-5. Add files (**File → Add files…**) or import an AOM library, then follow the
+5. Add files (**File → Add files…**, `Ctrl+O`) or import an AOM library, then follow the
    [user guide pages](Home.md#use-animatic).
 
 Defaults worth knowing (`settings.rs`, confirmed in source): theme dark, UI scale 1.0,

@@ -4,7 +4,7 @@
 //! the queue changes, so nothing here reads the database.
 
 use animatic_core::hash_queue::{HashQueueEntry, HashState};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 
 use super::AnimaticApp;
 use crate::worker::Job;
@@ -25,10 +25,11 @@ impl AnimaticApp {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Hash queue").strong());
+                let files = |n: usize| crate::style::plural(n, "file", "files");
                 ui.label(match (pending, failed) {
-                    (p, 0) => format!("{p} file(s) waiting to be hashed"),
-                    (0, f) => format!("{f} file(s) failed"),
-                    (p, f) => format!("{p} file(s) waiting to be hashed, {f} failed"),
+                    (p, 0) => format!("{} waiting to be hashed", files(p)),
+                    (0, f) => format!("{} failed", files(f)),
+                    (p, f) => format!("{} waiting to be hashed, {f} failed", files(p)),
                 });
                 if pending > 0 && !self.settings.hashing.autostart {
                     ui.weak("Hashing does not resume on its own (Options, Hashing).");
@@ -105,7 +106,7 @@ impl AnimaticApp {
 fn entry_row(ui: &mut egui::Ui, entry: &HashQueueEntry) {
     ui.horizontal(|ui| match (&entry.state, &entry.reason) {
         (HashState::Failed, reason) => {
-            ui.colored_label(Color32::LIGHT_RED, "Failed");
+            ui.colored_label(crate::style::error(ui.visuals()), "Failed");
             ui.label(entry.path.display().to_string());
             ui.weak(reason.as_deref().unwrap_or("unknown reason"));
         }

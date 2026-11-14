@@ -75,9 +75,8 @@ Details that follow from the code:
   the full update is queued first, then the files are hashed.
 - **Settings have no flag.** The settings file can only be redirected with the
   `ANIMATIC_SETTINGS` environment variable.
-- **Failure output.** Parse errors are returned from `main`, so Rust prints
-  `Error: <message>` to standard error and exits with status 1 [standard behavior of a
-  `main` that returns `Err`].
+- **Failure output.** A parse error is reported like any startup failure: `Error: <message>` on
+  standard error (an error dialog when no terminal started the program) and exit status 1.
 
 ### One window per database
 

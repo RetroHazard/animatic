@@ -35,7 +35,7 @@ Know the limits before you rely on a recovery path:
   entry; you request a MyList export from AniDB and import the file you download (see
   [The library is missing entries](Network-and-Sync-Problems.md#the-library-is-missing-entries)).
 - **No scheduled or automatic work.** Folder scans run only from **Tools → Scan managed
-  folders**, the queue runs from **Tools → Run command queue** or **Synchronize now** (or by
+  folders**, the queue runs from **Tools → Run command queue** or **Queue → Run command queue** (or by
   itself only if you switch on **Run the command queue automatically**, off by default, see
   [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)),
   and renaming is automatic only in a managed folder you set to **Auto rename: On**. The one unasked action is the optional startup
@@ -58,7 +58,7 @@ replies follow the source code, not a recorded run.
 | I want a safe copy of my data | [Backups and restore](Backups-and-Recovery.md#backups-and-restore) |
 | "AniDB sync paused until …" | [Cooldowns and bans](Network-and-Sync-Problems.md#cooldowns-and-bans) |
 | Red **N blocked** counter, **Blocked** rows, **Retry failed** | [Queue states](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved) |
-| "NOT saved yet", "database is busy" | [Database busy and unsaved commands](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands) |
+| "not saved yet", "database is busy" | [Database busy and unsaved commands](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands) |
 | "login failed", "client version outdated", "AniDB refuses Animatic's built-in client registration" | [Credentials and client registration](Network-and-Sync-Problems.md#credentials-and-client-registration) |
 | Timeouts, "cannot resolve", "no IPv4 address" | [Network and firewall](Network-and-Sync-Problems.md#network-and-firewall) |
 | Files not hashed or scan hashes nothing | [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders) |
@@ -119,9 +119,10 @@ creates no files.
 
 ## Startup problems
 
-Animatic is built as a console-subsystem program on Windows (no GUI-subsystem attribute in
-`main.rs`), and startup failures are returned from `main`, so they are printed to standard
-error. If double-clicking appears to do nothing, run it from a terminal to read the message.
+On Windows Animatic is a GUI program (it opens no console window), and a startup failure is reported
+as `Error: <message>` on standard error when a terminal started it; started from Explorer or a
+shortcut there is no terminal, so the same message is shown in an error dialog titled "Animatic"
+("Animatic could not start:" followed by the cause). Run it from a terminal to keep the text.
 
 | Message | Cause and action |
 |---|---|

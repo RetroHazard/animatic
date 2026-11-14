@@ -11,7 +11,7 @@ the source-level entry points are:
 |---|---|
 | `Pattern::compile`, `Bindings`, `Evaluation`, `evaluate`, `target_path`, `EvalError` | [mod.rs](../crates/animatic-core/src/rename/mod.rs) |
 | `preprocess`, `compile`, `Node`, `CompileError` | [parser.rs](../crates/animatic-core/src/rename/parser.rs) |
-| `Evaluator`, `Object`, `DataSource` and the built-in functions | [eval.rs](../crates/animatic-core/src/rename/eval.rs) |
+| `Evaluator`, `Object`, `DataSource`, the built-in functions and the evaluation limits `MAX_STEPS` (100,000 evaluations), `MAX_DEPTH`, `MAX_CALL_DEPTH` and `MAX_TEXT` (128 KiB), beyond which `evaluate` returns an `EvalError` instead of running on | [eval.rs](../crates/animatic-core/src/rename/eval.rs) |
 | `Value` and the arithmetic/comparison helpers | [value.rs](../crates/animatic-core/src/rename/value.rs) |
 | `bindings_for_file`, `DbSource`, `anime_object`, `episode_object`, `file_object`, `group_object`, `hash_object`, `mylist_object`, `TITLE_PENDING` | [objects.rs](../crates/animatic-core/src/rename/objects.rs) |
 | `PatternKind`, `classify`, `check_pattern`, `Plan`, `plan`, `plan_local_file`, `Candidate`, `BatchRow`, `plan_batch` | [plan.rs](../crates/animatic-core/src/rename/plan.rs) |

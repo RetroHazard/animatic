@@ -59,7 +59,7 @@ built-in registration. For the details see
 The queue runs on its own only if you switch on **Run the command queue automatically**
 (off by default; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)).
 It never sends MyList removals: the Queue page shows how many wait for you to click
-**Synchronize now**. **Tools → Run command queue** and **Queue → Synchronize now**
+**Run command queue**. **Tools → Run command queue** and **Queue → Run command queue**
 take a snapshot of the **current in-memory options** (saved or not) at the moment you click.
 With **Work offline** ticked they send nothing, log `Offline mode is enabled; commands remain
 queued`, and leave the queue alone; an automatic run is postponed instead.
@@ -75,9 +75,9 @@ queued`, and leave the queue alone; an automatic run is postponed instead.
 | `AniDB refuses Animatic's built-in client registration (reply 504): …` | Code 504: AniDB bans the built-in client name and version | Fatal, as above, **no timed cooldown** | Update Animatic (a release carries a newly registered client version); if it is already the latest release, report it; then **Retry failed** |
 | `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused Animatic's built-in HTTP client (`animatichttp`) | Only the HTTP commands (anime records) are blocked; UDP commands keep running | Update Animatic; if it is already the latest release, report it; then **Retry failed** |
 
-After a fatal credential or client error the status bar shows **N blocked** and the Log shows
+After a fatal credential or client error the status bar shows **N blocked commands** and the Log shows
 `Command blocked: N queued commands blocked: <message>`. Correct the cause, optionally **Save
-options**, then **Queue → Retry failed**, then **Synchronize now**. A wrong password that you
+options**, then **Queue → Retry failed**, then **Run command queue**. A wrong password that you
 keep retrying will keep failing; stop and fix it first.
 
 Credentials live in the system keystore, or in plain text in the settings file when Options says no
@@ -92,7 +92,7 @@ stores a cooldown so that it holds across restarts and new jobs:
 - It is stored in the database's `meta` table (key `sync_cooldown`: an expiry time and the
   reason), so it belongs to **that database**. Another database or machine does not know about
   it; waiting still makes sense because the server-side condition remains.
-- While it is active, **Run command queue** and **Synchronize now** are disabled (hover for the
+- While it is active, **Run command queue** (menu, Queue page and `Ctrl+Shift+S`) is disabled (hover for the
   text) and the status bar and **Queue** page show `AniDB sync paused until HH:MM:SS: <reason>`
   in local time. A run started through another path logs `AniDB sync is paused for another …`
   and sends nothing.
@@ -135,7 +135,7 @@ three different situations, and they are handled differently.
 | **Deferred** (not a separate label) | `Pending` or `N retries`, with a **Last error** such as a timeout or ban | Not attempted again because of connectivity or a cooldown, which do not count as attempts | Wait out the cooldown, fix connectivity, run again |
 | **Blocked** | Red **Blocked**, red **N blocked** in the toolbar and status bar | A permanent failure, a protocol/format error, rejected credentials, or an unreadable stored command. It is skipped by runs and stays visible | Read **Last error**, fix the cause, then **Retry failed** |
 | **blocked commands (refreshing)** | Red text | A newer blocked event arrived than the data on screen; the view is refreshing | Wait a moment |
-| **NOT saved yet** | Yellow `N commands NOT saved yet` in the status bar | The command is only in memory | See below |
+| **Not saved yet** | Yellow `N commands not saved yet` in the status bar | The command is only in memory | See below |
 
 Rules that matter:
 
@@ -143,8 +143,9 @@ Rules that matter:
   attempt counter of every blocked command, merges multiple edits of the same MyList entry into
   the latest, and does not touch the cooldown. It does not clear **Last error** text; a stale
   message can remain until the command is retried or removed.
-- **Clear queue** deletes **every** queued command, including unsynchronized MyList edits and
-  blocked commands. It asks for no confirmation. It does not undo the optimistic local state
+- **Clear queue…** (the red button on the Queue page, enabled while the queue is not empty) deletes
+  **every** queued command, including unsynchronized MyList edits and
+  blocked commands, after you confirm **Discard commands** in the "Clear the command queue?" dialog. It does not undo the optimistic local state
   those edits already applied, so the local view can then disagree with AniDB. It does not
   clear the cooldown. There is no per-command discard in the interface; to drop one command you
   must clear the whole queue, so make a backup first when other work is pending.
@@ -172,7 +173,7 @@ Two connections write to the database: the background worker and the interface. 
   background write; nothing was changed, try again`. The edit is not applied; repeat it.
 - **A queued command (identify, title download, refresh)** that hits a busy database is kept in
   memory: the Log says `Database busy: queued command is NOT saved yet, retrying` and the
-  status bar shows `N commands NOT saved yet`. Animatic retries every half second and logs
+  status bar shows `N commands not saved yet`. Animatic retries every half second and logs
   `Saved N previously unsaved commands` when it succeeds. At most 1000 are held; beyond that
   you get `NOT queued: <command> (database busy and 1000 commands are already unsaved)`.
 - **Closing the window** makes one final attempt of up to 5 s. If the database is still busy,
@@ -181,17 +182,17 @@ Two connections write to the database: the background worker and the interface. 
 - Causes of long busy periods: a legacy import (each collection is one transaction), the
   titles merge, another program touching the files (backup tool, antivirus, sync client) or a
   second Animatic instance. Wait for the running job to finish or cancel it.
-- `Unable to refresh library: …` means the background snapshot failed; a later refresh
-  (**File → Refresh**) usually succeeds once the contention ends.
+- `Unable to refresh library: …` means the background snapshot failed; a later reload
+  (**File → Reload**, `F5`) usually succeeds once the contention ends.
 
 ## The library is missing entries
 
 - **Loading your whole AniDB MyList is a two-step export, not a download.** Animatic never walks
   your MyList entry by entry (AniDB forbids it). **Tools → Request MyList export…** asks AniDB to
   prepare an export (up to 24 hours; AniDB sends a message when it is ready), you download the
-  file from AniDB's export page, and **File → Import MyList export…** merges it. See
+  file from AniDB's export page, and **File → Import → MyList export…** merges it. See
   [Full-account MyList import](AniDB-Synchronization.md#full-account-mylist-import).
-  **Tools → Fetch mylist statistics** only fetches counts (kept and shown on Overview).
+  **Tools → Fetch MyList statistics** only fetches counts (kept and shown on Overview).
   **Tools → Download anime
   titles** fetches the public titles dump only. **Tools → Full update…** (after a confirmation) or `--full-update` queues the titles dump plus lookups for the files and anime your **hashed local files**
   already reference, leaving out what was requested too recently (see the next point). Library

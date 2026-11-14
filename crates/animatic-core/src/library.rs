@@ -102,15 +102,16 @@ pub fn anime_type_id(name: &str) -> i64 {
     }
 }
 
-pub fn mylist_state_name(state: i64) -> &'static str {
-    match state {
-        1 => "On HDD",
-        2 => "On CD",
-        3 => "Deleted",
-        4 => "Shared",
-        5 => "Release",
-        _ => "Unknown",
-    }
+/// The state's display name: the same words the state pickers offer
+/// ([`crate::settings::MYLIST_STATES`]). Only an unknown state allocates.
+pub fn mylist_state_name(state: i64) -> std::borrow::Cow<'static, str> {
+    usize::try_from(state)
+        .ok()
+        .and_then(|i| crate::settings::MYLIST_STATES.get(i))
+        .map_or_else(
+            || std::borrow::Cow::Owned(format!("Other ({state})")),
+            |name| std::borrow::Cow::Borrowed(*name),
+        )
 }
 
 /// File version from the AniDB state bit field (bit 2..5 = v2..v5).

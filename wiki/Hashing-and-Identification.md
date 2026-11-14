@@ -14,7 +14,7 @@ Result handling per file:
    paths.
 2. The Log gets `Hashed <path> (local #N, <ed2k>)`.
 3. If *Identify files with AniDB after hashing* is on (default), an **Identify** command is
-   queued. If the file's [folder rule](Managed-Folders-and-Scans.md) has **Add to mylist**, the
+   queued. If the file's [folder rule](Managed-Folders-and-Scans.md) has **Add to MyList**, the
    command also carries that rule's MyList settings.
 4. The file leaves the hash queue only now, after its result is stored. A read error (missing
    file, permission, a directory) is logged as `<path>: <reason>` and the file stays in the queue
@@ -29,7 +29,7 @@ state, watched flag, storage, source and other fields; if it is already in MyLis
 that the file is **not** in your MyList, local entries for that file are removed unless they have
 queued edits. An unknown file logs `file unknown to AniDB` and nothing else changes.
 
-With default settings, the built-in **Default** rule has *Add to mylist* on, *Set state* on with
+With default settings, the built-in **Default** rule has *Add to MyList* on, *Set state* on with
 *On HDD*, and *Set watched* on with *Watched* off, so identified files that match no custom rule are
 added to MyList as "On HDD", unwatched, when you run the queue. Review this before online work.
 
@@ -52,7 +52,7 @@ that is hashed and stored in the library is the absolute path as given.
 - **Failed files.** A missing, unreadable or locked file is not retried on its own. It stays in
   the queue as *failed* with a reason ("file not found (moved, renamed or deleted, or its drive is
   unavailable)", or the read error) until you add it again, retry failed files or clear the queue.
-- **Start hashing automatically** (Options, Hashing; on by default, imported from AOM's
+- **Start hashing automatically** (Options → Hashing; on by default, imported from AOM's
   `autostartHashing`): when Animatic starts and files are still queued, hashing resumes by
   itself once nothing else blocks it (no import review, restore or settings recovery notice is
   open and no other task is running). With it off nothing hashes at start: the Hashed files page and Overview show the
