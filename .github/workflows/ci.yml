@@ -85,6 +85,9 @@ jobs:
       pull-requests: read
     outputs:
       mode: ${{ steps.scope.outputs.mode }}
+      # `true` for the top of a stack whose own base is not main: its diff against that base
+      # shows only the top layer, but its run must cover every layer below it.
+      full: ${{ steps.scope.outputs.full }}
     steps:
       - name: Look up the actual pull request base
         id: scope
@@ -118,10 +121,13 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$base" = main ] || [ "$stack" = main ]; then
             echo "mode=run" >> "$GITHUB_OUTPUT"
+            if [ "$base" != main ]; then
+              echo "full=true" >> "$GITHUB_OUTPUT"
+            fi
             if [ -n "$stack" ]; then
               {
                 printf '### Top of the stack\n\n'
-                printf 'Pull request %s of %s in stack #%s on main: the full checks run here and cover the pull requests below it.\n' "${position:-?}" "${size:-?}" "$stack_number"
+                printf 'Pull request %s of %s in stack #%s on main: the full checks run here, all of them whatever this layer changes, and cover the pull requests below it.\n' "${position:-?}" "${size:-?}" "$stack_number"
               } >> "$GITHUB_STEP_SUMMARY"
             fi
           else
@@ -160,6 +166,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ inputs.ref }}
           PACKAGE: ${{ inputs.package }}
+          STACK_FULL: ${{ needs.scope.outputs.full }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ inputs.ref || github.sha }}
         run: |
@@ -172,6 +179,8 @@ jobs:
             workflow_dispatch | merge_group | push) force=1 ;;
           esac
           if [ -z "$BASE_SHA" ] || [ -n "$CALLER_REF" ] || [ "$PACKAGE" = true ]; then force=1; fi
+          # The top of a stack checks every layer, not just its own diff against its base.
+          if [ "$STACK_FULL" = true ]; then force=1; fi
           if [ "$force" = 1 ]; then args+=(--force); fi
           python scripts/ci.py "${args[@]}" > "$RUNNER_TEMP/ci-plan.json"
           cat "$RUNNER_TEMP/ci-plan.json"

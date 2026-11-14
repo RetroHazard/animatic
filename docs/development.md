@@ -463,7 +463,9 @@ ruleset, including the required `Required checks`, against each of them; a merge
 needs every pull request in it to pass. The authoritative `scope` job therefore queries the pull
 request REST API for the actual base and the `stack` (base, position and size). A pull request on
 `main` outside a stack, and the **top** pull request of a stack on `main`, run the full checks;
-the top one contains every layer of the stack. The lower pull requests of the stack run nothing
+the top one contains every layer of the stack, and its plan selects every job whatever its own
+layer changes (its diff against its own base would show only the top layer, for example
+documentation over lower Rust layers). The lower pull requests of the stack run nothing
 but `scope` and report a passing `Required checks` whose summary names the top as their cover,
 so a stack costs one full run per push instead of one per pull request. Because those lower
 results check nothing themselves, a change pushed to a lower branch must reach the top before
@@ -541,6 +543,7 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   `.cargo/` or a `rust-toolchain*` file select both because they affect packaging or CI itself;
   other Python under `scripts/` selects only `quality`. **Any path it does not recognize selects
   both**, so a new kind of file fails safe. A reusable call with a non-empty `ref`, `package: true`,
+  the top pull request of a stack whose own base is not `main`,
   a manual run, a merge-group run, a `main` push (so the caches are refreshed even after a
   toolchain release with no file change) and an unusable base commit (missing or all zeros) all
   run everything. An unreadable base fails the job; it is never treated as "nothing changed".
