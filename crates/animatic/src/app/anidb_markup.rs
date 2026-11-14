@@ -70,6 +70,10 @@ enum Tag {
 /// Characters of a horizontal rule.
 const RULE: &str = "────────────────────────────────";
 
+/// Deepest list nesting that is indented further; deeper items keep this indentation, so
+/// pathological nesting cannot make the output grow quadratically.
+const MAX_INDENT: usize = 4;
+
 /// Whether the next text starts a line.
 fn at_line_start(spans: &[Span], text: &str) -> bool {
     match text.chars().last() {
@@ -128,7 +132,7 @@ fn parse(body: &str) -> Vec<Span> {
                         if !at_line_start(&spans, &text) {
                             text.push('\n');
                         }
-                        for _ in 1..lists.len() {
+                        for _ in 1..lists.len().min(MAX_INDENT) {
                             text.push_str("    ");
                         }
                         match lists.last_mut() {
@@ -395,6 +399,23 @@ mod tests {
                 styled("x", |s| s.italic = 1),
             ]
         );
+    }
+
+    #[test]
+    fn deep_list_nesting_keeps_output_linear() {
+        let depth = 10_000;
+        let body = format!("{}{}", "[ol]".repeat(depth), "[*]x".repeat(depth));
+        let text = plain(&body);
+        // Each item is a line with at most MAX_INDENT - 1 indents and its number.
+        assert_eq!(text.lines().filter(|l| !l.is_empty()).count(), depth);
+        assert!(
+            text.len() < depth * 32,
+            "output grew to {} bytes",
+            text.len()
+        );
+        // Every item belongs to the innermost list: indented at the cap and numbered in order.
+        let indent = "    ".repeat(MAX_INDENT - 1);
+        assert!(text.starts_with(&format!("{indent}1. x\n{indent}2. x\n")));
     }
 
     #[test]
