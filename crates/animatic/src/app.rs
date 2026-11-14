@@ -142,7 +142,7 @@ impl<K: PartialEq + Clone> IndexCache<K> {
 
 #[derive(Default)]
 struct TableViews {
-    anime: IndexCache<(u64, String, Option<i64>, SortKey)>,
+    anime: IndexCache<(u64, String, BTreeSet<i64>, SortKey)>,
     search: IndexCache<(u64, String, String, i64, bool, bool, SortKey)>,
     mylist: IndexCache<(u64, String, SortKey)>,
     local: IndexCache<(u64, String, SortKey)>,
@@ -546,9 +546,9 @@ pub struct AnimaticApp {
     page: Page,
     query: String,
     selected_aid: Option<i64>,
-    /// The Anime page lists only anime of this genre (set from the Genres page or a genre in
-    /// the anime detail window).
-    genre_filter: Option<i64>,
+    /// The Anime page lists only anime that have every one of these genres (picked from the
+    /// Genres page, a genre in the anime detail window, or the page's own genre picker).
+    genre_filter: BTreeSet<i64>,
     settings_open: bool,
     about_open: bool,
     /// The license text window opened from About.
@@ -680,7 +680,7 @@ impl AnimaticApp {
             page: Page::Dashboard,
             query: String::new(),
             selected_aid: None,
-            genre_filter: None,
+            genre_filter: BTreeSet::new(),
             selected_local: None,
             rename_preview: None,
             batch_rename: None,
@@ -2780,13 +2780,13 @@ impl AnimaticApp {
                             // Only the queue: pending work is the one state the other pages hide.
                             _ => None,
                         };
-                        if nav_item(ui, self.page == page, page.label(), badge).clicked() {
+                        if nav_item(ui, self.page == page, None, page.label(), badge).clicked() {
                             self.page = page;
                         }
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    if nav_item(ui, self.settings_open, "⚙ Options", None)
+                    if nav_item(ui, self.settings_open, Some('⚙'), "Options", None)
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
                         .clicked()
                     {
@@ -3124,41 +3124,88 @@ impl AnimaticApp {
         ui.add_space(6.0);
     }
 
-    /// Show the Anime page filtered to one genre. The shared search text is cleared so it does
+    /// Show the Anime page filtered by genre: `genre` alone, or added to the current genres when
+    /// `add` (Ctrl or Shift held while clicking). The shared search text is cleared so it does
     /// not hide anime of the genre, and an open detail window is closed so the list shows.
-    fn browse_genre(&mut self, genre: i64) {
-        self.genre_filter = Some(genre);
+    fn browse_genre(&mut self, genre: i64, add: bool) {
+        if !add {
+            self.genre_filter.clear();
+        }
+        self.genre_filter.insert(genre);
         self.query.clear();
         self.selected_aid = None;
         self.page = Page::Anime;
     }
 
-    fn anime_page(&mut self, ui: &mut egui::Ui) {
-        self.page_header(ui, Some("every anime stored locally"), true);
-        if let Some(genre) = self.genre_filter {
-            let name = self
-                .projection
-                .genres
-                .iter()
-                .find(|g| g.0 == genre)
-                .map_or_else(|| format!("genre {genre}"), |g| g.1.clone());
-            ui.horizontal(|ui| {
-                ui.label("Genre:");
-                ui.strong(name);
+    /// The genre picker above the Anime table: the selected genres (each removable) and a list
+    /// to add another one.
+    fn genre_filter_bar(&mut self, ui: &mut egui::Ui) {
+        if self.projection.genres.is_empty() && self.genre_filter.is_empty() {
+            return;
+        }
+        let (mut remove, mut add, mut clear) = (None, None, false);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Genres:");
+            for &id in &self.genre_filter {
+                let name = self
+                    .projection
+                    .genres
+                    .iter()
+                    .find(|g| g.0 == id)
+                    .map_or_else(|| format!("genre {id}"), |g| g.1.clone());
                 if ui
-                    .small_button("✕")
-                    .on_hover_text("Show every anime again")
+                    .small_button(format!("{name} ✕"))
+                    .on_hover_text("Remove this genre from the filter")
                     .clicked()
                 {
-                    self.genre_filter = None;
+                    remove = Some(id);
                 }
-            });
+            }
+            let prompt = if self.genre_filter.is_empty() {
+                "Filter by genre…"
+            } else {
+                "Add genre…"
+            };
+            egui::ComboBox::from_id_salt("anime-genre-add")
+                .selected_text(prompt)
+                .height(400.0)
+                .show_ui(ui, |ui| {
+                    for (id, name, count) in &self.projection.genres {
+                        if !self.genre_filter.contains(id)
+                            && ui
+                                .selectable_label(false, format!("{name} ({count})"))
+                                .clicked()
+                        {
+                            add = Some(*id);
+                        }
+                    }
+                });
+            if self.genre_filter.len() > 1 {
+                ui.label(RichText::new("anime with all of these genres").weak());
+                if ui.small_button("Clear").clicked() {
+                    clear = true;
+                }
+            }
+        });
+        if let Some(id) = remove {
+            self.genre_filter.remove(&id);
         }
+        if let Some(id) = add {
+            self.genre_filter.insert(id);
+        }
+        if clear {
+            self.genre_filter.clear();
+        }
+    }
+
+    fn anime_page(&mut self, ui: &mut egui::Ui) {
+        self.page_header(ui, Some("every anime stored locally"), true);
+        self.genre_filter_bar(ui);
         let sort = sort_key(&self.settings.ui.columns, "anime_table");
         let key = (
             self.loader.version,
             self.query.to_ascii_lowercase(),
-            self.genre_filter,
+            self.genre_filter.clone(),
             sort,
         );
         {
@@ -3170,7 +3217,7 @@ impl AnimaticApp {
                 ..
             } = self;
             views.anime.refresh(&key, || {
-                let mut rows = filter_anime(projection, &key.1, key.2);
+                let mut rows = filter_anime(projection, &key.1, &key.2);
                 sort_anime(projection, &mut rows, &key.3);
                 rows
             });
@@ -3890,12 +3937,13 @@ impl AnimaticApp {
             body.rows(row_height, rows.len(), |mut row| {
                 let (id, name, count) = &projection.genres[rows[row.index()]];
                 row.col(|ui| {
-                    if ui
-                        .link(name)
-                        .on_hover_text("Show the anime of this genre")
-                        .clicked()
-                    {
-                        browse = Some(*id);
+                    let link = ui.link(name).on_hover_text(
+                        "Show the anime of this genre; Ctrl+click adds it to the genres \
+                         already chosen",
+                    );
+                    if link.clicked() {
+                        let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                        browse = Some((*id, add));
                     }
                 });
                 row.col(|ui| {
@@ -3903,8 +3951,8 @@ impl AnimaticApp {
                 });
             });
         });
-        if let Some(genre) = browse {
-            self.browse_genre(genre);
+        if let Some((genre, add)) = browse {
+            self.browse_genre(genre, add);
         }
     }
 
@@ -4253,12 +4301,13 @@ impl AnimaticApp {
                 section(ui, "Genres", d.genres.len(), false, &mut |ui| {
                     ui.horizontal_wrapped(|ui| {
                         for (id, name) in &d.genres {
-                            if ui
-                                .link(name)
-                                .on_hover_text("Show the anime of this genre")
-                                .clicked()
-                            {
-                                genre_clicked = Some(*id);
+                            let link = ui.link(name).on_hover_text(
+                                "Show the anime of this genre; Ctrl+click adds it to the \
+                                 genres already chosen",
+                            );
+                            if link.clicked() {
+                                let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                                genre_clicked = Some((*id, add));
                             }
                         }
                     });
@@ -4315,8 +4364,8 @@ impl AnimaticApp {
         for eid in episode_refresh {
             self.queue_command(animatic_core::sync::Command::FetchEpisode { eid });
         }
-        if let Some(genre) = genre_clicked {
-            self.browse_genre(genre);
+        if let Some((genre, add)) = genre_clicked {
+            self.browse_genre(genre, add);
             self.detail = None;
             self.covers.window_closed();
         }
@@ -4345,7 +4394,8 @@ impl AnimaticApp {
                     ui.vertical(|ui| {
                         ui.set_width(170.0);
                         for page in OptionsPage::ALL {
-                            if nav_item(ui, self.options_page == page, page.label(), None).clicked()
+                            if nav_item(ui, self.options_page == page, None, page.label(), None)
+                                .clicked()
                             {
                                 self.options_page = page;
                             }
@@ -5843,22 +5893,55 @@ fn metric_card(
         .response
 }
 
+/// A one-glyph icon whose ink is centred in its atom. Symbol glyphs such as `⚙` come from the
+/// emoji font, whose glyph box sits higher than the UI font's text, so centring the text box
+/// (what a plain label does) leaves the symbol above the text beside it.
+fn icon_atom(ui: &egui::Ui, icon: char, color: Color32) -> egui::Atom<'static> {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(icon.to_string(), font, color);
+    let ink = galley
+        .rows
+        .first()
+        .and_then(|row| {
+            row.glyphs.first().map(|g| {
+                egui::Rect::from_min_size(
+                    row.pos + g.pos.to_vec2() + g.uv_rect.offset,
+                    g.uv_rect.size,
+                )
+            })
+        })
+        .filter(|ink| ink.is_positive())
+        .unwrap_or(galley.rect);
+    let size = egui::vec2(ink.width(), galley.size().y);
+    egui::Atom::paint(size, move |ui, args| {
+        let origin = args.rect.center() - ink.center().to_vec2();
+        ui.painter().galley(origin, galley.clone(), color);
+    })
+}
+
 /// One sidebar entry: full width, the selected one marked by the accent bar as well as its fill,
 /// with an optional count on the right.
 fn nav_item(
     ui: &mut egui::Ui,
     selected: bool,
+    icon: Option<char>,
     label: &str,
     badge: Option<(String, Color32)>,
 ) -> egui::Response {
-    let text = if selected {
-        RichText::new(label).strong()
+    let (text, color) = if selected {
+        (
+            RichText::new(label).strong(),
+            ui.visuals().strong_text_color(),
+        )
     } else {
-        RichText::new(label)
+        (RichText::new(label), ui.visuals().text_color())
     };
-    let mut button = egui::Button::selectable(selected, text)
-        .frame_when_inactive(false)
-        .min_size(egui::vec2(ui.available_width(), 28.0));
+    let mut button = match icon {
+        Some(icon) => egui::Button::selectable(selected, (icon_atom(ui, icon, color), text)),
+        None => egui::Button::selectable(selected, text),
+    }
+    .frame_when_inactive(false)
+    .min_size(egui::vec2(ui.available_width(), 28.0));
     if let Some((badge, color)) = badge {
         button = button.right_text(RichText::new(badge).small().color(color));
     }
@@ -5972,18 +6055,16 @@ fn matches_anime(key: &str, aid: i64, q: &str, q_aid: Option<i64>) -> bool {
 }
 
 /// Row indices of anime whose name contains the lower-cased query or whose id equals it, and
-/// that have `genre` when one is given.
-fn filter_anime(p: &LibraryProjection, q: &str, genre: Option<i64>) -> Vec<usize> {
+/// that have every genre in `genres`.
+fn filter_anime(p: &LibraryProjection, q: &str, genres: &BTreeSet<i64>) -> Vec<usize> {
     let q_aid = aid_query(q);
+    let none = Vec::new();
     (0..p.anime.len())
         .filter(|&i| {
             let a = &p.anime[i];
+            let has = p.anime_genres.get(&a.aid).unwrap_or(&none);
             matches_anime(&p.keys.anime[i], a.aid, q, q_aid)
-                && genre.is_none_or(|g| {
-                    p.anime_genres
-                        .get(&a.aid)
-                        .is_some_and(|ids| ids.contains(&g))
-                })
+                && genres.iter().all(|g| has.contains(g))
         })
         .collect()
 }
@@ -6195,13 +6276,14 @@ mod tests {
     #[test]
     fn anime_filter_matches_name_or_exact_id() {
         let p = fixture();
-        assert_eq!(filter_anime(&p, "", None).len(), 3);
-        assert_eq!(filter_anime(&p, "fixture", None).len(), 2);
-        let by_id = filter_anime(&p, "3", None);
+        let any = BTreeSet::new();
+        assert_eq!(filter_anime(&p, "", &any).len(), 3);
+        assert_eq!(filter_anime(&p, "fixture", &any).len(), 2);
+        let by_id = filter_anime(&p, "3", &any);
         assert_eq!(by_id.len(), 1);
         assert_eq!(p.anime[by_id[0]].aid, 3);
         assert!(
-            filter_anime(&p, "03", None).is_empty(),
+            filter_anime(&p, "03", &any).is_empty(),
             "ids match exactly, not by padding"
         );
     }
@@ -6248,15 +6330,25 @@ mod tests {
     }
 
     #[test]
-    fn genre_filter_keeps_only_anime_of_that_genre() {
+    fn genre_filter_keeps_only_anime_with_every_chosen_genre() {
         let mut p = fixture();
         let aids: Vec<i64> = p.anime.iter().map(|a| a.aid).collect();
         p.anime_genres.insert(aids[0], vec![7, 8]);
         p.anime_genres.insert(aids[1], vec![8]);
-        let picked = |rows: Vec<usize>| rows.iter().map(|&i| p.anime[i].aid).collect::<Vec<_>>();
-        assert_eq!(picked(filter_anime(&p, "", Some(7))), vec![aids[0]]);
-        assert_eq!(picked(filter_anime(&p, "", Some(8))).len(), 2);
-        assert!(filter_anime(&p, "", Some(9)).is_empty());
+        let picked = |genres: &[i64]| {
+            let set: BTreeSet<i64> = genres.iter().copied().collect();
+            let rows = filter_anime(&p, "", &set);
+            rows.iter().map(|&i| p.anime[i].aid).collect::<Vec<_>>()
+        };
+        assert_eq!(picked(&[7]), vec![aids[0]]);
+        assert_eq!(picked(&[8]).len(), 2);
+        assert_eq!(
+            picked(&[7, 8]),
+            vec![aids[0]],
+            "every chosen genre is required"
+        );
+        assert!(picked(&[8, 9]).is_empty());
+        assert_eq!(picked(&[]).len(), 3, "no genre chosen lists every anime");
     }
 
     #[test]

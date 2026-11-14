@@ -13,8 +13,9 @@ the generated line for that pull request's squash commit.
 
 ### Added
 
-- Browse anime by genre: clicking a genre on the Genres page, or in an anime's detail window,
-  lists the anime of that genre on the Anime page, with a button that clears the genre filter.
+- Browse anime by genre: the Anime page has a genre filter (one or several genres; with several,
+  anime that have all of them), and clicking a genre on the Genres page or in an anime's detail
+  window opens it (Ctrl+click adds the genre to those already chosen).
 - About Animatic credits the developer and has buttons for the source code repository, the
   documentation and the AniDB website; **View license** and **Third-party notices** show the
   license and the third-party notices inside the app (the texts built into the executable, not
@@ -288,7 +289,7 @@ the generated line for that pull request's squash commit.
   `[url=…]`, `[b]`, `[hr]` and `[ol]` tags, `<br />` and backticks. An `[img]` shows the
   picture's address; pictures are never downloaded.
 - Typing in a managed folder's Name no longer closes that folder's section in Options.
-- The status bar's Online/Offline dot is centred on the text.
+- The status bar's Online/Offline dot and the sidebar's Options gear are centred on their text.
 - About Animatic shows its three link buttons on one row, and the license window opens wide
   enough that the license's lines do not wrap.
 - Options labels the API key as optional, and the Updates page says that update checks read

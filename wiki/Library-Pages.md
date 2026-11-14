@@ -105,11 +105,13 @@ Subtitle: *every anime stored locally*. Columns: **Title** (click to select and 
 (`N eps / M files` when any of its files are in MyList, followed by ` · all watched` when every
 episode is watched).
 
-**Browsing a genre.** Clicking a genre on the [Genres](#genres) page or in an anime's detail
-window opens this page showing only the anime of that genre, with `Genre: <name>` and a **✕**
-button above the table that shows every anime again. The search text is cleared when you pick a
-genre and then narrows the genre's anime as usual. The filter stays while you move between pages
-and is cleared by **✕**.
+**Filtering by genre.** A `Genres:` line above the table shows the chosen genres, each as a
+button with **✕** that removes it, and a **Filter by genre…** / **Add genre…** list (each genre
+with its anime count) that adds one. With several genres chosen the page lists the anime that
+have **all** of them, and **Clear** removes every genre. Clicking a genre on the
+[Genres](#genres) page or in an anime's detail window shows that genre alone; **Ctrl+click** (or
+Shift+click) adds it to the genres already chosen. Picking a genre that way clears the search
+text, which then narrows the list as usual. The genres stay chosen while you move between pages.
 
 Search is described in [Searching and tables](Main-Window.md#searching-and-tables).
 
@@ -183,7 +185,7 @@ launches the browser; `—` if none), **Refresh** (queues `Fetch group N`; the r
 ## Genres
 
 Searchable table: **Genre** and **Anime** (number of anime carrying it). Click a genre to list its
-anime on the [Anime](#anime) page.
+anime on the [Anime](#anime) page; Ctrl+click adds it to the genres already chosen there.
 
 ## Queue
 
@@ -237,7 +239,7 @@ Opened from any anime link or title (or a Relations entry). The window title is 
 left, `type · year · N episodes · AniDB <id>`, the description if one is stored, and collapsible sections, each
 listed with its count: **Episodes (N)** (open by default, a grid of episode number, name and a **Refresh** button that queues `Fetch episode N`), **Titles** (language
 code and text), **Genres** (each genre is a link that opens the [Anime](#anime) page filtered to
-it and closes the window), **Relations** (relation
+it, or with Ctrl+click adds it to the chosen genres, and closes the window), **Relations** (relation
 kind and title; clicking one switches the window to that anime, and shows `No detail record is
 available.` if it is not stored), **Reviews** (author or `Anonymous`, rating, body). The
 description and review bodies keep AniDB's formatting: `[b]`, `[i]`, `[u]`, `[s]` and `[url]`
