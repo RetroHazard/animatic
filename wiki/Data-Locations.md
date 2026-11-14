@@ -1,29 +1,52 @@
-Where the database and settings live, what else Animatic writes, and how to run a portable or
-rehearsal profile that leaves your normal one untouched.
+Where Animatic keeps your database and settings, what else it writes, which of those files are
+private, and how to run a portable or rehearsal profile that leaves your normal one untouched. Read
+this before you back up, move, share or delete anything, and before you ask for help (support
+requests must never include these files; see [Reporting problems](Reporting-Problems.md)).
 
 ## Where data lives
 
-Animatic stores a SQLite **database** (library, queue, hashes), a JSON
-**settings** file and, once you open anime detail windows, a [folder of cover pictures](#cover-pictures). The parent directories are created when needed. When no override is
-given, the locations come from `directories::ProjectDirs::from("net", "AniDB", "Animatic")`
-(`directories` 6.0.0, pinned in `Cargo.lock`):
+Animatic stores a SQLite **database** (library, command queue, hashes), a JSON **settings** file
+and, once you open anime detail windows, a [folder of cover pictures](#cover-pictures). The parent
+directories are created when needed. When no override is given, Animatic uses the standard
+per-user locations of your platform:
 
 | | Windows | Linux |
 |---|---|---|
 | Settings | `%APPDATA%\AniDB\Animatic\config\settings.json` | `$XDG_CONFIG_HOME/animatic/settings.json`, else `$HOME/.config/animatic/settings.json` |
 | Database | `%APPDATA%\AniDB\Animatic\data\animatic.sqlite3` | `$XDG_DATA_HOME/animatic/animatic.sqlite3`, else `$HOME/.local/share/animatic/animatic.sqlite3` |
 
-- Windows uses the **Roaming** application-data folder (`{FOLDERID_RoamingAppData}`) for
-  both, not Local. The `%APPDATA%` suffixes above were confirmed by running the
-  `directories` 6.0.0 API on Windows and match its source.
-- Linux paths were verified from the `directories` 6.0.0 source, not by running Animatic
-  on Linux: `XDG_CONFIG_HOME`/`XDG_DATA_HOME` are used only when they hold an absolute
-  path; the application folder is the lower-cased application name `animatic` (the organization is ignored).
+- Windows uses the **Roaming** application-data folder for both files, not Local. The `%APPDATA%`
+  paths above were confirmed on Windows. Roaming profiles and cloud-synced folders need care: see
+  [Cloud sync, roaming profiles and network drives](Backups-and-Recovery.md#cloud-sync-roaming-profiles-and-network-drives).
+- The Linux paths follow the XDG convention and were not checked by running Animatic on Linux.
+  `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are used only when they hold an absolute path. The
+  application folder is the lower-case name `animatic` (the organization name is ignored).
 - If the platform provides no home directory, startup fails with a message naming
   `--database` and `ANIMATIC_SETTINGS` as the fix.
-- The README only says "platform directory"; the table above is the precise rule.
+- `--database`/`-d` and `ANIMATIC_DB` replace the database path; `ANIMATIC_SETTINGS` replaces the
+  settings path. Precedence and details: [Running Animatic](Running-Animatic.md#precedence).
 
-Companion files you will meet:
+### Open the folders
+
+There is no menu item that opens the data folder; use your file manager.
+
+| Platform | Settings folder | Database folder |
+|---|---|---|
+| Windows (Explorer address bar or **Win+R**) | `%APPDATA%\AniDB\Animatic\config` | `%APPDATA%\AniDB\Animatic\data` |
+| Linux (terminal) | `xdg-open "${XDG_CONFIG_HOME:-$HOME/.config}/animatic"` | `xdg-open "${XDG_DATA_HOME:-$HOME/.local/share}/animatic"` |
+
+If the library looks empty or the settings look reset, you probably started Animatic with another
+database or settings file than usual (a shortcut with `--database`, or a leftover environment
+variable). See [Which files is Animatic using?](Troubleshooting.md#which-files-is-animatic-using).
+
+### What each file is
+
+| File | What it holds | Private? |
+|---|---|---|
+| `animatic.sqlite3` | Your whole library: anime, MyList cache, hashed file paths and hashes, the command queue, request limits and cooldown state. | Yes: it lists the files you own. |
+| `settings.json` | Options, managed folder rules, window and table layout, naming pattern. The AniDB password, API key and AVDump key only while the system keystore does not work (see below). | Yes. |
+
+### Companion files you will meet
 
 | File | When | Rule |
 |---|---|---|
@@ -35,8 +58,11 @@ Companion files you will meet:
 | `animatic.sqlite3.restore-staging`, `.animatic-copy-*.tmp` | Briefly during a restore or backup | Removed when the step ends; an interrupted one can leave them behind. Safe to delete with Animatic closed. See [leftover files](Backups-and-Recovery.md#leftover-files-and-what-is-safe-to-delete). |
 | `animatic.sqlite3.instance` | While Animatic runs | The single-instance lock, next to the database (the canonical database path plus `.instance`). Holds a loopback port and a random token; removed when the window closes. A file left by a crash is detected and replaced; it is safe to delete with Animatic closed. See [Shell entries and the lock file](#shell-entries-and-the-lock-file). |
 | `covers/` | When an anime detail window downloads a cover | Same folder as the database. One file per cover, see [Cover pictures](#cover-pictures). Not part of library backups. |
-| `tools/ffprobe/` (`ffprobe` or `ffprobe.exe`, `LICENSE-ffmpeg.txt`) | After **Install ffprobe…** in Options → Players and tools → Media properties | Inside the database's folder (`tools` next to `animatic.sqlite3`, so `--database` or `ANIMATIC_DB` moves it too). Only these two files are kept (about 130 MB). Delete the folder to remove the tool; not included in backups or the library file. See [External tools](External-Tools.md#media-properties-ffprobe). |
+| `tools/ffprobe/` (`ffprobe` or `ffprobe.exe`, `LICENSE-ffmpeg.txt`) | After **Install ffprobe…** in **Options → Players and tools** (Media properties) | Inside the database's folder (`tools` next to `animatic.sqlite3`, so `--database` or `ANIMATIC_DB` moves it too). Only these two files are kept; the download is 161 MB on Windows and 130 MB on Linux, and the kept program is smaller than the archive. Delete the folder to remove the tool; not included in backups or the library file. See [External tools](External-Tools.md#media-properties-ffprobe). |
 | `tools/.ffprobe-install-*/` | Briefly during that install | A private staging folder on the same drive, removed when the install ends; an interrupted one can be left behind and is safe to delete with Animatic closed. |
+| `LICENSE-vVERSION`, `NOTICES-vVERSION`, `.animatic-update.lock` | After an in-app update | Written beside the executable (not in the data folders) by the updater. See [Updating Animatic](Updating-Animatic.md). |
+
+### Credentials and privacy
 
 Credentials are not in these files while the system keystore works: the AniDB password, API key and
 AVDump key live in the **Windows Credential Manager** or the Linux **Secret Service** under the
@@ -47,10 +73,13 @@ the values stay in `settings.json` in plain text; the `.bak` copy holds the *pre
 (possibly credentials in that state that you have since removed). Keep the files out of version
 control, shared backups and support requests
 ([troubleshooting](Troubleshooting.md); [details](Settings-Files.md#credentials-and-the-system-keystore)).
-Do not run two Animatic processes on the same settings
-file; they share temporary file names and are unsupported. The window's size, position and
-maximized state and the table layouts are kept in `settings.json` (see
-[window and layout state](Settings-Reference.md#window-and-layout-state)).
+
+Do not run two Animatic processes on the same settings file; they share temporary file names and are
+unsupported. The window's size, position and maximized state and the table layouts are kept in
+`settings.json` (see [window and layout state](Settings-Reference.md#window-and-layout-state)).
+
+Animatic keeps no log file: the **Log** page lives in memory for the session and is gone when you
+quit.
 
 ## Cover pictures
 
@@ -63,7 +92,8 @@ file). The folder is created when the first cover is saved.
   [Animatic downloads a cover once](Library-Pages.md#cover), when you open that anime's detail
   window, and never downloads the same file again. A new picture name is a new file; Animatic never
   deletes the old one, so remove files you no longer want yourself (with Animatic closed or not;
-  a removed cover is fetched again the next time its anime is opened, if downloads are on).
+  a removed cover is fetched again the next time its anime is opened, if downloads are on; a failed or
+  removed cover is retried at most once an hour per anime).
 - A file is written whole or not at all. A hidden `.<name>.*` temporary file can remain after a
   crash and is safe to delete.
 - The covers are **not** in the database, so [library backups](Backups-and-Recovery.md) neither
@@ -71,9 +101,9 @@ file). The folder is created when the first cover is saved.
   them (or letting Animatic download them again).
 - Covers are for your own display only. AniDB does not license the artwork: do not share or
   re-host the folder.
-- You can put your own picture in the folder under the anime's picture name (shown in the
-  `picname` column of the `anime` table) and it is shown instead of being downloaded; JPEG, PNG,
-  WebP and GIF are read.
+- You can put your own picture in the folder under the file name AniDB uses for that anime's cover;
+  it is shown instead of being downloaded. JPEG, PNG, WebP and GIF are read. The name is the one
+  Animatic gives a downloaded cover, so open the anime once and look in the folder.
 - To stop downloads altogether, turn off **Download anime covers when a detail window opens** in
   Options ([setting `anidb.download_covers`](Settings-Reference.md#anidb-account)); covers already
   in the folder are still shown.
@@ -99,13 +129,32 @@ feature:
   program does not remove the entry; turn the option off first. If you did not, delete the key or
   file by hand.
 
+## Moving or resetting a profile
+
+- **Move to another computer.** Use **File → Back up library…** (a single, self-contained file) and
+  carry the backup file to the other computer, where
+  **File → Restore library…** loads it ([Backups and restore](Backups-and-Recovery.md#backups-and-restore)).
+  Copy `settings.json` too if you want your options. The credentials do **not** come along (they are
+  in the system keystore, keyed to the settings file's path): enter them again. Paths in the library
+  and in your managed-folder rules are stored as absolute paths, so they keep pointing at the old
+  locations until you edit the rules and re-scan. Copy the `covers` folder if you want the covers.
+- **Start over with a clean library.** Quit, move the database (and its `-wal`/`-shm` files) aside
+  rather than deleting it, and start Animatic: a new empty library is created. Settings are
+  separate; see [Resetting settings deliberately](Backups-and-Recovery.md#resetting-settings-deliberately).
+- **Keep two libraries.** Give each its own pair of `--database` and `ANIMATIC_SETTINGS` and start
+  Animatic with them every time. The two profiles then share nothing, including credentials.
+
 ## Portable and rehearsal setups
 
-Both overrides together give a self-contained profile anywhere. The examples below create a
-**brand-new, uniquely named** scratch folder in the system temporary directory and put a synthetic
-one-megabyte media file in it, so no real library, credentials or repository file is involved.
-They never contact AniDB unless *you* run the queue (or, with *Work offline* off, open an anime
-detail window whose cover is not on disk). A brand-new settings file has
+Both overrides together give a self-contained profile anywhere: put the database and the settings
+file in one folder (a USB stick, a project folder, a scratch directory) and point
+`ANIMATIC_DB` and `ANIMATIC_SETTINGS` at them. With both overridden, no default directory is
+consulted, so such a profile needs no home directory.
+
+The examples below create a **brand-new, uniquely named** scratch folder in the system temporary
+directory and put a synthetic one-megabyte media file in it, so no real library, credentials or
+repository file is involved. They never contact AniDB unless *you* run the queue (or, with *Work
+offline* off, open an anime detail window whose cover is not on disk). A brand-new settings file has
 `updates.auto_check` on, so the first launch of a scratch profile would contact GitHub for an
 update check; [keep a rehearsal local](#avoiding-the-startup-update-check) by pre-seeding the
 settings file as shown below.
@@ -113,6 +162,9 @@ settings file as shown below.
 Creation fails instead of reusing a folder that already exists (`mktemp -d` picks a fresh random
 name; the PowerShell example uses a new GUID and `New-Item` without `-Force`). Only that folder is
 ever deleted, and never a fixed, predictable path.
+
+With a release archive (no Rust toolchain), replace `cargo run -p animatic --` in the examples by the
+path of the executable (`.\animatic.exe` on Windows, `./animatic` on Linux).
 
 POSIX shell (Linux):
 
@@ -172,8 +224,9 @@ shown or start a new session, otherwise a later launch silently reuses the rehea
 profile.
 
 A rehearsal profile that you save credentials into also creates **system keystore** entries (see
-below). Deleting the folder does not remove them; delete them in the Windows Credential Manager or
-your Linux Secret Service front end, or save no credentials in a rehearsal profile.
+[Credentials and privacy](#credentials-and-privacy)). Deleting the folder does not remove them; delete
+them in the Windows Credential Manager or your Linux Secret Service front end, or save no
+credentials in a rehearsal profile.
 
 ### Avoiding the startup update check
 
@@ -189,4 +242,13 @@ document (omitted keys take their defaults, see
 
 Save it as the file named by `ANIMATIC_SETTINGS` (for the rehearsal above, `$ROOT/settings.json`
 or `$root\settings.json`). Either key alone prevents the check; **Help → Check for updates…**
-still works whenever you choose to use it.
+still works whenever you choose to use it. The same document works for your normal profile: save it
+as the default settings file (see [the table](#where-data-lives)) before the very first launch, and
+the first start neither contacts GitHub nor offers AniDB work.
+
+## See also
+
+- [Running Animatic](Running-Animatic.md): the flags and environment variables that move these files.
+- [Backups and recovery](Backups-and-Recovery.md): backups, restore, settings recovery and safe leftovers.
+- [Settings files](Settings-Files.md): how settings load and save, and the keystore.
+- [Troubleshooting](Troubleshooting.md#which-files-is-animatic-using): which files is Animatic using right now?

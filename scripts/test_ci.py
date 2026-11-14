@@ -111,6 +111,7 @@ class ClassifyTests(unittest.TestCase):
             "wiki/Home.md": NEITHER,
             "wiki/_Sidebar.md": NEITHER,
             "docs/img/screenshot.png": NEITHER,
+            "wiki/images/main-window.png": NEITHER,
             "notes/idea.md": NEITHER,
             # unknown docs payload fails closed
             "docs/tool.exe": BOTH,
@@ -581,6 +582,40 @@ class WikiDocsTests(unittest.TestCase):
         for name in ("_Sidebar.md", "-x.md", ".x.md", "a..md", "x.txt", "Ä.md"):
             self.assertFalse(ci.is_packaged_wiki_page(name), name)
 
+    def test_screenshots_live_in_wiki_images_and_must_be_shown(self):
+        tracked = [
+            *self.TRACKED,
+            "wiki/images/main.png",
+            "wiki/images/unused.png",
+            "wiki/images/Upper.png",
+            "wiki/images/a.jpg",
+            "wiki/images/sub/x.png",
+        ]
+        errors = self.run_docs_tracked(tracked, guide="# Guide\n\n![Main window](images/main.png)\n")
+        self.assertEqual(
+            sorted(e.split(":")[0] for e in errors),
+            [
+                "wiki/images/Upper.png",
+                "wiki/images/a.jpg",
+                "wiki/images/sub/x.png",
+                "wiki/images/unused.png",
+            ],
+            errors,
+        )
+        self.assertTrue(any("not used by any wiki page" in e for e in errors if "unused" in e))
+
+    def test_wiki_image_links_must_stay_in_wiki_images(self):
+        tracked = [*self.TRACKED, "wiki/images/main.png", "docs/shot.png"]
+        guide = "![ok](images/main.png)\n![out](../docs/shot.png)\n![gone](images/missing.png)\n"
+        errors = self.run_docs_tracked(tracked, guide=guide)
+        self.assertEqual([e.split(":")[1] for e in errors], ["2", "3"], errors)
+        self.assertIn("leaves the wiki pages", errors[0])
+        self.assertIn("wiki/images/missing.png", errors[1])
+
+    def run_docs_tracked(self, tracked: list[str], guide: str) -> list[str]:
+        documents = {"README.md": "# Readme\n", "wiki/Home.md": "# Home\n", "wiki/Guide.md": guide}
+        return check(documents, tracked)
+
 
 class WikiLinkTests(unittest.TestCase):
     PAGES = {"Home.md", "Guide.md", "_Sidebar.md"}
@@ -632,6 +667,16 @@ class WikiExportTests(unittest.TestCase):
         self.assertEqual((self.out / "Home.md").read_text(encoding="utf-8"), "[guide](Guide#start)\n")
         self.assertEqual((self.out / "_Sidebar.md").read_text(encoding="utf-8"), "- [Guide](Guide)\n")
 
+    def test_copies_screenshots_unchanged(self):
+        png = b"\x89PNG\r\n\x1a\n[guide](Guide.md)\x00"
+        (self.repo.root / "wiki/images").mkdir(parents=True)
+        (self.repo.root / "wiki/images/main.png").write_bytes(png)
+        self.repo.commit_all()
+        code, out, err = self.export()
+        self.assertEqual(code, 0, err)
+        self.assertIn("and 1 screenshot(s)", out)
+        self.assertEqual((self.out / "images/main.png").read_bytes(), png)
+
     def test_refuses_an_output_directory_with_content(self):
         self.out.mkdir(parents=True)
         (self.out / "Stale.md").write_text("old\n", encoding="utf-8")
@@ -673,6 +718,18 @@ class DocsCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("README.md:1:", err)
         self.assertIn("notes.txt", err)
+
+    def test_screenshots_must_be_png_files(self):
+        repo = Fixture(self)
+        repo.write("wiki/Home.md", "![ok](images/ok.png) ![fake](images/fake.png)\n")
+        (repo.root / "wiki/images").mkdir(parents=True)
+        (repo.root / "wiki/images/ok.png").write_bytes(ci.PNG_SIGNATURE + b"\x00\x00\x00\x0dIHDR")
+        (repo.root / "wiki/images/fake.png").write_bytes(b"GIF89a not a png")
+        repo.commit_all()
+        code, _, err = run_cli("--root", str(repo.root), "docs")
+        self.assertEqual(code, 1)
+        self.assertIn("wiki/images/fake.png:1: not a PNG file", err)
+        self.assertNotIn("ok.png", err)
 
     def test_failure_lists_every_problem(self):
         repo = Fixture(self)

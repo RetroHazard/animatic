@@ -1,58 +1,106 @@
-Back up and restore the database and settings, recover from settings problems, and clean up
-temporary and leftover files.
+Back up and restore the library, check and compact it, recover from settings problems, and
+clean up temporary and leftover files. Read it before an import, a large scan or an upgrade,
+and when Animatic reports a damaged database or unusable settings.
+
+| I want to… | Use | Section |
+|---|---|---|
+| Save a copy of my library | **File → Back up library…** | [Back up and restore](#back-up-and-restore-inside-animatic) |
+| Go back to a backup | **File → Restore library…** | [Back up and restore](#back-up-and-restore-inside-animatic) |
+| Find out whether the library is damaged | **Tools → Check library** | [Check and compact](#check-and-compact-the-library) |
+| Shrink the library file | **Tools → Compact library…** | [Check and compact](#check-and-compact-the-library) |
+| Back up or move the settings | copy `settings.json` by hand | [What to back up](#what-to-back-up-and-why-it-is-sensitive) |
+| Understand the **Settings recovered** window | | [The recovery window](#the-recovery-window) |
+| Delete leftover files safely | | [Leftover files](#leftover-files-and-what-is-safe-to-delete) |
 
 ## Backups and restore
 
 ### Back up and restore inside Animatic
 
-**File → Back up library…** asks for a file name (the suggestion is
-`animatic-backup-YYYYMMDD-HHMMSS.sqlite3`) and copies the library there with SQLite's online
-backup. The copy is a consistent snapshot even while background work, the command queue and the
-write-ahead log are busy, and it is one self-contained file (no `-wal`/`-shm`). It is written
-to a temporary file in the folder you chose and renamed into place, so a failed backup leaves
-no half-written file, and Animatic refuses to write over the library itself. The work runs
-in the background; the result appears in the status bar and the **Log** page. A backup holds
-the library and queue only: copy `settings.json` yourself (see
-[What to back up](#what-to-back-up-and-why-it-is-sensitive)) and keep the file as secret as the
-library.
+Do this before anything that rewrites a lot of data (see [A consistent copy by hand](#a-consistent-copy-by-hand)),
+and before you restore or change anything you are unsure about.
 
-**File → Restore library…** replaces the current library with a backup:
+**Back up the library:**
 
-1. Choose the file. Animatic checks it in the background without changing anything: it must be
-   a readable SQLite database that passes `PRAGMA integrity_check`, contain the Animatic tables,
-   and carry a database schema version that this version supports. A damaged file, a database
-   that is not an Animatic library, a library written by a newer Animatic and the current
-   library file itself are refused with a message, and your library stays exactly as it was.
-2. A confirmation window shows what the backup holds (anime, MyList entries, hashed files,
+1. Wait for running jobs to finish, or cancel them. Backup is unavailable while a job runs, an
+   import or the review of imported settings is open, or a restore is in progress.
+2. Choose **File → Back up library…**.
+3. In the file dialog, pick a folder outside synchronized folders and keep or change the
+   suggested name `animatic-backup-YYYYMMDD-HHMMSS.sqlite3`.
+4. Wait for the status bar. The Log shows `Library backed up to <path> (<size>)`.
+
+Animatic copies the library with SQLite's online backup. What you get:
+
+- A consistent snapshot, even while background work, the command queue and the write-ahead log are busy.
+- One self-contained file (no `-wal`/`-shm`).
+- No half-written file after a failure: the copy is written to a temporary file (`.animatic-copy-*.tmp`) in the folder you chose and renamed into place. A failure is reported as `Backup failed: <error>`.
+- No overwriting of the library itself: Animatic refuses to write over it.
+
+A backup holds the library and queue only. Copy `settings.json` yourself (see [What to back up](#what-to-back-up-and-why-it-is-sensitive)) and keep both files as secret as the library.
+
+**Restore a library backup:**
+
+1. Make sure no job, import or settings review is running and that the status bar does not
+   show `N commands not saved yet`. The menu item says why when it is unavailable.
+2. Choose **File → Restore library…** and pick the backup file. Animatic checks it in the
+   background without changing anything: it must be a readable SQLite database that passes
+   SQLite's integrity check, contain the Animatic tables, and carry a database schema version
+   that this version supports. A damaged file, a database that is not an Animatic library, a
+   library written by a newer Animatic and the current library file itself are refused with
+   `Restore refused, the current library was not changed: <reason>`; your library stays exactly
+   as it was.
+3. A confirmation window shows what the backup holds (anime, MyList entries, hashed files,
    queued commands, size). Choose **Restore** or **Cancel**.
-3. On **Restore** Animatic stops its background work, closes the database, keeps the current
+4. On **Restore** a **Restoring library** window says `Do not close Animatic until this is
+   finished.` Animatic stops its background work, closes the database, keeps the current
    library next to it as `<database>.before-restore-YYYYMMDD-HHMMSS` (a damaged library is
    copied byte for byte, with its `-wal` if that was not yet merged), replaces the database
-   file, restarts its background work and reloads every page. Settings are not touched.
+   file, restarts its background work and reloads every page. The Log says `Library restored;
+   the previous library was kept as <path>`. Settings are not touched.
+5. Tick **Work offline** and look at **Queue** before using the network. A restored queue can
+   contain commands you already ran on a later date.
 
-Restore is unavailable while a job is running, while an AOM import or the review of imported
-settings is open, and while queued commands are not saved yet (the menu item says why). A restored queue can contain commands
-you already ran on a later date: tick **Work offline** and look at **Queue** before using the
-network. If the files cannot be swapped, the message names the kept copy; if the library cannot
-be opened afterwards, a **Library unavailable** window asks you to quit, and the
+If the files cannot be swapped, `Library restore failed: <error>` names the kept copy; if the
+library cannot be opened afterwards, a **Library unavailable** window asks you to quit, and the
 `.before-restore-*` copy is the way back. Animatic never deletes those copies.
 
 ### Check and compact the library
 
-**Tools → Check library** runs `PRAGMA integrity_check` (which covers everything `quick_check`
-does) and `PRAGMA foreign_key_check` on a separate read-only connection in the background. A healthy
-library reports **Library check passed**. Otherwise the status bar says **Library check FAILED**,
-the **Log** page lists the first findings, and the message points to **File → Restore library…**
-(naming the latest backup made in this session, if any). Nothing is ever repaired
-automatically.
+**Tools → Check library** runs SQLite's integrity check and foreign-key check on a separate
+read-only connection in the background. It never changes the library. To run it:
 
-**Tools → Compact library…** asks for confirmation, then runs SQLite `VACUUM` in the background, which
-rewrites the library without its unused space and reports the size before and after. It changes
-no data, needs free disk space (see [Disk space](#disk-space-temporary-files-and-leftovers)) and
-blocks other background work until it finishes.
+1. Wait until no job is running (see the status bar) and no import or settings review is open.
+2. Choose **Tools → Check library**. The status bar shows `Checking library`.
+3. Read the result in the **Log** page. A healthy library logs `Library check passed: no
+   problems found`.
+
+The **Log** page after a healthy check:
+
+![The Log page after Check library: Checking library, then Library check passed: no problems found](images/log.png)
+
+Otherwise the **Log** first lists up to 20 findings (a `cannot open the database: …` or
+`cannot read the database: …` line can appear instead), then the status bar shows `Library check FAILED: N integrity problem(s), M foreign key
+violation(s)` (with ` (list truncated)` when there were more), and the message says `Nothing was
+repaired; restore a backup with File → Restore library…`, naming the latest backup made in this
+session, if any. Nothing is ever repaired automatically. If the check cannot run at all the
+message is `Library check failed: <error>`.
+
+**Tools → Compact library…** asks for confirmation and then runs SQLite `VACUUM` in the
+background. It rewrites the library without its unused space and reports the size before and
+after (`Library compacted: <before> → <after>` in the Log). It changes no data, needs free disk
+space (see [Disk space](#disk-space-temporary-files-and-leftovers)) and blocks other background
+work until it finishes. It helps most after you deleted a lot of data, for example with
+**Remove from list…** on many files; a library that only grew gains little.
+
+The confirmation window explains what compacting does:
+
+![The Compact library confirmation: rewrites the library file without its unused space, needs free disk space about the size of the library, blocks other background work until it is done, nothing is lost](images/compact-library.png)
+
+*Choose **Compact** to start or **Cancel** to leave the library alone.*
 
 Both are unavailable while a job is running, an import or settings review is open, or a restore
-is in progress.
+is in progress. The status bar then says why, for example `Library not backed up: Wait for the
+running task to finish, or cancel it, first.`. Failures read `Compacting failed: <error>`
+(usually a full disk).
 
 ### What to back up and why it is sensitive
 
@@ -119,7 +167,7 @@ recent changes or is inconsistent. Do not copy an open database "blind".
    option, but that is SQLite's own feature and the project has not recorded using it.
 
 Take a backup **before** anything that rewrites a lot of data: importing an AOM databank,
-running a scan with `auto_remove`, choosing **Clear queue**, upgrading to a build with schema
+running a scan with **Remove missing** on a rule, choosing **Clear queue…**, upgrading to a build with schema
 changes (upgrades are applied when the database is opened and no downgrade is provided or
 tested), or editing the settings JSON by hand.
 
@@ -180,8 +228,8 @@ recovery, [Settings files](Settings-Files.md#recovery-matrix).
 ### How loading and saving work
 
 - **Load** reads `settings.json`. If it is valid, that is the result. If it is missing or
-  invalid, it tries `settings.json.bak`. If that is valid, Animatic loads it, forces **offline
-  mode**, shows the **Settings recovered** window, and changes no file. If both are missing,
+  invalid, it tries `settings.json.bak`. If that is valid, Animatic loads it, forces **Work
+  offline**, shows the **Settings recovered** window, and changes no file. If both are missing,
   defaults are used. If the primary cannot be read (permissions, a folder where the file
   should be, an I/O error), Animatic stops with an error naming the file and **does not fall
   back to the backup**. If the primary is invalid and the backup is invalid or unreadable,
@@ -196,10 +244,11 @@ recovery, [Settings files](Settings-Files.md#recovery-matrix).
   in place. A failure while rotating the backup is ignored, so the primary can be replaced
   while `settings.json.bak` is stale or absent.
 - **When saves happen:** **Save options**, applying reviewed AOM settings, **Hide** on the
-  Overview's **Getting started** card, and closing the application. Edits in **Options** take effect in memory at once and
+  Overview's **Getting started** card, clicking the **Online/Offline** indicator in the status
+  bar, the **Go online** button on the Overview, and closing the application. Edits in **Options** take effect in memory at once and
   are written when the application exits even if you never click **Save options** (unless
   the recovery guard holds), so a mistaken edit does not need a click to become permanent.
-  A failure on exit is silent.
+  A failure of the exit save is silent; the others report `Could not save settings: …`.
 
 Consequences of the one-generation backup: the backup is the state before your last save, so
 recovered settings can be older than you expect, and a wrong but syntactically valid edit
@@ -209,7 +258,7 @@ manual edits.
 ### Error messages
 
 Messages report only the failure class and a position, never file contents (so a bad
-credential line is not echoed). The classes are `invalid JSON syntax`, `truncated JSON`,
+credential line is not echoed). At startup they follow the prefix `settings: `. The classes are `invalid JSON syntax`, `truncated JSON`,
 `unexpected field type or value` and `read error`, each with `at line N column M`.
 
 | Message | Meaning and action |
@@ -231,7 +280,8 @@ Do the following:
 1. Dismiss it with **OK** and look at **Tools → Options…**. The values come from the backup
    and can be one save behind.
 2. Decide whether to keep them. **Closing Animatic does not write settings** while the
-   recovery guard holds, and **Hide** on **Getting started** does not write either. Your changes
+   recovery guard holds, and neither do **Hide** on **Getting started**, the **Online/Offline**
+   indicator or **Go online**. Your changes
    in this session exist only in memory.
 3. To adopt the recovered settings, choose **Save options**. That writes them (including
    `offline: true`) over the unreadable primary. The invalid old primary does not replace the
@@ -284,8 +334,8 @@ first thing to do is open **Tools → Options…**, tick **Work offline**, and s
 Close Animatic first, confirm no import is running, and keep anything you are unsure about
 until you have a verified backup.
 
-- `animatic-legacy-import-*` folders in the system temporary directory (UI import and the
-  `import-legacy` example): each holds **decrypted plaintext SQLite copies of your private
+- `animatic-legacy-import-*` folders in the system temporary directory (left by an AOM
+  databank import): each holds **decrypted plaintext SQLite copies of your private
   databank collections** (`<name>.sqlite`, where `<name>` is a collection such as `animes` or
   `mylist`) and a marker file `.animatic-legacy-import`. The importer removes the folder when it
   ends, whether it succeeded, failed or was cancelled. A crash, a kill or a power loss can leave
@@ -293,8 +343,8 @@ until you have a verified backup.
   marker that no running import uses) in **Leftover import files** and removes them only if you
   choose **Remove**; it never touches anything else in the temporary directory. If you prefer to
   delete one yourself, close Animatic, make sure no import is running, and delete only a folder
-  that has this name prefix and contains the marker file. A folder named `import-temp`, beside the
-  database or `<output>.import-temp` next to an example output, comes from an older version: it is
+  that has this name prefix and contains the marker file. A folder named `import-temp` beside the
+  database comes from an older version: it is
   not offered, may hold files that are not Animatic's, so **look inside first**, delete only the
   `<collection>.sqlite` files you recognize, and remove the folder once it is empty. The original
   databank is never modified.
@@ -319,3 +369,10 @@ until you have a verified backup.
   history, file paths and queue).
 - `-wal` and `-shm` beside the database: **not** leftovers. See [A consistent
   copy](#a-consistent-copy-by-hand).
+
+## See also
+
+- [Troubleshooting](Troubleshooting.md) for the symptom index and the index of messages.
+- [Data locations](Data-Locations.md) for where the database and settings live.
+- [Settings files](Settings-Files.md#recovery-matrix) for the full recovery matrix.
+- [FAQ](FAQ.md#how-do-i-move-my-library-to-another-computer) for moving to another computer.

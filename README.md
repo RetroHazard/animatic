@@ -119,10 +119,12 @@ can run the updater but should normally be updated through its own workflow; see
 The user guide is the [Animatic wiki](https://github.com/RetroHazard/animatic/wiki), published
 from [`wiki/`](wiki) in this repository:
 
+- [Quick start](https://github.com/RetroHazard/animatic/wiki/Quick-Start): a guided first session,
+  from the first launch to a hashed, identified and renamed library, with screenshots.
 - [Getting started](https://github.com/RetroHazard/animatic/wiki#get-started): installation,
-  command line, data locations and the first launch.
-- [Using Animatic](https://github.com/RetroHazard/animatic/wiki#use-animatic): pages, hashing,
-  scans, MyList, renaming, exports, updating and migrating from AOM.
+  command line, data locations, the first launch and migrating from AOM.
+- [Tasks](https://github.com/RetroHazard/animatic/wiki#tasks): hashing, scans, MyList,
+  synchronization, renaming, exports, external tools and updating.
 - [Settings reference](https://github.com/RetroHazard/animatic/wiki/Settings-Reference): defaults, JSON, UI exposure and
   which compatibility fields actually affect runtime behavior.
 - [Troubleshooting and recovery](https://github.com/RetroHazard/animatic/wiki/Troubleshooting): backups, startup failures,
