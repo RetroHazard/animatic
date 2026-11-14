@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crate::style;
 use crate::table::{
     SortKey, data_table, row_height, sort_anime, sort_genres, sort_groups, sort_key, sort_local,
-    sort_mylist,
 };
 use crate::worker::{
     Event, Job, RenameItem, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
@@ -21,7 +20,7 @@ use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
 use animatic_core::rename::{presets, reference};
 use animatic_core::secrets::{CredentialStorage, Credentials};
-use animatic_core::settings::{MYLIST_STATES, RowStyle, Settings, StatFormat, Theme};
+use animatic_core::settings::{ColorScheme, MYLIST_STATES, RowStyle, Settings, StatFormat, Theme};
 use animatic_core::ui_state::{
     self, anime_slot, local_file_slot, mylist_slot, row_colors, window_to_save,
 };
@@ -29,6 +28,7 @@ use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedU
 use crossbeam_channel::{Receiver, TryRecvError};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 
+mod anidb_markup;
 mod auto_rename;
 mod covers;
 mod dialog;
@@ -38,7 +38,9 @@ mod mylist_editor;
 mod mylist_export;
 mod player_actions;
 mod refresh;
+mod remove_files;
 mod shell_menu;
+mod status_colors;
 mod tray_ui;
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
@@ -141,9 +143,9 @@ impl<K: PartialEq + Clone> IndexCache<K> {
 
 #[derive(Default)]
 struct TableViews {
-    anime: IndexCache<(u64, String, SortKey)>,
+    anime: IndexCache<(u64, String, BTreeSet<i64>, SortKey)>,
     search: IndexCache<(u64, String, String, i64, bool, bool, SortKey)>,
-    mylist: IndexCache<(u64, String, SortKey)>,
+    mylist: crate::mylist_tree::MylistView,
     local: IndexCache<(u64, String, SortKey)>,
     groups: IndexCache<(u64, String, SortKey)>,
     genres: IndexCache<(u64, String, SortKey)>,
@@ -201,12 +203,14 @@ fn recovery_notice(settings_path: &Path) -> String {
 }
 
 /// Release archives carry no signature; this is shown wherever an install can be started.
-const UNSIGNED_WARNING: &str = "Release archives are not code-signed. Animatic compares the \
+const UNSIGNED_WARNING: &str = "Releases are not code-signed. The checksum only catches a \
+     damaged download.";
+const UNSIGNED_DETAIL: &str = "Release archives are not code-signed. Animatic compares the \
      downloaded archive with the SHA-256 checksum published in the same GitHub release. That \
      detects a damaged or mismatched download, but it does not prove who published the release. \
      Install only if you trust the release on GitHub.";
-const UPDATE_PRIVACY: &str = "Checking contacts github.com. GitHub sees your IP address and \
-     the Animatic version; no AniDB credentials and no library data are sent.";
+const UPDATE_PRIVACY: &str = "Contacts github.com only. GitHub sees your IP address and the \
+     Animatic version. No AniDB credentials and no library data are sent.";
 
 /// Where the update flow stands. Only the check can start by itself; downloading and \
 /// installing each need an explicit action, and installing a confirmation as well.
@@ -402,6 +406,38 @@ struct UpdateState {
     open: bool,
 }
 
+impl UpdateStage {
+    /// Why the release channel cannot change now: a check or download in flight would deliver a
+    /// result of the old channel that nothing could tell apart afterwards, and an install has
+    /// already replaced the program.
+    fn channel_change_blocker(&self) -> Option<&'static str> {
+        match self {
+            UpdateStage::Idle
+            | UpdateStage::UpToDate
+            | UpdateStage::Available
+            | UpdateStage::Ready { .. } => None,
+            UpdateStage::Checking { .. } | UpdateStage::Downloading { .. } => Some(
+                "An update check or download is running; wait for it or cancel it in the \
+                 Software updates window first",
+            ),
+            UpdateStage::Installing | UpdateStage::Installed | UpdateStage::InstallFailed => {
+                Some("An update has been installed or attempted; restart Animatic first")
+            }
+        }
+    }
+
+    /// The stage after the channel changed: any result of the old channel is gone.
+    fn forget_other_channel_result(&mut self) {
+        debug_assert!(self.channel_change_blocker().is_none());
+        if matches!(
+            self,
+            UpdateStage::UpToDate | UpdateStage::Available | UpdateStage::Ready { .. }
+        ) {
+            *self = UpdateStage::Idle;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum UpdateAction {
     Check,
@@ -469,24 +505,6 @@ fn pick_aom_databank_folder() -> Option<PathBuf> {
         .pick_folder()
 }
 
-/// The license document shipped next to the executable for this exact version
-/// (`LICENSE-v2026.11.0`, left by an update) if there is one, else the canonical file of the
-/// manual package.
-fn bundled_document(dir: &Path, stem: &str, extension: &str, version: &str) -> Option<PathBuf> {
-    let suffix = if extension.is_empty() {
-        String::new()
-    } else {
-        format!(".{extension}")
-    };
-    [
-        format!("{stem}-v{version}{suffix}"),
-        format!("{stem}{suffix}"),
-    ]
-    .into_iter()
-    .map(|name| dir.join(name))
-    .find(|path| path.is_file())
-}
-
 /// A planned rename of one file, shown for confirmation.
 struct RenamePreview {
     id: i64,
@@ -542,6 +560,9 @@ pub struct AnimaticApp {
     /// Zoom factor the last tracked window geometry was measured with.
     window_zoom: f32,
     detail: Option<DetailCache>,
+    /// Bumped whenever the detail window shows a different anime, so its scroll area is a new
+    /// one that starts at the top (from the list, a relation link or a genre round trip alike).
+    detail_view: u64,
     covers: covers::CoverUi,
     mylist_overlay: HashMap<i64, MylistOverlay>,
     mylist_ui: mylist_editor::MylistUi,
@@ -563,10 +584,15 @@ pub struct AnimaticApp {
     page: Page,
     query: String,
     selected_aid: Option<i64>,
+    /// The Anime page lists only anime that have every one of these genres (picked from the
+    /// Genres page, a genre in the anime detail window, or the page's own genre picker).
+    genre_filter: BTreeSet<i64>,
     settings_open: bool,
     about_open: bool,
     /// The license text window opened from About.
     license_open: bool,
+    /// The third-party notices window opened from About.
+    notices_open: bool,
     /// Ctrl+F asked for the page's search field to take the keyboard focus.
     focus_search: bool,
     /// The status line holds an error that stays until the next message replaces it.
@@ -576,6 +602,8 @@ pub struct AnimaticApp {
     selected_local: Option<i64>,
     rename_preview: Option<RenamePreview>,
     batch_rename: Option<BatchRename>,
+    /// Hashed files selected for **Remove from list**, while the confirmation is open.
+    remove_files_confirm: Option<Vec<i64>>,
     /// Automatic rename (roadmap M6.3): when a pass is due and the preview before a folder is
     /// turned on.
     auto_rename: auto_rename::AutoRenameState,
@@ -678,6 +706,7 @@ impl AnimaticApp {
             views: TableViews::default(),
             window_zoom: 1.0,
             detail: None,
+            detail_view: 0,
             covers: covers::CoverUi::default(),
             mylist_overlay: HashMap::new(),
             mylist_ui: mylist_editor::MylistUi::default(),
@@ -692,9 +721,11 @@ impl AnimaticApp {
             page: Page::Dashboard,
             query: String::new(),
             selected_aid: None,
+            genre_filter: BTreeSet::new(),
             selected_local: None,
             rename_preview: None,
             batch_rename: None,
+            remove_files_confirm: None,
             auto_rename: auto_rename::AutoRenameState::default(),
             rename_requests: 0,
             pattern_editor: PatternEditor::default(),
@@ -711,6 +742,7 @@ impl AnimaticApp {
             settings_open: false,
             about_open: false,
             license_open: false,
+            notices_open: false,
             focus_search: false,
             status_error: false,
             options_page: OptionsPage::Account,
@@ -1104,7 +1136,8 @@ impl AnimaticApp {
         }
         if self.update.stage.begin_check(manual) {
             self.update.error = None;
-            self.updater.submit(UpdateJob::Check);
+            self.updater
+                .submit(UpdateJob::Check(self.settings.updates.channel));
         }
     }
 
@@ -1359,6 +1392,9 @@ impl AnimaticApp {
                         self.full_update = refresh::FullUpdateStage::Closed;
                     }
                     self.error(e)
+                }
+                Event::LocalFilesRemoved { ids, removed } => {
+                    self.local_files_removed(&ids, removed)
                 }
                 Event::HashQueueChanged => self.request_library_refresh(),
                 Event::Finished => {
@@ -2146,7 +2182,7 @@ impl AnimaticApp {
                     env!("CARGO_PKG_AUTHORS").replace(':', ", ")
                 ));
                 ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
+                ui.horizontal(|ui| {
                     for (label, url) in [
                         ("Source code", repository.to_string()),
                         ("Documentation", format!("{repository}/wiki")),
@@ -2164,27 +2200,14 @@ impl AnimaticApp {
                     if ui.button("View license").clicked() {
                         self.license_open = true;
                     }
-                    let notices = self
-                        .executable_path()
-                        .and_then(Path::parent)
-                        .and_then(|dir| {
-                            bundled_document(
-                                dir,
-                                "THIRD-PARTY-NOTICES",
-                                "html",
-                                env!("CARGO_PKG_VERSION"),
-                            )
-                        });
                     if ui
-                        .add_enabled(notices.is_some(), egui::Button::new("Third-party notices"))
-                        .on_hover_text("Opens in your web browser")
-                        .on_disabled_hover_text(
-                            "No THIRD-PARTY-NOTICES.html file found next to the program",
+                        .button("Third-party notices")
+                        .on_hover_text(
+                            "Licenses of the open-source components built into this version",
                         )
                         .clicked()
-                        && let Some(path) = notices
                     {
-                        let _ = open::that(path);
+                        self.notices_open = true;
                     }
                 });
             });
@@ -2200,10 +2223,25 @@ impl AnimaticApp {
         if !self.license_open {
             return;
         }
+        // Wide enough for the longest line, so the license does not wrap at its default size;
+        // narrower screens and a resized window still wrap.
+        let style = ctx.global_style();
+        let font = egui::TextStyle::Monospace.resolve(&style);
+        let text_width = ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(LICENSE.to_owned(), font, Color32::PLACEHOLDER)
+                .size()
+                .x
+        });
+        // `default_width` is the outer width: add the window frame and the scroll bar.
+        let width = text_width
+            + egui::Frame::window(&style).total_margin().sum().x
+            + style.spacing.scroll.allocated_width()
+            + 8.0;
         let mut open = true;
         let shown = dialog::window(ctx, "Animatic license")
             .open(&mut open)
-            .default_width(560.0)
+            .default_width(width.min(ctx.content_rect().width() * 0.9))
             .max_height(ctx.content_rect().height() * 0.8)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -2212,6 +2250,54 @@ impl AnimaticApp {
             });
         if !open || dialog::escape_closes(ctx, shown.as_ref()) {
             self.license_open = false;
+        }
+    }
+
+    /// The third-party notices (the root `NOTICES` file) built into this version. The text is
+    /// long, so only the visible lines are laid out, without wrapping.
+    fn notices_window(&mut self, ctx: &egui::Context) {
+        static LINES: std::sync::LazyLock<Vec<&'static str>> =
+            std::sync::LazyLock::new(|| include_str!("../../../NOTICES").lines().collect());
+        if !self.notices_open {
+            return;
+        }
+        // Room for the notices' 100-column prose; longer lines scroll sideways.
+        let style = ctx.global_style();
+        let font = egui::TextStyle::Monospace.resolve(&style);
+        let text_width = ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap("M".repeat(100), font, Color32::PLACEHOLDER)
+                .size()
+                .x
+        });
+        let width = text_width
+            + egui::Frame::window(&style).total_margin().sum().x
+            + style.spacing.scroll.allocated_width()
+            + 8.0;
+        let mut open = true;
+        let shown = dialog::window(ctx, "Third-party notices")
+            .open(&mut open)
+            .default_width(width.min(ctx.content_rect().width() * 0.9))
+            .default_height(ctx.content_rect().height() * 0.7)
+            .show(ctx, |ui| {
+                let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                egui::ScrollArea::both().auto_shrink(false).show_rows(
+                    ui,
+                    row_height,
+                    LINES.len(),
+                    |ui, rows| {
+                        for line in &LINES[rows] {
+                            ui.add(
+                                egui::Label::new(RichText::new(*line).monospace())
+                                    .extend()
+                                    .selectable(true),
+                            );
+                        }
+                    },
+                );
+            });
+        if !open || dialog::escape_closes(ctx, shown.as_ref()) {
+            self.notices_open = false;
         }
     }
 
@@ -2740,30 +2826,30 @@ impl AnimaticApp {
                             // Only the queue: pending work is the one state the other pages hide.
                             _ => None,
                         };
-                        if nav_item(ui, self.page == page, page.label(), badge).clicked() {
+                        if nav_item(ui, self.page == page, None, page.label(), badge).clicked() {
                             self.page = page;
                         }
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} · {}",
-                            style::plural(self.projection.anime.len(), "anime", "anime"),
-                            style::plural(
-                                self.projection.mylist.len(),
-                                "MyList entry",
-                                "MyList entries"
-                            ),
-                        ))
-                        .small()
-                        .weak(),
-                    );
-                    if nav_item(ui, self.settings_open, "⚙ Options", None)
+                    if nav_item(ui, self.settings_open, Some('⚙'), "Options", None)
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
                         .clicked()
                     {
                         self.settings_open = !self.settings_open;
+                    }
+                    // One count per row so neither wraps in the narrow sidebar. The layout
+                    // grows upwards: Options is the bottom row, the counts sit above it with the
+                    // MyList line added first so it ends up under the anime line.
+                    for text in [
+                        style::plural(
+                            self.projection.mylist.len(),
+                            "MyList entry",
+                            "MyList entries",
+                        ),
+                        style::plural(self.projection.anime.len(), "anime", "anime"),
+                    ] {
+                        ui.label(RichText::new(text).small().weak());
                     }
                 });
             });
@@ -2816,8 +2902,10 @@ impl AnimaticApp {
                     if ui
                         .add_enabled(
                             !self.import_pending,
-                            egui::Button::new(RichText::new("Add files…").color(Color32::WHITE))
-                                .fill(accent),
+                            egui::Button::new(
+                                RichText::new("Add files…").color(style::on_accent(ui.visuals())),
+                            )
+                            .fill(accent),
                         )
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::ADD_FILES))
                         .clicked()
@@ -3084,10 +3172,90 @@ impl AnimaticApp {
         ui.add_space(6.0);
     }
 
+    /// Show the Anime page filtered by genre: `genre` alone, or added to the current genres when
+    /// `add` (Ctrl or Shift held while clicking). The shared search text is cleared so it does
+    /// not hide anime of the genre, and an open detail window is closed so the list shows.
+    fn browse_genre(&mut self, genre: i64, add: bool) {
+        if !add {
+            self.genre_filter.clear();
+        }
+        self.genre_filter.insert(genre);
+        self.query.clear();
+        self.selected_aid = None;
+        self.page = Page::Anime;
+    }
+
+    /// The genre picker above the Anime table: the selected genres (each removable) and a list
+    /// to add another one.
+    fn genre_filter_bar(&mut self, ui: &mut egui::Ui) {
+        if self.projection.genres.is_empty() && self.genre_filter.is_empty() {
+            return;
+        }
+        let (mut remove, mut add, mut clear) = (None, None, false);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Genres:");
+            for &id in &self.genre_filter {
+                let name = self
+                    .projection
+                    .genres
+                    .iter()
+                    .find(|g| g.0 == id)
+                    .map_or_else(|| format!("genre {id}"), |g| g.1.clone());
+                if ui
+                    .small_button(format!("{name} ✕"))
+                    .on_hover_text("Remove this genre from the filter")
+                    .clicked()
+                {
+                    remove = Some(id);
+                }
+            }
+            let prompt = if self.genre_filter.is_empty() {
+                "Filter by genre…"
+            } else {
+                "Add genre…"
+            };
+            egui::ComboBox::from_id_salt("anime-genre-add")
+                .selected_text(prompt)
+                .height(400.0)
+                .show_ui(ui, |ui| {
+                    for (id, name, count) in &self.projection.genres {
+                        if !self.genre_filter.contains(id)
+                            && ui
+                                .selectable_label(false, format!("{name} ({count})"))
+                                .clicked()
+                        {
+                            add = Some(*id);
+                        }
+                    }
+                });
+            if self.genre_filter.len() > 1 {
+                ui.label(RichText::new("anime with all of these genres").weak());
+                if ui.small_button("Clear").clicked() {
+                    clear = true;
+                }
+            }
+        });
+        if let Some(id) = remove {
+            self.genre_filter.remove(&id);
+        }
+        if let Some(id) = add {
+            self.genre_filter.insert(id);
+        }
+        if clear {
+            self.genre_filter.clear();
+        }
+    }
+
     fn anime_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, Some("every anime stored locally"), true);
+        self.genre_filter_bar(ui);
         let sort = sort_key(&self.settings.ui.columns, "anime_table");
-        let key = (self.loader.version, self.query.to_ascii_lowercase(), sort);
+        let key = (
+            self.loader.version,
+            self.query.to_ascii_lowercase(),
+            self.genre_filter.clone(),
+            sort,
+        );
         {
             let Self {
                 projection,
@@ -3097,8 +3265,8 @@ impl AnimaticApp {
                 ..
             } = self;
             views.anime.refresh(&key, || {
-                let mut rows = filter_anime(projection, &key.1);
-                sort_anime(projection, &mut rows, &key.2);
+                let mut rows = filter_anime(projection, &key.1, &key.2);
+                sort_anime(projection, &mut rows, &key.3);
                 rows
             });
             let rows = &views.anime.rows;
@@ -3303,15 +3471,23 @@ impl AnimaticApp {
     }
 
     fn mylist_page(&mut self, ui: &mut egui::Ui) {
+        use crate::mylist_tree::{RowRef, Summary, Watched};
+        use animatic_anidb::commands::MylistEdit;
         self.page_header(ui, None, true);
-        self.mylist_toolbar(ui);
-        let key = (
+        // Grouped by anime, entries in episode order; rebuilt only when the projection, the
+        // search or the sort changed (the projection version keeps stale snapshots out).
+        self.views.mylist.refresh(
+            &self.projection,
             self.loader.version,
-            self.query.to_ascii_lowercase(),
-            sort_key(&self.settings.ui.columns, "mylist_table"),
+            &self.query.to_ascii_lowercase(),
+            &sort_key(&self.settings.ui.columns, "mylist_table"),
         );
+        self.mylist_toolbar(ui);
         // (lid, edit, resulting state, resulting watched flag)
-        let mut edits: Vec<(i64, animatic_anidb::commands::MylistEdit, i64, bool)> = Vec::new();
+        let mut edits: Vec<(i64, MylistEdit, i64, bool)> = Vec::new();
+        // Edits of an anime row: (aid, edit applied to every entry of the anime).
+        let mut anime_edits: Vec<(i64, MylistEdit)> = Vec::new();
+        let mut toggles: Vec<i64> = Vec::new();
         {
             let Self {
                 projection,
@@ -3322,12 +3498,8 @@ impl AnimaticApp {
                 settings,
                 ..
             } = self;
-            views.mylist.refresh(&key, || {
-                let mut rows = filter_mylist(projection, &key.1);
-                sort_mylist(projection, &mut rows, &key.2);
-                rows
-            });
-            let rows = &views.mylist.rows;
+            let view = &views.mylist;
+            let rows = view.rows();
             let row_height = row_height(ui);
             let (colored, overrides) = (settings.ui.tint_mode(), &settings.ui.colors);
             data_table(
@@ -3345,89 +3517,225 @@ impl AnimaticApp {
                 &mut settings.ui.columns,
             )
             .body(|body| {
-                body.rows(row_height, rows.len(), |mut row| {
-                    let i = rows[row.index()];
-                    let item = &projection.mylist[i];
-                    let lid = item.entry.lid;
-                    // Show a toggle the user just saved even before a projection includes it.
-                    let (shown_state, shown_viewed) = mylist_overlay
-                        .get(&lid)
-                        .map_or((item.entry.state, item.entry.viewed), |o| {
-                            (o.state, o.viewed)
+                body.rows(row_height, rows.len(), |mut row| match rows[row.index()] {
+                    RowRef::Anime(n) => {
+                        let group = view.group(n);
+                        let aid = group.aid;
+                        // The aggregate includes edits the user just saved even before a
+                        // projection reflects them.
+                        let summary = Summary::of(projection, &group.members, |m| {
+                            mylist_overlay
+                                .get(&m.entry.lid)
+                                .map_or((m.entry.state, m.entry.viewed), |o| (o.state, o.viewed))
                         });
-                    let mut state = shown_state;
-                    let mut watched = shown_viewed;
-                    row.tint(row_colors(colored, overrides, mylist_slot(shown_viewed)));
-                    row.col(|ui| {
-                        if ui.link(projection.mylist_title(i)).clicked() {
-                            *selected_aid = Some(item.entry.aid);
-                        }
-                    });
-                    row.col(|ui| {
-                        let epno = item
-                            .episode
-                            .as_ref()
-                            .map_or_else(|| "—".to_string(), |e| e.epno_str());
-                        if ui
-                            .selectable_label(mylist_ui.selected_lid == Some(lid), epno)
-                            .clicked()
-                        {
-                            mylist_ui.selected_lid = Some(lid);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            item.file
-                                .as_ref()
-                                .map(|f| f.group_label())
-                                .unwrap_or_default(),
-                        );
-                    });
-                    row.col(|ui| {
-                        egui::ComboBox::from_id_salt(("state", lid))
-                            .selected_text(mylist_state_name(state))
-                            .show_ui(ui, |ui| {
-                                for (id, name) in MYLIST_STATES.iter().enumerate() {
-                                    ui.selectable_value(&mut state, id as i64, *name);
-                                }
-                            });
-                    });
-                    row.col(|ui| {
-                        ui.checkbox(&mut watched, "");
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            item.file
-                                .as_ref()
-                                .map(|f| format::size_short(f.size))
-                                .unwrap_or_default(),
-                        );
-                    });
-                    row.col(|ui| {
-                        if let Some(p) = projection.mylist_pending.get(&lid) {
-                            let response = ui.label(p.label());
-                            if let Some(error) = &p.error {
-                                response.on_hover_text(error);
-                            }
-                        }
-                    });
-                    if state != shown_state || watched != shown_viewed {
-                        edits.push((
-                            lid,
-                            animatic_anidb::commands::MylistEdit {
-                                state: (state != shown_state).then_some(state),
-                                viewed: (watched != shown_viewed).then_some(watched),
-                                viewdate: None,
-                                storage: None,
-                                source: None,
-                                other: None,
-                            },
-                            state,
-                            watched,
+                        let watched = summary.watched_state();
+                        row.tint(row_colors(
+                            colored,
+                            overrides,
+                            mylist_slot(watched == Watched::All),
                         ));
+                        row.col(|ui| {
+                            let open = view.is_expanded(aid);
+                            let side = ui.spacing().icon_width;
+                            let (_, arrow) = ui
+                                .allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+                            egui::collapsing_header::paint_default_icon(
+                                ui,
+                                if open { 1.0 } else { 0.0 },
+                                &arrow,
+                            );
+                            if arrow
+                                .on_hover_text(if open {
+                                    "Hide the entries of this anime"
+                                } else {
+                                    "Show the entries of this anime"
+                                })
+                                .clicked()
+                            {
+                                toggles.push(aid);
+                            }
+                            if ui.link(projection.mylist_title(group.members[0])).clicked() {
+                                *selected_aid = Some(aid);
+                            }
+                        });
+                        row.col(|ui| {
+                            if ui
+                                .selectable_label(
+                                    mylist_ui.selected_anime == Some(aid),
+                                    summary.episode_text(),
+                                )
+                                .on_hover_text(format!(
+                                    "{}. Click to select all of them: Edit…, Remove from \
+                                     MyList… and Refresh then act on every entry of this anime",
+                                    summary.episode_detail()
+                                ))
+                                .clicked()
+                            {
+                                mylist_ui.select_anime(aid);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(summary.group.text());
+                        });
+                        row.col(|ui| {
+                            let mut picked = None;
+                            let shown = summary.state.map_or_else(
+                                || std::borrow::Cow::Borrowed("Mixed"),
+                                mylist_state_name,
+                            );
+                            egui::ComboBox::from_id_salt(("anime-state", aid))
+                                .selected_text(shown)
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in MYLIST_STATES.iter().enumerate() {
+                                        let id = id as i64;
+                                        if ui
+                                            .selectable_label(summary.state == Some(id), *name)
+                                            .clicked()
+                                        {
+                                            picked = Some(id);
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text("Sets the state of every entry of this anime");
+                            if let Some(state) = picked {
+                                anime_edits.push((
+                                    aid,
+                                    MylistEdit {
+                                        state: Some(state),
+                                        ..MylistEdit::default()
+                                    },
+                                ));
+                            }
+                        });
+                        row.col(|ui| {
+                            let mut checked = watched == Watched::All;
+                            if ui
+                                .add(
+                                    egui::Checkbox::new(&mut checked, "")
+                                        .indeterminate(watched == Watched::Partly),
+                                )
+                                .on_hover_text(
+                                    "Marks every entry of this anime watched, or none of them",
+                                )
+                                .changed()
+                            {
+                                anime_edits.push((
+                                    aid,
+                                    MylistEdit {
+                                        viewed: Some(checked),
+                                        ..MylistEdit::default()
+                                    },
+                                ));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(format::size_short(summary.size));
+                        });
+                        row.col(|ui| {
+                            ui.label(summary.queue_text());
+                        });
+                    }
+                    RowRef::Entry { item: i, .. } => {
+                        let item = &projection.mylist[i];
+                        let lid = item.entry.lid;
+                        // Show a toggle the user just saved even before a projection includes it.
+                        let (shown_state, shown_viewed) = mylist_overlay
+                            .get(&lid)
+                            .map_or((item.entry.state, item.entry.viewed), |o| {
+                                (o.state, o.viewed)
+                            });
+                        let mut state = shown_state;
+                        let mut watched = shown_viewed;
+                        row.tint(row_colors(colored, overrides, mylist_slot(shown_viewed)));
+                        row.col(|ui| {
+                            // Indented under the arrow of its anime row.
+                            ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x);
+                            if let Some(episode) =
+                                item.episode.as_ref().filter(|e| !e.name.is_empty())
+                            {
+                                ui.label(RichText::new(&episode.name).weak());
+                            }
+                        });
+                        row.col(|ui| {
+                            let epno = item
+                                .episode
+                                .as_ref()
+                                .map_or_else(|| "—".to_string(), |e| e.epno_str());
+                            let chosen = mylist_ui.selected_lid == Some(lid)
+                                || mylist_ui.selected_anime == Some(item.entry.aid);
+                            if ui.selectable_label(chosen, epno).clicked() {
+                                mylist_ui.select_entry(lid);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                item.file
+                                    .as_ref()
+                                    .map(|f| f.group_label())
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        row.col(|ui| {
+                            egui::ComboBox::from_id_salt(("state", lid))
+                                .selected_text(mylist_state_name(state))
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in MYLIST_STATES.iter().enumerate() {
+                                        ui.selectable_value(&mut state, id as i64, *name);
+                                    }
+                                });
+                        });
+                        row.col(|ui| {
+                            ui.checkbox(&mut watched, "");
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                item.file
+                                    .as_ref()
+                                    .map(|f| format::size_short(f.size))
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        row.col(|ui| {
+                            if let Some(p) = projection.mylist_pending.get(&lid) {
+                                let response = ui.label(p.label());
+                                if let Some(error) = &p.error {
+                                    response.on_hover_text(error);
+                                }
+                            }
+                        });
+                        if state != shown_state || watched != shown_viewed {
+                            edits.push((
+                                lid,
+                                MylistEdit {
+                                    state: (state != shown_state).then_some(state),
+                                    viewed: (watched != shown_viewed).then_some(watched),
+                                    viewdate: None,
+                                    storage: None,
+                                    source: None,
+                                    other: None,
+                                },
+                                state,
+                                watched,
+                            ));
+                        }
                     }
                 });
             });
+        }
+        for aid in toggles {
+            self.views.mylist.toggle(aid);
+        }
+        for (aid, edit) in anime_edits {
+            let lids: Vec<i64> = self.views.mylist.group_of(aid).map_or_else(Vec::new, |g| {
+                g.members
+                    .iter()
+                    .map(|&i| self.projection.mylist[i].entry.lid)
+                    .collect()
+            });
+            if let Err(e) = self.queue_mylist_edit_many(&lids, &edit) {
+                self.db_write_error("Could not edit the MyList entries of the anime", &e);
+            }
         }
         for (lid, edit, state, viewed) in edits {
             // One atomic outbox + optimistic-row transaction; the overlay only bridges the
@@ -3497,6 +3805,7 @@ impl AnimaticApp {
         ui.horizontal_wrapped(|ui| {
             let selected = self.selected_local.is_some();
             let marked = self.selected_locals().len();
+            let remove_blocker = self.busy_reason();
             let group_gap = |ui: &mut egui::Ui| {
                 ui.add(egui::Separator::default().vertical().spacing(10.0));
             };
@@ -3542,6 +3851,19 @@ impl AnimaticApp {
                 .clicked()
             {
                 self.open_add_dialog();
+            }
+            if ui
+                .add_enabled(
+                    marked > 0 && remove_blocker.is_none(),
+                    egui::Button::new("Remove from list…"),
+                )
+                .on_hover_text(
+                    "Forget the selected files in Animatic; the files on disk and MyList are untouched",
+                )
+                .on_disabled_hover_text(remove_blocker.unwrap_or(SELECT_FIRST))
+                .clicked()
+            {
+                self.open_remove_files();
             }
             group_gap(ui);
             if ui
@@ -3616,6 +3938,8 @@ impl AnimaticApp {
         self.hash_queue_panel(ui, false);
         let file_menu = self.file_menu();
         let mut file_action = None;
+        let remove_blocker = self.busy_reason();
+        let mut remove_request = false;
         {
             let Self {
                 projection,
@@ -3669,6 +3993,20 @@ impl AnimaticApp {
                             if let Some(action) = player_actions::file_menu_ui(ui, &file_menu) {
                                 file_action = Some(action);
                             }
+                            ui.separator();
+                            let remove = ui.add_enabled(
+                                remove_blocker.is_none(),
+                                egui::Button::new("Remove from list…"),
+                            );
+                            if let Some(reason) = remove_blocker {
+                                remove.on_disabled_hover_text(reason);
+                            } else if remove
+                                .on_hover_text("Forget the selected files; the files on disk stay")
+                                .clicked()
+                            {
+                                remove_request = true;
+                                ui.close();
+                            }
                         });
                     });
                     row.col(|ui| {
@@ -3709,6 +4047,9 @@ impl AnimaticApp {
         }
         if let Some(action) = file_action {
             self.run_file_action(action);
+        }
+        if remove_request {
+            self.open_remove_files();
         }
     }
 
@@ -3806,6 +4147,7 @@ impl AnimaticApp {
         });
         let rows = &views.genres.rows;
         let row_height = row_height(ui);
+        let mut browse = None;
         data_table(
             ui,
             "genres",
@@ -3814,15 +4156,25 @@ impl AnimaticApp {
         )
         .body(|body| {
             body.rows(row_height, rows.len(), |mut row| {
-                let (_, name, count) = &projection.genres[rows[row.index()]];
+                let (id, name, count) = &projection.genres[rows[row.index()]];
                 row.col(|ui| {
-                    ui.label(name);
+                    let link = ui.link(name).on_hover_text(
+                        "Show the anime of this genre; Ctrl+click adds it to the genres \
+                         already chosen",
+                    );
+                    if link.clicked() {
+                        let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                        browse = Some((*id, add));
+                    }
                 });
                 row.col(|ui| {
                     ui.label(count.to_string());
                 });
             });
         });
+        if let Some((genre, add)) = browse {
+            self.browse_genre(genre, add);
+        }
     }
 
     fn queue_page(&mut self, ui: &mut egui::Ui) {
@@ -4059,11 +4411,14 @@ impl AnimaticApp {
         };
         // One detail read per (anime, projection version), not one per frame.
         let version = self.loader.version;
+        // A different anime starts at the top; a reload of the same one keeps the reader's place.
+        let other_anime = self.detail.as_ref().is_none_or(|cached| cached.aid != aid);
         let detail = match self.detail.take() {
             Some(cached) if cached.aid == aid && cached.version == version => cached.detail,
             _ => self.db.anime_detail(aid).ok().flatten(),
         };
         let mut refresh_requested = false;
+        let mut genre_clicked = None;
         let mut episode_refresh: Vec<i64> = Vec::new();
         let mut open = true;
         let title = match &detail {
@@ -4076,76 +4431,86 @@ impl AnimaticApp {
             .open(&mut open)
             .default_width(560.0)
             .max_height(ctx.content_rect().height() * 0.85)
-            .vscroll(true)
+            .vscroll(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Open on AniDB").clicked() {
-                        let _ = open::that(format!("https://anidb.net/anime/{aid}"));
-                    }
-                    if ui
-                        .button("Refresh from AniDB")
-                        .on_hover_text("Queues a request that re-reads this anime from AniDB")
-                        .clicked()
-                    {
-                        refresh_requested = true;
-                    }
-                });
-                ui.add_space(4.0);
-                let Some(d) = &detail else {
-                    ui.label("No detail record is available.");
-                    return;
-                };
-                ui.horizontal_top(|ui| {
-                    self.covers.show(
-                        ui,
-                        &self.worker,
-                        &self.settings.anidb,
-                        aid,
-                        d.anime.picname.as_deref(),
-                    );
-                    ui.vertical(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(d.anime.type_name());
-                            ui.separator();
-                            ui.label(&d.anime.year);
-                            ui.separator();
-                            ui.label(style::plural(
-                                d.anime.episodes.max(0) as usize,
-                                "episode",
-                                "episodes",
-                            ));
-                            ui.separator();
-                            ui.label(RichText::new(format!("AniDB {aid}")).weak());
+                if other_anime {
+                    self.detail_view += 1;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt(("anime_detail_scroll", self.detail_view))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("Open on AniDB").clicked() {
+                                let _ = open::that(format!("https://anidb.net/anime/{aid}"));
+                            }
+                            if ui
+                                .button("Refresh from AniDB")
+                                .on_hover_text(
+                                    "Queues a request that re-reads this anime from AniDB",
+                                )
+                                .clicked()
+                            {
+                                refresh_requested = true;
+                            }
                         });
-                        if let Some(text) = &d.anime.description {
-                            ui.add_space(6.0);
-                            ui.label(text);
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-                // Sections without entries stay listed (with their zero) but cannot open.
-                let section = |ui: &mut egui::Ui,
-                               name: &str,
-                               count: usize,
-                               open: bool,
-                               body: &mut dyn FnMut(&mut egui::Ui)| {
-                    let header = egui::CollapsingHeader::new(format!("{name} ({count})"))
-                        .id_salt(("anime_detail_section", name))
-                        .default_open(open);
-                    ui.add_enabled_ui(count > 0, |ui| {
-                        header.show(ui, |ui| body(ui));
-                    });
-                };
-                section(ui, "Episodes", d.episodes.len(), true, &mut |ui| {
-                    egui::Grid::new("anime_detail_episodes")
-                        .num_columns(3)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for e in &d.episodes {
-                                ui.monospace(e.epno_str());
-                                ui.label(&e.name);
-                                if ui
+                        ui.add_space(4.0);
+                        let Some(d) = &detail else {
+                            ui.label("No detail record is available.");
+                            return;
+                        };
+                        ui.horizontal_top(|ui| {
+                            self.covers.show(
+                                ui,
+                                &self.worker,
+                                &self.settings.anidb,
+                                aid,
+                                d.anime.picname.as_deref(),
+                            );
+                            ui.vertical(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(d.anime.type_name());
+                                    ui.separator();
+                                    ui.label(&d.anime.year);
+                                    ui.separator();
+                                    ui.label(style::plural(
+                                        d.anime.episodes.max(0) as usize,
+                                        "episode",
+                                        "episodes",
+                                    ));
+                                    ui.separator();
+                                    ui.label(RichText::new(format!("AniDB {aid}")).weak());
+                                });
+                                if let Some(text) = &d.anime.description {
+                                    ui.add_space(6.0);
+                                    ui.label(anidb_markup::layout(ui, text));
+                                }
+                            });
+                        });
+                        ui.add_space(8.0);
+                        // Sections without entries stay listed (with their zero) but cannot open.
+                        let section =
+                            |ui: &mut egui::Ui,
+                             name: &str,
+                             count: usize,
+                             open: bool,
+                             body: &mut dyn FnMut(&mut egui::Ui)| {
+                                let header =
+                                    egui::CollapsingHeader::new(format!("{name} ({count})"))
+                                        .id_salt(("anime_detail_section", name))
+                                        .default_open(open);
+                                ui.add_enabled_ui(count > 0, |ui| {
+                                    header.show(ui, |ui| body(ui));
+                                });
+                            };
+                        section(ui, "Episodes", d.episodes.len(), true, &mut |ui| {
+                            egui::Grid::new("anime_detail_episodes")
+                                .num_columns(3)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for e in &d.episodes {
+                                        ui.monospace(e.epno_str());
+                                        ui.label(&e.name);
+                                        if ui
                                     .small_button("Refresh")
                                     .on_hover_text(
                                         "Queues a request that re-reads this episode from AniDB",
@@ -4154,59 +4519,66 @@ impl AnimaticApp {
                                 {
                                     episode_refresh.push(e.eid);
                                 }
-                                ui.end_row();
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                        section(ui, "Titles", d.titles.len(), false, &mut |ui| {
+                            for t in &d.titles {
+                                ui.horizontal(|ui| {
+                                    ui.monospace(&t.lang);
+                                    ui.label(&t.name);
+                                });
                             }
                         });
-                });
-                section(ui, "Titles", d.titles.len(), false, &mut |ui| {
-                    for t in &d.titles {
-                        ui.horizontal(|ui| {
-                            ui.monospace(&t.lang);
-                            ui.label(&t.name);
-                        });
-                    }
-                });
-                section(ui, "Genres", d.genres.len(), false, &mut |ui| {
-                    ui.label(
-                        d.genres
-                            .iter()
-                            .map(|g| g.1.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    );
-                });
-                let mut related = None;
-                section(ui, "Relations", d.relations.len(), false, &mut |ui| {
-                    for (related_aid, relation, name) in &d.relations {
-                        if ui
-                            .link(format!(
-                                "{} — {}",
-                                animatic_core::library::relation_name(*relation),
-                                name
-                            ))
-                            .clicked()
-                        {
-                            related = Some(*related_aid);
-                        }
-                    }
-                });
-                if related.is_some() {
-                    self.selected_aid = related;
-                }
-                section(ui, "Reviews", d.reviews.len(), false, &mut |ui| {
-                    for review in &d.reviews {
-                        ui.horizontal(|ui| {
-                            ui.strong(if review.uname.is_empty() {
-                                "Anonymous"
-                            } else {
-                                &review.uname
+                        section(ui, "Genres", d.genres.len(), false, &mut |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (id, name) in &d.genres {
+                                    let link = ui.link(name).on_hover_text(
+                                        "Show the anime of this genre; Ctrl+click adds it to the \
+                                 genres already chosen",
+                                    );
+                                    if link.clicked() {
+                                        let add =
+                                            ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                                        genre_clicked = Some((*id, add));
+                                    }
+                                }
                             });
-                            ui.label(format::rating(review.rating));
                         });
-                        ui.label(&review.body);
-                        ui.separator();
-                    }
-                });
+                        let mut related = None;
+                        section(ui, "Relations", d.relations.len(), false, &mut |ui| {
+                            for (related_aid, relation, name) in &d.relations {
+                                if ui
+                                    .link(format!(
+                                        "{} — {}",
+                                        animatic_core::library::relation_name(*relation),
+                                        name
+                                    ))
+                                    .clicked()
+                                {
+                                    related = Some(*related_aid);
+                                }
+                            }
+                        });
+                        if related.is_some() {
+                            self.selected_aid = related;
+                        }
+                        section(ui, "Reviews", d.reviews.len(), false, &mut |ui| {
+                            for review in &d.reviews {
+                                ui.horizontal(|ui| {
+                                    ui.strong(if review.uname.is_empty() {
+                                        "Anonymous"
+                                    } else {
+                                        &review.uname
+                                    });
+                                    ui.label(format::rating(review.rating));
+                                });
+                                ui.label(anidb_markup::layout(ui, &review.body));
+                                ui.separator();
+                            }
+                        });
+                    });
             });
         if dialog::escape_closes(ctx, shown.as_ref()) {
             open = false;
@@ -4226,6 +4598,11 @@ impl AnimaticApp {
         }
         for eid in episode_refresh {
             self.queue_command(animatic_core::sync::Command::FetchEpisode { eid });
+        }
+        if let Some((genre, add)) = genre_clicked {
+            self.browse_genre(genre, add);
+            self.detail = None;
+            self.covers.window_closed();
         }
     }
 
@@ -4252,7 +4629,8 @@ impl AnimaticApp {
                     ui.vertical(|ui| {
                         ui.set_width(170.0);
                         for page in OptionsPage::ALL {
-                            if nav_item(ui, self.options_page == page, page.label(), None).clicked()
+                            if nav_item(ui, self.options_page == page, None, page.label(), None)
+                                .clicked()
                             {
                                 self.options_page = page;
                             }
@@ -4303,7 +4681,8 @@ impl AnimaticApp {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("Save options").color(Color32::WHITE),
+                                    RichText::new("Save options")
+                                        .color(style::on_accent(ui.visuals())),
                                 )
                                 .fill(accent),
                             )
@@ -4342,7 +4721,17 @@ impl AnimaticApp {
                     .desired_width(FIELD_WIDTH),
             );
         });
-        field(ui, "API key", &mut self.settings.anidb.api_key);
+        ui.horizontal(|ui| {
+            let label = field_label(ui, "API key (optional)").on_hover_text(
+                "The UDP API key from your AniDB profile. When set, the AniDB session is \
+                 encrypted; leave it empty for an unencrypted session.",
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.anidb.api_key)
+                    .desired_width(FIELD_WIDTH),
+            )
+            .labelled_by(label.id);
+        });
         if let Some(notice) = self.credential_storage.notice() {
             ui.colored_label(style::warn(ui.visuals()), notice);
         }
@@ -4430,6 +4819,36 @@ impl AnimaticApp {
                         }
                     });
                 ui.end_row();
+                ui.label("Color scheme");
+                ui.horizontal(|ui| {
+                    let dark_mode = ui.visuals().dark_mode;
+                    style::swatch(
+                        ui,
+                        style::scheme_accent(self.settings.ui.color_scheme, dark_mode),
+                    );
+                    egui::ComboBox::from_id_salt("options-color-scheme")
+                        .selected_text(self.settings.ui.color_scheme.label())
+                        .show_ui(ui, |ui| {
+                            for scheme in ColorScheme::ALL {
+                                ui.horizontal(|ui| {
+                                    style::swatch(ui, style::scheme_accent(scheme, dark_mode));
+                                    restyle |= ui
+                                        .selectable_value(
+                                            &mut self.settings.ui.color_scheme,
+                                            scheme,
+                                            scheme.label(),
+                                        )
+                                        .changed();
+                                });
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "The accent and the tint of the interface, in the dark and in the \
+                             light theme. The status colors of table rows are separate.",
+                        );
+                });
+                ui.end_row();
                 ui.label("UI scale");
                 let scale = ui.add(
                     egui::Slider::new(&mut self.settings.ui.zoom, 0.75..=2.0)
@@ -4474,6 +4893,7 @@ impl AnimaticApp {
         if restyle {
             self.apply_visuals(ui.ctx());
         }
+        status_colors::options_ui(ui, &mut self.settings.ui);
         self.tray_options_ui(ui);
     }
 
@@ -4515,7 +4935,10 @@ impl AnimaticApp {
             } else {
                 manager.name.clone()
             };
-            ui.collapsing(label, |ui| {
+            // Keyed by position, not by the name: typing in Name must not close the section.
+            egui::CollapsingHeader::new(label)
+                .id_salt(("options-managed-folder", index))
+                .show(ui, |ui| {
                             field(ui, "Name", &mut manager.name);
                             field(ui, "Path", &mut manager.path);
                             field(ui, "Rename destination", &mut manager.base_path);
@@ -4763,17 +5186,54 @@ impl AnimaticApp {
     }
 
     fn options_updates(&mut self, ui: &mut egui::Ui) {
+        use animatic_core::settings::UpdateChannel;
         ui.checkbox(
             &mut self.settings.updates.auto_check,
             "Check for updates at startup",
-        );
-        ui.label(
-            RichText::new(
-                "Contacts github.com, not AniDB, and is skipped in offline mode. Nothing is \
-                 downloaded or installed without your confirmation.",
-            )
-            .weak(),
-        );
+        )
+        .on_hover_text("Skipped in offline mode. Help → Check for updates… always works.");
+        let blocked = self.update.stage.channel_change_blocker();
+        let before = self.settings.updates.channel;
+        ui.horizontal(|ui| {
+            field_label(ui, "Release channel");
+            ui.add_enabled_ui(blocked.is_none(), |ui| {
+                for channel in UpdateChannel::ALL {
+                    ui.selectable_value(
+                        &mut self.settings.updates.channel,
+                        channel,
+                        channel.label(),
+                    )
+                    .on_disabled_hover_text(blocked.unwrap_or_default());
+                }
+            });
+        });
+        if self.settings.updates.channel != before {
+            // A release found, or downloaded and staged, on the other channel no longer
+            // applies (a staged download's temporary files go with it); the next check uses
+            // the new channel.
+            self.update.stage.forget_other_channel_result();
+            self.update.release = None;
+            self.update.ready = None;
+        }
+        let channel_text = match self.settings.updates.channel {
+            UpdateChannel::Stable => "Stable releases only.",
+            UpdateChannel::Beta => "Stable releases and betas. Betas may have bugs.",
+        };
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.label(RichText::new(channel_text).weak())
+                .on_hover_text("Switching back to Stable never installs an older version.");
+        });
+        ui.add_space(4.0);
+        let repository = env!("CARGO_PKG_REPOSITORY");
+        let releases = format!("{repository}/releases");
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Checks GitHub only, anonymously. Nothing installs without asking.")
+                    .weak(),
+            );
+            ui.hyperlink_to("Releases", &releases);
+        });
         style::section(ui, "MyList states");
         ui.label(RichText::new("The states a MyList entry can have on AniDB:").weak());
         ui.label(MYLIST_STATES.join(" · "));
@@ -4786,6 +5246,7 @@ impl AnimaticApp {
         let blocker = self.update_blocker();
         let restart_blocker = self.restart_blocker();
         let stage = self.update.stage.clone();
+        let channel = self.settings.updates.channel.label();
         let mut action = None;
         let mut open = true;
         let shown = dialog::window(ctx, "Software updates")
@@ -4793,12 +5254,24 @@ impl AnimaticApp {
             .resizable(false)
             .default_width(460.0)
             .show(ctx, |ui| {
-                ui.label(format!("Installed version: {}", env!("CARGO_PKG_VERSION")));
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("Installed version: {}", env!("CARGO_PKG_VERSION")))
+                            .strong(),
+                    );
+                    if Platform::current().is_some() {
+                        ui.label(RichText::new(format!("Channel: {channel}")).weak())
+                            .on_hover_text(
+                                "Decides which releases are offered. Change it in \
+                                 Tools → Options… → Updates.",
+                            );
+                    }
+                });
                 if Platform::current().is_none() {
                     ui.label("Updates are only available for 64-bit Windows and Linux builds.");
                     return;
                 }
-                ui.add_space(4.0);
+                ui.add_space(6.0);
                 if let Some(error) = &self.update.error {
                     ui.colored_label(style::error(ui.visuals()), error);
                     ui.add_space(4.0);
@@ -4806,14 +5279,22 @@ impl AnimaticApp {
                 let version = self.update.release.as_ref().map(|r| r.version.as_str());
                 match stage {
                     UpdateStage::Idle => {
-                        if ui.button("Check now").clicked() {
+                        // After a failed check the error above says what happened.
+                        let failed = self.update.error.is_some();
+                        if !failed {
+                            ui.label(RichText::new("Not checked yet.").weak());
+                        }
+                        if ui
+                            .button(if failed { "Try again" } else { "Check now" })
+                            .clicked()
+                        {
                             action = Some(UpdateAction::Check);
                         }
                     }
                     UpdateStage::Checking { cancelling, .. } => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Checking GitHub for a newer release…");
+                            ui.label("Checking GitHub…");
                         });
                         if ui
                             .add_enabled(!cancelling, egui::Button::new("Cancel"))
@@ -4823,26 +5304,45 @@ impl AnimaticApp {
                         }
                     }
                     UpdateStage::UpToDate => {
-                        ui.label("Animatic is up to date.");
+                        ui.colored_label(style::ok(ui.visuals()), "Animatic is up to date.");
                         if ui.button("Check again").clicked() {
                             action = Some(UpdateAction::Check);
                         }
                     }
                     UpdateStage::Available => {
                         if let Some(release) = &self.update.release {
-                            ui.label(format!(
-                                "Version {} is available ({} download).",
-                                release.version,
-                                format::size_short(
-                                    i64::try_from(release.archive_size).unwrap_or(i64::MAX)
-                                )
-                            ));
-                            ui.hyperlink_to("Release notes on GitHub", &release.page_url);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Version {} is available",
+                                        release.version
+                                    ))
+                                    .strong(),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "({} download)",
+                                        format::size_short(
+                                            i64::try_from(release.archive_size).unwrap_or(i64::MAX)
+                                        )
+                                    ))
+                                    .weak(),
+                                );
+                                ui.hyperlink_to("Release notes", &release.page_url);
+                            });
                         }
                         ui.add_space(4.0);
-                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING);
+                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING)
+                            .on_hover_text(UNSIGNED_DETAIL);
                         ui.add_space(4.0);
-                        if ui.button("Download and verify").clicked() {
+                        if ui
+                            .button("Download and verify")
+                            .on_hover_text(
+                                "Downloads the archive and checks it against the release's \
+                                 SHA-256 checksum. Nothing is installed yet.",
+                            )
+                            .clicked()
+                        {
                             action = Some(UpdateAction::Download);
                         }
                     }
@@ -4865,28 +5365,46 @@ impl AnimaticApp {
                     }
                     UpdateStage::Ready { confirming } => {
                         if let Some(update) = &self.update.ready {
-                            ui.label(format!(
-                                "Version {} was downloaded and matches the published checksum.",
-                                update.version()
-                            ));
+                            ui.label(
+                                RichText::new(format!(
+                                    "Version {} downloaded. Checksum matches.",
+                                    update.version()
+                                ))
+                                .strong(),
+                            )
+                            .on_hover_text(
+                                "The archive's SHA-256 matches the checksum published in the \
+                                 same release.",
+                            );
                             ui.horizontal(|ui| {
-                                ui.label("SHA-256:");
-                                ui.label(RichText::new(update.sha256()).monospace());
+                                ui.label(RichText::new("SHA-256:").weak());
+                                ui.label(RichText::new(update.sha256()).monospace().weak());
                             });
                         }
                         ui.add_space(4.0);
-                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING);
+                        ui.colored_label(style::warn(ui.visuals()), UNSIGNED_WARNING)
+                            .on_hover_text(UNSIGNED_DETAIL);
                         ui.add_space(4.0);
                         if confirming {
                             ui.label(match self.executable_path() {
-                                Some(path) => format!(
-                                    "Animatic will replace {} with the new version. Your \
-                                     database, settings, profiles and media are not touched; \
-                                     the new license files are added next to the program.",
-                                    path.display()
-                                ),
+                                Some(path) => {
+                                    format!("Replace {} with the new version?", path.display())
+                                }
                                 None => "Animatic cannot tell where it is installed.".into(),
-                            });
+                            })
+                            .on_hover_text(
+                                "Only the program is replaced. Your database, settings, \
+                                 profiles and media are not touched. New license files are \
+                                 added next to the program; the bundled docs stay at the old \
+                                 version.",
+                            );
+                            ui.label(
+                                RichText::new(
+                                    "Your data stays as it is. Bundled docs stay at the old \
+                                     version.",
+                                )
+                                .weak(),
+                            );
                             ui.horizontal(|ui| {
                                 if ui
                                     .add_enabled(
@@ -4921,10 +5439,13 @@ impl AnimaticApp {
                         }
                     }
                     UpdateStage::InstallFailed => {
+                        ui.colored_label(
+                            style::error(ui.visuals()),
+                            "The installation did not finish.",
+                        );
                         ui.label(
-                            "The installation did not finish. The program files may be in an \
-                             unknown state, so Animatic will not update or restart itself in \
-                             this session.",
+                            "The program files may be in an unknown state, so Animatic will \
+                             not update or restart itself in this session.",
                         );
                         ui.label(match self.executable_path() {
                             Some(path) => format!(
@@ -4947,10 +5468,14 @@ impl AnimaticApp {
                         });
                     }
                     UpdateStage::Installed => {
-                        ui.label(format!(
-                            "Version {} is installed. Restart Animatic to start using it.",
-                            self.update.installed_version.as_deref().unwrap_or("?")
-                        ));
+                        ui.colored_label(
+                            style::ok(ui.visuals()),
+                            format!(
+                                "Version {} is installed.",
+                                self.update.installed_version.as_deref().unwrap_or("?")
+                            ),
+                        );
+                        ui.label(RichText::new("Restart Animatic to start using it.").weak());
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(
@@ -4971,8 +5496,20 @@ impl AnimaticApp {
                         }
                     }
                 }
-                ui.add_space(6.0);
-                ui.label(RichText::new(UPDATE_PRIVACY).weak());
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(
+                            "Checks GitHub only, anonymously. Nothing installs without asking.",
+                        )
+                        .weak(),
+                    )
+                    .on_hover_text(UPDATE_PRIVACY);
+                    ui.hyperlink_to(
+                        "Releases",
+                        format!("{}/releases", env!("CARGO_PKG_REPOSITORY")),
+                    );
+                });
             });
         match action {
             Some(UpdateAction::Check) => self.start_update_check(true),
@@ -5000,6 +5537,7 @@ impl AnimaticApp {
     }
 
     pub fn apply_visuals(&self, ctx: &egui::Context) {
+        style::set_scheme(ctx, self.settings.ui.color_scheme);
         // `System` follows the operating system's light or dark mode, also while running.
         ctx.set_theme(match self.settings.ui.theme {
             Theme::Dark => egui::ThemePreference::Dark,
@@ -5130,21 +5668,26 @@ impl AnimaticApp {
                     let offline = self.settings.anidb.offline;
                     let (text, color, hint) = if offline {
                         (
-                            "● Offline",
+                            "Offline",
                             style::warn(ui.visuals()),
                             "Work offline is on: commands stay queued and nothing is sent to \
                              AniDB. Click to go online.",
                         )
                     } else {
                         (
-                            "● Online",
+                            "Online",
                             style::ok(ui.visuals()),
                             "Work offline is off: queued commands are sent when the command \
                              queue runs. Click to work offline.",
                         )
                     };
+                    // The dot is painted, not a "●" glyph: the glyph sits above the text's
+                    // centre in the UI font.
+                    let dot = egui::Atom::paint(egui::Vec2::splat(8.0), move |ui, args| {
+                        ui.painter().circle_filled(args.rect.center(), 4.0, color);
+                    });
                     if ui
-                        .add(egui::Button::new(RichText::new(text).color(color)).small())
+                        .add(egui::Button::new((dot, RichText::new(text).color(color))).small())
                         .on_hover_text(hint)
                         .clicked()
                     {
@@ -5620,6 +6163,7 @@ impl eframe::App for AnimaticApp {
         self.leftover_import_window(&ctx);
         self.library_safety_windows(&ctx);
         self.rename_window(&ctx);
+        self.remove_files_window(&ctx);
         self.mylist_windows(&ctx);
         self.full_update_window(&ctx);
         self.mylist_export_window(&ctx);
@@ -5628,6 +6172,7 @@ impl eframe::App for AnimaticApp {
         self.media_install_window(&ctx);
         self.about_window(&ctx);
         self.license_window(&ctx);
+        self.notices_window(&ctx);
         // Worker events are only seen while frames run, so poll while anything is in flight.
         // A job the scheduler thread started (autostart, scheduled scan) has no UI action that
         // triggers a frame, so the worker's own pending count keeps the polling going too.
@@ -5723,22 +6268,55 @@ fn metric_card(
         .response
 }
 
+/// A one-glyph icon whose ink is centred in its atom. Symbol glyphs such as `⚙` come from the
+/// emoji font, whose glyph box sits higher than the UI font's text, so centring the text box
+/// (what a plain label does) leaves the symbol above the text beside it.
+fn icon_atom(ui: &egui::Ui, icon: char, color: Color32) -> egui::Atom<'static> {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(icon.to_string(), font, color);
+    let ink = galley
+        .rows
+        .first()
+        .and_then(|row| {
+            row.glyphs.first().map(|g| {
+                egui::Rect::from_min_size(
+                    row.pos + g.pos.to_vec2() + g.uv_rect.offset,
+                    g.uv_rect.size,
+                )
+            })
+        })
+        .filter(|ink| ink.is_positive())
+        .unwrap_or(galley.rect);
+    let size = egui::vec2(ink.width(), galley.size().y);
+    egui::Atom::paint(size, move |ui, args| {
+        let origin = args.rect.center() - ink.center().to_vec2();
+        ui.painter().galley(origin, galley.clone(), color);
+    })
+}
+
 /// One sidebar entry: full width, the selected one marked by the accent bar as well as its fill,
 /// with an optional count on the right.
 fn nav_item(
     ui: &mut egui::Ui,
     selected: bool,
+    icon: Option<char>,
     label: &str,
     badge: Option<(String, Color32)>,
 ) -> egui::Response {
-    let text = if selected {
-        RichText::new(label).strong()
+    let (text, color) = if selected {
+        (
+            RichText::new(label).strong(),
+            ui.visuals().strong_text_color(),
+        )
     } else {
-        RichText::new(label)
+        (RichText::new(label), ui.visuals().text_color())
     };
-    let mut button = egui::Button::selectable(selected, text)
-        .frame_when_inactive(false)
-        .min_size(egui::vec2(ui.available_width(), 28.0));
+    let mut button = match icon {
+        Some(icon) => egui::Button::selectable(selected, (icon_atom(ui, icon, color), text)),
+        None => egui::Button::selectable(selected, text),
+    }
+    .frame_when_inactive(false)
+    .min_size(egui::vec2(ui.available_width(), 28.0));
     if let Some((badge, color)) = badge {
         button = button.right_text(RichText::new(badge).small().color(color));
     }
@@ -5851,11 +6429,18 @@ fn matches_anime(key: &str, aid: i64, q: &str, q_aid: Option<i64>) -> bool {
     q.is_empty() || key.contains(q) || q_aid == Some(aid)
 }
 
-/// Row indices of anime whose name contains the lower-cased query or whose id equals it.
-fn filter_anime(p: &LibraryProjection, q: &str) -> Vec<usize> {
+/// Row indices of anime whose name contains the lower-cased query or whose id equals it, and
+/// that have every genre in `genres`.
+fn filter_anime(p: &LibraryProjection, q: &str, genres: &BTreeSet<i64>) -> Vec<usize> {
     let q_aid = aid_query(q);
+    let none = Vec::new();
     (0..p.anime.len())
-        .filter(|&i| matches_anime(&p.keys.anime[i], p.anime[i].aid, q, q_aid))
+        .filter(|&i| {
+            let a = &p.anime[i];
+            let has = p.anime_genres.get(&a.aid).unwrap_or(&none);
+            matches_anime(&p.keys.anime[i], a.aid, q, q_aid)
+                && genres.iter().all(|g| has.contains(g))
+        })
         .collect()
 }
 
@@ -5879,12 +6464,6 @@ fn filter_search(p: &LibraryProjection, f: &SearchFilter) -> Vec<usize> {
                 && (!f.mylist_only || state.is_some())
                 && (!f.watched_only || state.is_some_and(|s| s.all_watched(a)))
         })
-        .collect()
-}
-
-fn filter_mylist(p: &LibraryProjection, q: &str) -> Vec<usize> {
-    (0..p.mylist.len())
-        .filter(|&i| q.is_empty() || p.keys.mylist[i].contains(q))
         .collect()
 }
 
@@ -6066,13 +6645,14 @@ mod tests {
     #[test]
     fn anime_filter_matches_name_or_exact_id() {
         let p = fixture();
-        assert_eq!(filter_anime(&p, "").len(), 3);
-        assert_eq!(filter_anime(&p, "fixture").len(), 2);
-        let by_id = filter_anime(&p, "3");
+        let any = BTreeSet::new();
+        assert_eq!(filter_anime(&p, "", &any).len(), 3);
+        assert_eq!(filter_anime(&p, "fixture", &any).len(), 2);
+        let by_id = filter_anime(&p, "3", &any);
         assert_eq!(by_id.len(), 1);
         assert_eq!(p.anime[by_id[0]].aid, 3);
         assert!(
-            filter_anime(&p, "03").is_empty(),
+            filter_anime(&p, "03", &any).is_empty(),
             "ids match exactly, not by padding"
         );
     }
@@ -6110,12 +6690,34 @@ mod tests {
     #[test]
     fn table_filters_use_projection_keys() {
         let p = fixture();
-        assert_eq!(filter_mylist(&p, "alpha").len(), 1);
-        assert!(filter_mylist(&p, "third").is_empty());
+        assert_eq!(crate::mylist_tree::build_groups(&p, "alpha").len(), 1);
+        assert!(crate::mylist_tree::build_groups(&p, "third").is_empty());
         assert_eq!(filter_local(&p, "/fixture/root").len(), 1);
         assert_eq!(filter_groups(&p, "fg").len(), 1);
         assert_eq!(filter_groups(&p, "fixture g").len(), 1);
         assert!(filter_groups(&p, "zzz").is_empty());
+    }
+
+    #[test]
+    fn genre_filter_keeps_only_anime_with_every_chosen_genre() {
+        let mut p = fixture();
+        let aids: Vec<i64> = p.anime.iter().map(|a| a.aid).collect();
+        p.anime_genres.insert(aids[0], vec![7, 8]);
+        p.anime_genres.insert(aids[1], vec![8]);
+        let picked = |genres: &[i64]| {
+            let set: BTreeSet<i64> = genres.iter().copied().collect();
+            let rows = filter_anime(&p, "", &set);
+            rows.iter().map(|&i| p.anime[i].aid).collect::<Vec<_>>()
+        };
+        assert_eq!(picked(&[7]), vec![aids[0]]);
+        assert_eq!(picked(&[8]).len(), 2);
+        assert_eq!(
+            picked(&[7, 8]),
+            vec![aids[0]],
+            "every chosen genre is required"
+        );
+        assert!(picked(&[8, 9]).is_empty());
+        assert_eq!(picked(&[]).len(), 3, "no genre chosen lists every anime");
     }
 
     #[test]
@@ -6185,6 +6787,33 @@ mod tests {
     }
 
     #[test]
+    fn the_channel_cannot_change_while_a_result_of_the_old_one_is_on_its_way() {
+        // Checking: the coming Checked event would carry a release of the old channel.
+        let mut stage = UpdateStage::Idle;
+        stage.begin_check(true);
+        assert!(stage.channel_change_blocker().is_some());
+        assert!(stage.check_finished(true));
+        // Available or staged (Ready): switching drops the old channel's release.
+        assert!(stage.channel_change_blocker().is_none());
+        stage.forget_other_channel_result();
+        assert_eq!(stage, UpdateStage::Idle);
+        let mut stage = UpdateStage::Available;
+        assert!(stage.begin_download());
+        assert!(stage.channel_change_blocker().is_some(), "downloading");
+        assert!(stage.download_ready());
+        assert!(stage.channel_change_blocker().is_none());
+        stage.forget_other_channel_result();
+        assert_eq!(stage, UpdateStage::Idle);
+        for done in [
+            UpdateStage::Installing,
+            UpdateStage::Installed,
+            UpdateStage::InstallFailed,
+        ] {
+            assert!(done.channel_change_blocker().is_some());
+        }
+    }
+
+    #[test]
     fn installing_needs_a_staged_update_and_confirmation() {
         let mut stage = UpdateStage::Available;
         assert!(!stage.begin_install(), "nothing is staged");
@@ -6238,32 +6867,5 @@ mod tests {
         settings.anidb.offline = false;
         settings.updates.auto_check = false;
         assert!(!startup_check_allowed(&settings, false));
-    }
-
-    #[test]
-    fn license_documents_prefer_the_copy_for_this_version() {
-        let dir = std::env::temp_dir().join(format!("animatic-docs-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let version = "2099.1.0";
-        assert_eq!(bundled_document(&dir, "LICENSE", "", version), None);
-
-        std::fs::write(dir.join("LICENSE"), "canonical").unwrap();
-        std::fs::write(dir.join("LICENSE-v2098.1.0"), "other version").unwrap();
-        assert_eq!(
-            bundled_document(&dir, "LICENSE", "", version),
-            Some(dir.join("LICENSE"))
-        );
-
-        std::fs::write(dir.join("LICENSE-v2099.1.0"), "this version").unwrap();
-        std::fs::write(dir.join("THIRD-PARTY-NOTICES-v2099.1.0.html"), "n").unwrap();
-        assert_eq!(
-            bundled_document(&dir, "LICENSE", "", version),
-            Some(dir.join("LICENSE-v2099.1.0"))
-        );
-        assert_eq!(
-            bundled_document(&dir, "THIRD-PARTY-NOTICES", "html", version),
-            Some(dir.join("THIRD-PARTY-NOTICES-v2099.1.0.html"))
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

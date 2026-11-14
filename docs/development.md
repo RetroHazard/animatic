@@ -321,7 +321,8 @@ The same rule applies to the updater: **no automated test contacts GitHub or Ani
   versions and fictitious tags. Build archives in the test from explicit bytes; never embed a real
   binary, a real checksum or data copied from a real release.
 - Cover at least: CalVer parsing and ordering, highest-version selection independent of API
-  order, draft/prerelease/equal/lower skipped, checksum mismatch or missing/duplicate lines,
+  order, draft/other-prerelease/equal/lower skipped, channel selection (stable vs beta, `-rc.N` only),
+  checksum mismatch or missing/duplicate lines,
   traversal and unexpected archive entries, size limits, truncated downloads and cancellation.
 - **Never run `self-replace` against the test harness executable** (it would replace the running
   test binary). Exercise the real swap only from a throwaway helper process that copies itself to a
@@ -522,9 +523,9 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   |---|---|---|
   | `plan` (*Plan checks*) | every code-check event (not metadata-only edits) | Runs `scripts/ci.py plan` on the Git diff, outputs whether the Rust jobs and the license-policy job are needed, and writes the selection to the run summary |
   | `quality` (*Quality*) | every code-check event, including docs-only changes; runs after `plan` | Python 3.12: all `scripts/test_*.py` behavior tests, `release.py validate`, `scripts/ci.py docs` (Markdown links, anchors, fences and tables), pinned `actionlint` over the workflows with its `shellcheck` integration active, and `cargo fmt --check` when Rust is selected |
-  | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Check and package: installs or restores the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices`. Refresh: only fetches the registry and installs the renderer when their caches are missing |
+  | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Check and package: installs or restores the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, generates the notices to `$RUNNER_TEMP`, fails on stderr warnings and runs `python scripts/ci.py notices` (Python 3.11+), which fails when the committed `NOTICES` is stale. Nothing is uploaded. Refresh: only fetches the registry and installs the renderer when their caches are missing |
   | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust and `quality` succeeded | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`. Check: locked Clippy with warnings denied, tests and rustdoc with warnings denied, all in the `ci` profile for the matrix target. Refresh: a cache lookup, and the check steps only on a miss. Package, or a manual run with **executables**: the release build and a `--help` smoke run, uploading `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
-  | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust` and `notices`; wraps their executables and notices with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
+  | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust`; wraps its executables and the repository `LICENSE` and `NOTICES` with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
   | `required` (**Required checks**; *Main cache refresh* on a `main` push; *PR metadata (no code checks)* on a title or description edit; *Stacked PR (deferred)* when the actual base is not `main` and the pull request is not in a stack on `main`) | every event, even when upstream jobs failed or were skipped | Fails closed unless every job the plan selected succeeded (see below). Under the metadata and stacked names it only writes a run summary and passes; those names are never required. A lower pull request of a stack on `main` reports a passing **Required checks** without checks, covered by the top pull request's run. A `main` push uses its own name because it normally runs no Rust checks |
 
   **Quality first.** The expensive jobs need both `plan` and `quality`, so a failing quality
@@ -538,8 +539,9 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   request base and the merge commit (for `main`, the pushed range) and prints
   `rust=true|false` and `licenses=false|true`. Documentation-only changes (Markdown and
   documentation assets) select neither; Rust sources under `crates/` select Rust; `Cargo.toml`,
-  `Cargo.lock` or a crate manifest selects both; `about.toml`, `about.hbs` and `LICENSE` select
-  the license job; `scripts/release.py`, `scripts/test_release.py`, anything under `.github/`,
+  `Cargo.lock` or a crate manifest selects both; `about.toml`, `LICENSE` and `scripts/ci.py`
+  (which renders `NOTICES`) select the license job; `NOTICES` selects both (it is embedded in
+  the executable); `scripts/release.py`, `scripts/test_release.py`, anything under `.github/`,
   `.cargo/` or a `rust-toolchain*` file select both because they affect packaging or CI itself;
   other Python under `scripts/` selects only `quality`. **Any path it does not recognize selects
   both**, so a new kind of file fails safe. A reusable call with a non-empty `ref`, `package: true`,
@@ -594,12 +596,23 @@ when the first page is saved in the web interface.
 
 ### Third-party license gate
 
-The `notices` job installs `cargo-about` with the `cli` feature and generates
-`THIRD-PARTY-NOTICES.html` from [`about.toml`](../about.toml) and [`about.hbs`](../about.hbs) for
-the union of the Windows and Linux dependencies. Generation fails on a license outside the policy,
-and the job also fails on any `cargo-about` warning on standard error (for example a changed
-pinned license file). A new dependency license needs a deliberate maintainer review (see
+The `notices` job installs `cargo-about` with the `cli` feature and has it write the license
+data of the Windows and Linux dependencies, as configured in [`about.toml`](../about.toml), as
+JSON. Generation fails on a license outside the policy, and the job also fails on any
+`cargo-about` warning on standard error (for example a changed pinned license file). Then
+`python scripts/ci.py notices` renders the plain-text notices from that JSON and fails when the
+committed `NOTICES` differs. A new dependency license needs a deliberate maintainer review (see
 [Releases](releases.md#third-party-notices)); the generated notices are not a legal audit.
+
+The rendering groups by license so the file stays readable: each license's wording is printed
+once, followed by every crate that uses it with the copyright lines of that crate's own license
+file. Two license files share a wording when they are equal after removing copyright lines,
+comment markers (a license taken from a source file keeps only its leading license comment), a
+short title line, letter case and punctuation; any other difference keeps that file's text in
+full under its crates. A crate whose license file names no copyright holder is listed with its
+Cargo.toml authors, marked as such. The hand-maintained upstream copyright lines for `egui`,
+`profiling` and `pulp-wasm-simd-flag` (`NOTICES_UPSTREAM` in `scripts/ci.py`) must be
+re-verified when those crates change.
 
 To run it locally, use the version pinned in `ci.yml` (shown here as `0.9.3`). The
 `--features cli` flag is **required**: the crate's executable is built only with that feature, and without it
@@ -608,16 +621,25 @@ To run it locally, use the version pinned in `ci.yml` (shown here as `0.9.3`). T
 ```sh
 cargo install --locked --version 0.9.3 --features cli cargo-about
 cargo about --version
-cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/THIRD-PARTY-NOTICES.html"
+cargo about generate --locked --fail --format json --output-file "${TMPDIR:-/tmp}/about.json"
+python scripts/ci.py notices "${TMPDIR:-/tmp}/about.json"          # compare with the committed NOTICES
+python scripts/ci.py notices "${TMPDIR:-/tmp}/about.json" --write  # regenerate NOTICES
 ```
 
 ```powershell
 cargo install --locked --version 0.9.3 --features cli cargo-about
 cargo about --version
-cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\THIRD-PARTY-NOTICES.html"
+cargo about generate --locked --fail --format json --output-file "$env:TEMP\about.json"
+python scripts/ci.py notices "$env:TEMP\about.json"          # compare with the committed NOTICES
+python scripts/ci.py notices "$env:TEMP\about.json" --write  # regenerate NOTICES
 ```
 
-Write the output outside the repository. `--fail` alone does not reproduce the whole gate:
+Write the JSON outside the repository; the committed result is `NOTICES` in the repository root
+next to `LICENSE`, plain text with LF line endings. Without `--write` the second command only
+compares and exits non-zero (naming the regenerate command) when `NOTICES` is stale, which is
+exactly what CI does; with `--write` it rewrites `NOTICES`.
+Python 3.11 or newer is required. Regenerate and commit `NOTICES` whenever dependencies change. `--fail` alone
+does not reproduce the whole gate:
 `cargo-about` only warns about a changed pinned license file, which CI turns into a failure by
 rejecting standard-error output, so read the command's warnings yourself.
 
@@ -660,7 +682,7 @@ standard-error guard on `generate` is unchanged: stderr is never suppressed.
 rerunning the old failure and not on GitHub Actions or Linux: `cargo install --locked --version 0.9.3
 --features cli cargo-about` into a throwaway `--root` and target directory installed a real
 `cargo-about.exe`; `cargo about --version` reported `cargo-about 0.9.3`; and `cargo about generate
---locked --fail` for the then-current workspace produced `THIRD-PARTY-NOTICES.html`, exited 0 and
+--locked --fail` for the then-current workspace produced a notices text, exited 0 and
 wrote nothing to standard error. Treat it as a dated observation; the workflow's own run remains the
 authoritative gate.
 
@@ -732,15 +754,22 @@ workflows and the [`scripts/release.py`](../scripts/release.py) tool. The full c
 maintainer procedure, required GitHub settings, archive layout and installation/verification
 instructions are in [Releases](releases.md). In short:
 
-- A maintainer runs **Release prepare** (dry run first) to bump the version in lockstep,
-  update the changelog and open a `release`-labelled pull request from `release/vVERSION`.
+- A maintainer runs **Prepare release** (dry run first), choosing the `stream`: `stable`
+  (`YYYY.M.PATCH`) or `beta` (`YYYY.M.PATCH-rc.N`). The version is computed unless the optional
+  `version` is given. The workflow bumps the version in lockstep, updates the changelog (a stable
+  folds in the betas since the previous stable) and opens a `release`-labelled pull request
+  `chore(release): vVERSION (stream)` from `release/vVERSION`.
 - Merging that pull request into `main` makes **Auto release** dispatch **Release** with the
   merge commit; **Release** validates it, builds clean packaged archives on that commit, then
-  creates the tag `vVERSION` at it and **publishes** the GitHub Release with a Windows ZIP, a
+  creates the tag `vVERSION` at it and **publishes** the GitHub Release (a stable as the latest
+  release, a beta as a prerelease) with a Windows ZIP, a
   Linux tar.gz and `SHA256SUMS`. Nobody pushes release tags by hand; a dry **Release** run can
   rehearse the release branch before merging.
-- Archives are unsigned. There are no installers, packages or attestations. The app can update
-  *itself* from a published release (the in-app updater; see
+- Archives are unsigned. There are no installers, packages or build-provenance attestations; with
+  immutable releases enabled, GitHub adds its release attestation (download integrity only, see
+  [Releases](releases.md#immutable-releases-and-githubs-release-attestation)). The app can update
+  *itself* from a published release (stable releases on both channels; betas only on the Beta
+  channel, otherwise testers download them from the release page; see
   [Releases](releases.md#in-app-updates)), so the archive names, the single root folder
   and the `SHA256SUMS` format are a compatibility contract with `update.rs`. A release run is
   not evidence of Linux desktop behavior or production AniDB validation.

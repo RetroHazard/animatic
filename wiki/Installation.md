@@ -24,7 +24,7 @@ for where data is kept and [First launch](First-Launch.md) for safe first-run se
   HTTP), so you need only your AniDB username and password; there is no client to register or
   enter ([AniDB client registration](First-Launch.md#anidb-client-registration)).
 - Separately, a startup **update check** (`updates.auto_check`, on by default) asks GitHub for
-  a newer stable release unless *Work offline* is on or the settings were recovered from a
+  a newer release on your update channel (stable by default) unless *Work offline* is on or the settings were recovered from a
   backup. It only looks for a version: nothing is downloaded or installed until you choose
   **Download and verify** and confirm the installation
   ([Updating Animatic](Updating-Animatic.md)). On a brand-new profile that means
@@ -35,26 +35,35 @@ for where data is kept and [First launch](First-Launch.md) for safe first-run se
 
 ### Option A: download a release
 
+Releases come in two streams: **stable** (`YYYY.M.PATCH`) and **beta** (`YYYY.M.PATCH-rc.N`,
+shown on GitHub as a prerelease). Betas are for testing: the in-app updater offers them only
+if you switch **Options → Updates → Release channel** to **Beta**; otherwise download a beta
+from its release page and install it manually, as below. A stable release is offered by the
+updater on both channels once it is published.
+
 Each GitHub Release lists three assets (if the project has published one):
 
 | Asset | Content | Platform |
 |---|---|---|
-| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and this user guide as `docs/*.md` | Windows |
+| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `NOTICES`, `README.md`, `CHANGELOG.md` and this user guide as `docs/*.md` | Windows |
 | `animatic-vVERSION-linux-x86_64.tar.gz` | `animatic` (executable) plus the same license and documentation files | Linux |
 | `SHA256SUMS` | SHA-256 of both archives | both |
 
 Download the archive for your platform and `SHA256SUMS`, verify the checksum, then unpack. The
 commands for PowerShell and for Linux `sha256sum` are in
 [Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md#install-a-release). Each archive has a single root folder named after
-the archive; the Linux binary keeps its executable bit. The archives are **unsigned**. Links
+the archive; the Linux binary keeps its executable bit. The archives are **unsigned**. If the
+release page shows it as **Immutable**, GitHub also attests the release; with the GitHub CLI,
+`gh release verify-asset vVERSION FILE -R RetroHazard/animatic` confirms a downloaded archive is
+exactly the one published in that release (it does not make the program signed). Links
 between the bundled guide pages work offline; links to developer documentation and source files
 point to GitHub, and the Rust API documentation is not included.
 
 Once running, an installed release can replace its own executable with a newer published
 release through **Help → Check for updates…** (Windows and Linux x86_64, writable folder
-required, no elevation). The bundled `LICENSE`, `THIRD-PARTY-NOTICES.html`, README, changelog
+required, no elevation). The bundled `LICENSE`, `NOTICES`, README, changelog
 and guides stay at the version you unpacked; the new version's licenses are added as
-`LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` beside the executable. Details and
+`LICENSE-vVERSION` and `NOTICES-vVERSION` beside the executable. Details and
 limits: [Updating Animatic](Updating-Animatic.md). A checkout built from source can run
 the updater, but it only replaces the compiled binary, never the source; use `git pull` and
 rebuild, and update package-manager installations with that manager.

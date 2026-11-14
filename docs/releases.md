@@ -33,20 +33,23 @@ tag at that exact commit and publishes. Nobody pushes release tags by hand, and 
 nothing. No other pull request, development branch or `main` CI run can create a release; a manual
 **Release** run from `main` can rehearse (dry run) or retry a commit that has no release yet (see
 [Workflows](#workflows)). Publishing matters beyond the page itself: installed copies of Animatic
-offer **published** stable releases (see [In-app updates](#in-app-updates)), so merging a release
-pull request is what makes a stable version an update candidate.
+offer **published** releases according to the user's update channel (see [In-app updates](#in-app-updates)),
+so merging a release pull request is what makes that version an update candidate.
 
 What is deliberately **not** shipped: installers, packages (MSI, deb, rpm, Flatpak, AppImage),
-unattended or automatic updates, code signing, notarization or build attestations. Archives are
-unsigned; the only integrity aid is the `SHA256SUMS` file, which proves the download matches what
-the workflow produced, not who produced it. The in-app updater is an explicit, user-confirmed
+unattended or automatic updates, code signing, notarization or build-provenance attestations.
+Archives are unsigned; the integrity aids are the `SHA256SUMS` file, which proves the download
+matches what the workflow produced, not who produced it, and, when the repository's immutable
+releases setting is on, the release attestation GitHub generates for each published release (see
+[Immutable releases and GitHub's release attestation](#immutable-releases-and-githubs-release-attestation)).
+The in-app updater is an explicit, user-confirmed
 download of these same assets and adds no signing. Other architectures, distributions and Rust
 targets are not built.
 
 Each archive does include license notices: Animatic's own `LICENSE` and a generated
-`THIRD-PARTY-NOTICES.html` listing the licenses of the Rust dependencies (including the fonts
+`NOTICES` (committed plain text in the repository root) listing the licenses of the Rust dependencies (including the fonts
 embedded by the UI toolkit). These are license-compliance material, not code signing, and they
-say nothing about the origin or integrity of the binary. They are generated automatically and
+say nothing about the origin or integrity of the binary. They are generated with `cargo-about`, committed as `NOTICES`, and
 are **not a legal audit**; see [Third-party notices](#third-party-notices) for their limits.
 
 ## Install a release
@@ -109,29 +112,33 @@ limits and install contract are in
 must keep true** for it to work. Everything here describes the implemented code; none of it has
 been run against a real GitHub release or on Linux by the project.
 
-- **Only stable, published releases are offered.** The updater lists GitHub releases
-  (anonymously; `RetroHazard/animatic` only) and ignores drafts, prereleases (including any tag
-  with a `-` suffix such as `-rc.1`) and tags that are not `vYYYY.M.PATCH`. It takes the **highest
-  CalVer** across all pages, not the first or "latest" entry, and offers it only if it is strictly
-  newer than the running version: equal or lower versions are never offered and there is no
-  downgrade. A release candidate is therefore *not* an update; testers install it manually.
+- **What is offered depends on the channel.** The updater lists GitHub releases
+  (anonymously; `RetroHazard/animatic` only) and ignores drafts and tags that are not
+  `vYYYY.M.PATCH` (or `vYYYY.M.PATCH-rc.N` on the Beta channel). On the **Stable** channel
+  (`updates.channel`, the default) it also ignores every prerelease; on the **Beta** channel it
+  additionally considers GitHub prereleases versioned `YYYY.M.PATCH-rc.N` (`N` >= 1); any other
+  prerelease form is never offered. It takes the **highest version** across all pages, not the
+  first or "latest" entry, and offers it only if it is strictly newer than the running version:
+  equal or lower versions are never offered and there is no downgrade (switching back to Stable
+  never installs an older version; the next stable newer than the running one is offered). A beta
+  or stable is offered as soon as it is published.
 - **Asset contract.** The published release must contain the platform archive
   `animatic-vVERSION-windows-x86_64.zip` or `animatic-vVERSION-linux-x86_64.tar.gz` and
   `SHA256SUMS` with the standard `sha256sum` format (64 lowercase hex digits, two spaces, the file
   name). The archive must have exactly one root folder (the archive stem) containing the
-  executable (`animatic.exe` or `animatic`), `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`,
+  executable (`animatic.exe` or `animatic`), `LICENSE`, `NOTICES`, `README.md`,
   `CHANGELOG.md` and `docs/*.md` (the user guide), as built by `release.py package` (see
   [Archive contents](#archive-contents)). Renaming assets, changing the folder layout or the
   checksum format breaks updates for every already-installed copy, so change
   `scripts/release.py` and `animatic-core/src/update.rs` together and keep the previous layout readable
   for as long as older versions are in use.
 - **What gets installed.** Only the executable is swapped, using the maintained `self-replace`
-  crate. The new `LICENSE` and `THIRD-PARTY-NOTICES.html` are written beside it as
-  `LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` before the swap and are never
-  overwritten if a different file exists. The old `LICENSE`, `THIRD-PARTY-NOTICES.html`,
+  crate. The new `LICENSE` and `NOTICES` are written beside it as
+  `LICENSE-vVERSION` and `NOTICES-vVERSION` before the swap and are never
+  overwritten if a different file exists. The old `LICENSE`, `NOTICES`,
   `README.md`, `CHANGELOG.md` and `docs/` stay as they were until the user replaces them from a new
   archive by hand (so the bundled guides can lag the executable), and the About window shows the
-  versioned third-party notices for the running version (its own license text is built into the
+  built-in third-party notices and license text (both are built into the
   executable). Profiles, databases, settings and media are never touched.
 - **Limits.** Metadata 1 MiB, `SHA256SUMS` 64 KiB, archive 256 MiB, extracted executable 512 MiB,
   each license file 8 MiB. A release whose archive would exceed them cannot be installed by the
@@ -170,13 +177,19 @@ been run against a real GitHub release or on Linux by the project.
   are separate contracts that change only for their own reasons. Versions shown in this page
   (`2026.11.0`, `2026.11.1`, `2026.12.0-rc.1`) are illustrative examples; the repository's
   `Cargo.toml` is authoritative, and automated bumps make any number quoted in prose stale.
+- **Release streams:** a **stable** release is `YYYY.M.PATCH`; a **beta** is
+  `YYYY.M.PATCH-rc.N` with `N` >= 1, a candidate for the stable `YYYY.M.PATCH`. No other
+  prerelease form (`-beta.2`, `-alpha`, `-rc.0`) is released: `release.py` refuses it in
+  `prepare`, `validate` and `stream`. `python scripts/release.py stream --version VERSION`
+  prints `stable` or `beta`. Betas are published as GitHub prereleases and are offered by the
+  in-app updater only on the Beta channel; a stable is published as the latest release and is
+  offered on both channels.
 - **Scheme (CalVer):** `YYYY.M.PATCH`, for example `2026.11.0`. `YYYY` is the four-digit year
   (2000 to 9999), `M` the month `1`-`12` **without zero padding**, and `PATCH` a counter of
   releases within that month. Starting each month at `0` is the recommended convention, not a
   checked rule; the only mandatory rule is that each release is strictly greater than the last. A
-  prerelease may append any Cargo-style prerelease identifier (`-rc.1`, `-beta.2`, `-alpha`);
-  `-rc.N` is the recommended form, for example `2026.12.0-rc.1`. Build metadata (`+...`) is not
-  accepted. Tags are the version with a leading `v` (`vYYYY.M.PATCH`). The version carries no
+  beta appends `-rc.N` (`N` >= 1, no zero padding), for example `2026.12.0-rc.1`. Build metadata (`+...`) is not
+  accepted. Tags are the version with a leading `v` (`vYYYY.M.PATCH` or `vYYYY.M.PATCH-rc.N`). The version carries no
   compatibility promise; it says when the release was prepared.
 - **Cargo compatibility:** Cargo requires a `MAJOR.MINOR.PATCH` version in SemVer *syntax*, so a
   CalVer number is written the same way (hence no leading zeros). That is a technical
@@ -186,11 +199,11 @@ been run against a real GitHub release or on Linux by the project.
   and month (not the past, not the future). By convention the first release of a month uses patch
   `0`, later releases in the same month use a higher `PATCH`, and a new month resets it to `0`;
   the tool does not require patch `0` for the first release of a month. The version must
-  also be strictly greater than the latest released version, with a prerelease ordering before its
-  final release (`2026.12.0-rc.1` < `2026.12.0`). Only "strictly greater" is enforced, so a
+  also be strictly greater than the latest released version, with a beta ordering before its
+  stable release (`2026.12.0-rc.1` < `2026.12.0`). Only "strictly greater" is enforced, so a
   skipped patch number is allowed. Downgrades, repeats, and a version whose changelog section or
   tag already exists are rejected. The very first release may equal the version already in
-  `Cargo.toml` when no released section or `vYYYY.M.PATCH` tag exists yet. Tags that are not valid
+  `Cargo.toml` when no released section or release tag exists yet (a beta of it uses `-rc.1`). Tags that are not valid
   CalVer (for example an old `v1.0.0`) are ignored when finding the latest release.
 - **Validation is not clock-checked:** `validate` accepts any valid CalVer version, past or
   future; only `prepare` applies the current-month rule.
@@ -206,6 +219,18 @@ been run against a real GitHub release or on Linux by the project.
   the changelog so they cannot inject HTML or Markdown; curated entries are left as written.
   `prepare` refuses a shallow clone (use `git fetch --unshallow` first), because the commit
   range would be incomplete.
+- **Next version (`--stream`):** without `--version`, `prepare --stream` computes the next
+  version of that stream in the current UTC month. A **beta** raises the rc number of a pending
+  stable version (one with betas but no stable release yet) or starts `-rc.1` of the next
+  version (the next patch, or `.0` in a new month). A **stable** releases the pending version
+  of an outstanding beta, or else the next patch (`.0` in a new month). The very first release
+  uses the workspace version (or its `-rc.1` for a beta). When both `--stream` and `--version`
+  are given they must agree.
+- **Beta and stable sections:** each beta gets its own incremental section, from the commits
+  since the previous tag of either stream. A stable section folds in the sections of every beta
+  since the previous stable release (headings merged) and starts with "Includes the changes of
+  the beta release(s) X, Y.", so stable notes cover the whole cycle. A stable can promote the
+  last beta even when there are no new commits.
 
 Commit subjects are public text. Write them as release-note material and never place private
 paths, usernames, credentials, library names or AOM data in them (see
@@ -226,10 +251,11 @@ synthetic fixture repositories.
 
 | Command | Purpose |
 |---|---|
-| `python scripts/release.py prepare --version VERSION` | Validate the version and update `workspace.package.version`, the explicit internal dependency versions and the `Cargo.lock` entries of the local crates; write the dated changelog section and a new empty `Unreleased`. Internal dependency pins are rewritten only in the one-line inline form (`{ version = "…", path = "…" }`); any other table form is refused before anything is written. Performs no `git commit` or push and does not require a globally clean worktree, but it rewrites those files, so run it where you can discard the result. Refuses a duplicate section, an existing tag or a version that is not an increase, and fails before changing files where possible. Prints the changed paths. There is no `--dry-run` or date option; rehearse in a disposable worktree (below). |
+| `python scripts/release.py prepare --stream stable\|beta [--version VERSION]` | At least one of `--stream` and `--version` is required; when both are given they must agree. Without `--version` the next version of the stream is computed (see [Versions and the changelog](#versions-and-the-changelog)). Validate the version and update `workspace.package.version`, the explicit internal dependency versions and the `Cargo.lock` entries of the local crates; write the dated changelog section and a new empty `Unreleased`. Internal dependency pins are rewritten only in the one-line inline form (`{ version = "…", path = "…" }`); any other table form is refused before anything is written. Performs no `git commit` or push and does not require a globally clean worktree, but it rewrites those files, so run it where you can discard the result. Refuses a duplicate section, an existing tag, a version that is not an increase or an unsupported prerelease form, and fails before changing files where possible. Prints the changed paths. There is no `--dry-run` or date option; rehearse in a disposable worktree (below). |
+| `python scripts/release.py stream --version VERSION` | Print `stable` or `beta` for a version; refuses any other prerelease form. Used by the Release workflow. |
 | `python scripts/release.py validate [--tag vVERSION]` | Check that the workspace, crates, internal dependency requirements and lock file agree. With `--tag`, additionally require the tag to equal the workspace version and require a non-empty matching changelog section. Without a tag, an `Unreleased`-only repository passes. Exits non-zero on any error. |
 | `python scripts/release.py notes --version VERSION --output PATH` | Write exactly that version's changelog section (non-empty, with no `Unreleased` content) as the GitHub release notes. The output path may be anywhere, including outside the repository. |
-| `python scripts/release.py package --platform windows\|linux --binary PATH --notices PATH --output DIRECTORY` | Validate metadata, then build the archive from an explicit binary, the generated third-party notices file and tracked `docs/*.md` selected by `git ls-files`. `--notices` is required. Refuses missing, empty, directory or symlinked binary/notices inputs, missing tracked docs, and repository documents redirected outside the checkout. The explicitly selected binary and notices may live outside it. See [Archive contents](#archive-contents). |
+| `python scripts/release.py package --platform windows\|linux --binary PATH --output DIRECTORY` | Validate metadata, then build the archive from an explicit binary, the repository `LICENSE` and `NOTICES` and tracked `docs/*.md` selected by `git ls-files`. Refuses missing, empty, directory or symlinked binary input, missing tracked docs, and repository documents redirected outside the checkout. The explicitly selected binary may live outside it. See [Archive contents](#archive-contents). |
 | `python scripts/release.py checksums --directory DIRECTORY` | Require exactly the two archives of the current version (plus an optional existing `SHA256SUMS`), hash them by streaming and write `SHA256SUMS`. Missing, symlinked or unexpected files are errors. |
 
 Do not rehearse `prepare` in a working tree that holds your own changes: it rewrites version
@@ -240,7 +266,7 @@ work. Rehearse in a disposable worktree or fresh clone **outside** the repositor
 ```sh
 git worktree add --detach ../animatic-release-rehearsal HEAD   # then use the version you intend to release
 cd ../animatic-release-rehearsal
-python scripts/release.py prepare --version 2026.11.1
+python scripts/release.py prepare --stream beta   # or --stream stable, or --version 2026.11.1
 python scripts/release.py validate
 git diff --stat
 cd -
@@ -269,13 +295,13 @@ GitHub Release, tag or push. The release workflows reuse it through
 default `false`). A call with a non-empty `ref` runs every check, never the planner's reduced
 selection; release preparation uses this for its bot branch. A call with `package: true`
 (Release) runs no Clippy, tests or rustdoc, because the tag must be on `main` history that was
-checked through pull requests: it builds clean, uncached release executables and notices,
+checked through pull requests: it builds clean, uncached release executables,
 smoke-runs `--help`, packages the versioned archives with `scripts/release.py package` and
 uploads them as `release-windows-x86_64` or `release-linux-x86_64`. A manual CI run with
 **executables** ticked uploads the raw executables (`animatic-windows-x86_64`,
 `animatic-linux-x86_64`, 14 days), which are build outputs, not releases. The `notices` job
-generates `THIRD-PARTY-NOTICES.html` (artifact `dependency-notices`) after installing the pinned
-`cargo-about` with `--features cli`, and doubles as the license-policy gate. The `quality` job
+regenerates the notices (no artifact) after installing the pinned
+`cargo-about` with `--features cli`, fails when the committed `NOTICES` is stale and doubles as the license-policy gate. The `quality` job
 must pass before the Rust and license jobs start, and those then run in parallel. The stable aggregate
 job **`Required checks`** is the check to require on pull requests; it fails closed. Pull
 requests whose base is not `main` (stacked children) may start the workflow, but a cheap `scope` job checks
@@ -291,12 +317,14 @@ repeated here.
 
 ### `release-prepare.yml` (Prepare release)
 
-Manual (`workflow_dispatch`) with inputs `version` (string, no `v` prefix) and `dry_run`
-(boolean, default `true`). It refuses to run from any ref other than `main`.
+Manual (`workflow_dispatch`) with inputs `stream` (choice `beta` or `stable`, default `beta`),
+`version` (optional string, no `v` prefix; empty computes the next version of the stream) and
+`dry_run` (boolean, default `true`). It refuses to run from any ref other than `main`.
 
-1. Run the Python release-tool tests, then `prepare --version`, `validate --tag vVERSION`,
-   `cargo metadata --locked` and `notes` for the new version. The generated notes are copied to the
-   run summary.
+1. Run `prepare --stream` (with `--version` when given), `validate --tag vVERSION`,
+   `cargo metadata --locked` and `notes` for the new version. The release-tool tests are not
+   repeated here; they run in the CI `quality` job on `main`. The run summary shows
+   "vVERSION (stream)" and the generated notes.
 2. Upload the preview as the artifact `release-preview-vVERSION` (14 days): `CHANGELOG.md`, the
    root and crate `Cargo.toml` files and `Cargo.lock`.
 3. A **dry run** stops here. It does not push anything, and it does not run the full Windows and
@@ -320,9 +348,10 @@ pull request; a maintainer reviews and merges it.
 Token permissions: `contents: write` only in the preparation job that pushes the branch,
 `pull-requests: write` only in the job that opens the PR.
 
-The pull request is opened with the label `release` (the label must exist in the repository). Its
-description says that merging publishes the version; removing the label before merging merges
-without releasing.
+The pull request is titled `chore(release): vVERSION (stream)` and opened with the label `release`
+(the label must exist in the repository). Its description says what merging publishes for that
+stream (a stable: the latest release, offered on both update channels; a beta: a prerelease that
+installed copies on the Beta channel offer); removing the label before merging merges without releasing.
 
 ### `auto-release.yml` (Auto release)
 
@@ -350,7 +379,7 @@ rehearsal can neither delay nor replace a queued publication.
    only if it already points at this commit (a retry after a failed publication), and an existing
    GitHub Release for it is refused.
 2. **Build:** call `ci.yml` with `package: true` on exactly that commit: clean, uncached release
-   executables with a `--help` smoke run on both platforms, the license notices, and the
+   executables with a `--help` smoke run on both platforms, and the
    `release-windows-x86_64` and `release-linux-x86_64` archives. Clippy, tests and rustdoc are not
    rerun: they ran on the release pull request, and the commit must be on `main`.
 3. **Bundle:** download both archives, run `release.py checksums` and upload the artifact
@@ -359,14 +388,35 @@ rehearsal can neither delay nor replace a queued publication.
 4. **Publish:** only when `dry_run` is `false`. It runs in the GitHub environment named `release`
    and extracts the notes with `release.py notes`. It re-checks that the tag, if it now exists,
    still points at the validated commit, then runs `gh release create --target <commit>`, which
-   creates the tag at that commit and publishes the release, marking versions with a prerelease
-   suffix as prereleases. Only this job has `contents: write`. An existing release is never
+   creates the tag at that commit and publishes the release. The validate job's `stream` output
+   (from `release.py stream`) selects the form: a **beta** is published with
+   `--prerelease --latest=false` and titled "Animatic vVERSION (beta)"; a **stable** is titled
+   "Animatic vVERSION" and marked latest only when it is newer than every published stable
+   release: right before publishing, the job lists the published releases
+   (`gh release list`, failing the job if that lookup fails) and `release.py stream --published`
+   decides, so retrying an older stable after a newer one is out never makes the older one the
+   default download (it is published with `--latest=false` and a warning). Only this job has
+   `contents: write`. An existing release is never
    overwritten (the command fails). The tag is created with the workflow token, so it starts no
    other workflow.
 
-No signing, attestations or installers are produced, and a successful run does not show that
-the Linux binary starts on any particular machine beyond the CI `--help` smoke run on the Ubuntu
-22.04 runner.
+No code signing, build-provenance attestation or installer is produced by the workflows, and a
+successful run does not show that the Linux binary starts on any particular machine beyond the CI
+`--help` smoke run on the Ubuntu 22.04 runner.
+
+### Immutable releases and GitHub's release attestation
+
+With **immutable releases** enabled for the repository (Settings → General → Releases; the
+repository API reported `{"enabled": true}` on 2026-11-14, before any release was published),
+GitHub locks each published release's tag and assets and generates a **release attestation**: a
+GitHub-signed record of the tag, the commit SHA and the assets. It can be checked with
+`gh release verify vVERSION` and `gh release verify-asset vVERSION FILE`. It proves that a
+download is exactly what was published in that release; it is **not** a signature of the
+executable, not a build-provenance attestation of how the binary was built, and the archives and
+executables stay unsigned (Windows SmartScreen and similar checks are unaffected). Immutability
+does not lock a release's title, notes, prerelease flag or *latest* marking, which is why the
+Release workflow still decides *latest* itself. Whether a given release is immutable and attested
+is shown on its release page; this repository does not prove the setting stays enabled.
 
 ## Repository settings the maintainer must provide
 
@@ -393,6 +443,11 @@ The workflows need these; nothing here asserts they are already configured.
   development-branch CI can publish.
 - **Tags** are created only by the Release workflow, at the validated merge commit. There is no
   manual tagging step.
+- **Immutable releases (recommended):** locks each published release's tag and assets and adds
+  GitHub's release attestation; see
+  [Immutable releases and GitHub's release attestation](#immutable-releases-and-githubs-release-attestation).
+  It changes nothing in the workflows: `gh release create` uploads the assets before the release
+  is published.
 - **Tag protection (recommended):** a ruleset for `v*` tags that blocks updates and deletion keeps
   a published version from being moved or recreated. If it also restricts tag *creation*, it must
   let the Release workflow (the `github-actions` app) create tags, or publishing fails. No such
@@ -404,26 +459,30 @@ The workflows need these; nothing here asserts they are already configured.
 
 All commands run from your local clone; Git uses the SSH remote.
 
-1. **Rehearse the preparation** (changes nothing remote): in **Actions → Prepare release → Run
-   workflow** on `main`, enter the version without `v` and keep `dry_run` checked. Read the notes
+1. **Choose the stream.** A **beta** is a release candidate for testers; a **stable** is what
+   installed copies are offered. Cut betas (`-rc.1`, `-rc.2`, ...) while the next stable
+   version is pending, then a stable to release it.
+2. **Rehearse the preparation** (changes nothing remote): in **Actions → Prepare release → Run
+   workflow** on `main`, pick `stream` (`beta` or `stable`), leave `version` empty to use the
+   computed next version (or enter one without `v` to override it) and keep `dry_run` checked. Read the notes
    in the run summary and download the `release-preview-vVERSION` artifact (changelog,
    `Cargo.toml` files and `Cargo.lock`). A dry run does not run the full Windows and Linux matrix.
-2. **Prepare for real:** run it again with `dry_run` unchecked. After CI passes on the new SHA
-   the bot opens a pull request from `release/vVERSION` with the `release` label.
-3. **Review the release notes** in that pull request before merging
+3. **Prepare for real:** run it again with `dry_run` unchecked. After CI passes on the new SHA
+   the bot opens a pull request `chore(release): vVERSION (stream)` from `release/vVERSION` with the `release` label.
+4. **Review the release notes** in that pull request before merging
    ([privacy review is mandatory](#release-notes-and-privacy)): they are published verbatim. Edit
    the changelog on the branch if needed; run `python scripts/release.py validate` and the CI
    commands again after editing. Run `CI` manually on the branch (**Actions → CI → Run
    workflow**, branch `release/vVERSION`) so the pull request gets a `Required checks` result: the
    bot's pull request starts no CI by itself.
-4. **Rehearse the release** (recommended, because merging publishes): run **Release** manually
+5. **Rehearse the release** (recommended, because merging publishes): run **Release** manually
    from `main` with `sha` = the head commit of `release/vVERSION` and `dry_run` checked. It
    validates that commit, builds both archives and uploads `release-bundle-vVERSION` without
    tagging or publishing. Download it, verify `SHA256SUMS` as in
    [Install a release](#install-a-release), and launch offline with isolated data (see
    [Development](development.md#running-with-isolated-data)) on the platforms you can.
-5. **Merge** the pull request into `main`. Auto release dispatches Release with the merge commit.
-6. **Approve** the publishing job in the `release` environment if reviewers are configured, wait
+6. **Merge** the pull request into `main`. Auto release dispatches Release with the merge commit.
+7. **Approve** the publishing job in the `release` environment if reviewers are configured, wait
    for the run to finish, and check the published release: notes, both archives and
    `SHA256SUMS`. Record only what you exercised.
 
@@ -433,8 +492,8 @@ accepted only when it points at that same commit.
 
 The first release may use the version already in `Cargo.toml` if its year and month match the
 current UTC month and no tag or released changelog section exists. Run the preparation workflow
-as above with that same version: it turns the curated `Unreleased` entries and the history into
-the release section without changing the version numbers.
+as above (a beta of it becomes `-rc.1` of that version): it turns the curated `Unreleased` entries and the history into
+the release section without changing the version numbers of a stable.
 
 ## Archive contents
 
@@ -445,7 +504,7 @@ updater requires this layout; see [In-app updates](#in-app-updates)):
 animatic-v2026.11.0-windows-x86_64/
   animatic.exe            (animatic on Linux, mode 0755)
   LICENSE
-  THIRD-PARTY-NOTICES.html   generated by cargo-about
+  NOTICES                 committed plain-text third-party notices (generated by cargo-about)
   README.md
   CHANGELOG.md
   docs/*.md               the user guide: every tracked wiki/*.md page except _Sidebar.md and _Footer.md
@@ -456,7 +515,7 @@ same inputs aim to produce the same archive. Documentation comes from `git ls-fi
 is no fallback to files outside Git, and ignored or untracked files are never included, so
 packaging needs a Git checkout. Not included: `AGENTS.md`, databases, settings,
 media, build sources, Cargo manifests, scripts, workflows, `target/` output or any other file.
-The packager takes the binary and notices from explicit paths and copies only those inputs and
+The packager takes the binary from an explicit path and copies only those inputs and
 the allowlisted repository documents. Review those inputs for privacy; tests use synthetic data.
 
 A new or upgraded dependency whose license is not already accepted in `about.toml`, or whose
@@ -470,13 +529,18 @@ green.
 `cargo-about` cannot identify on its own (including the embedded fonts and some Windows-support
 crates) by checksum, and covers only the two release targets. Known limits:
 
+- `NOTICES` is grouped by license: each license wording appears once, followed by the crates
+  that use it and the copyright lines of each crate's own license file; a license file worded
+  differently is reproduced in full (see
+  [Third-party license gate](development.md#third-party-license-gate) for the matching rule).
 - Some crates do not package their license text. For those the generator falls back to the
-  canonical SPDX license text **without a crate-specific copyright line**; the report notes the
-  fallback visibly and gives the upstream URL so a reader can find the original. For three
+  canonical SPDX license text **without a crate-specific copyright line**; such a crate is listed
+  with its Cargo.toml authors, marked as not being an upstream copyright notice. For three
   crates (`egui`, `profiling`, `pulp`) whose upstream copyright lines are not packaged,
-  `about.hbs` carries a statically verified supplement with the upstream source URLs and
-  pinned versions. Re-verify that supplement when those crates are upgraded. Public author
-  attribution (names and contact addresses from upstream licenses) is intentionally kept.
+  `scripts/ci.py` (`NOTICES_UPSTREAM`) carries a statically verified supplement with the upstream
+  source URLs and pinned versions. Re-verify that supplement when those crates are upgraded.
+  Public author attribution (names and contact addresses from upstream licenses) is
+  intentionally kept.
 - Generation is automatic and reflects what the crates declare and package. It is not a legal
   review or a guarantee of exhaustive compliance. A maintainer should read the generated file
   when dependencies change, especially after upgrades, and treat any change to a
@@ -501,7 +565,7 @@ treat it as a disclosure: pull the release and rewrite or remove the text before
 
 | Symptom | Cause and action |
 |---|---|
-| `prepare` rejects the version | Not `YYYY.M.PATCH` CalVer (with an optional Cargo-style prerelease such as `-rc.N`), has zero padding or build metadata, is not the current UTC year and month, is not an increase over the latest released version, or the section or tag exists. It also refuses a shallow clone: run `git fetch --unshallow`. Nothing is written. |
+| `prepare` rejects the version | Not `YYYY.M.PATCH` or `YYYY.M.PATCH-rc.N` (`N` >= 1; any other prerelease form is refused), has zero padding or build metadata, is not the current UTC year and month, is not an increase over the latest released version, or the section or tag exists; or `--stream` disagrees with `--version`. It also refuses a shallow clone: run `git fetch --unshallow`. Nothing is written. |
 | Preparation CI fails on the new branch | No PR is opened. Fix `release/vVERSION`, run CI on the new commit, then open the PR manually; retrying the failed job still checks its original SHA. Alternatively, deliberately delete the failed branch and run preparation again. A new preparation run never moves an existing release branch. |
 | Bot PR shows no checks | Expected: events created with the workflow token do not start `ci.yml` on the pull request. Run `CI` manually on the branch (see [`release-prepare.yml`](#release-prepareyml-prepare-release) above); if `Required checks` is required, that manual run is what satisfies it. |
 | Release run rejects the commit | The commit is not reachable from `origin/main`, the workspace version does not match a non-empty changelog section (the commit was not prepared), the pins or lock file disagree, a manual dispatch was not run from `main`, or the tag already exists at a different commit. Merge a correct **Prepare release** pull request instead. |

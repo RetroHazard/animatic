@@ -6,6 +6,7 @@ Commands (``--root`` is a global option and goes BEFORE the subcommand):
     python scripts/ci.py plan --base SHA [--head SHA] [--force] [--github-output FILE]
     python scripts/ci.py docs
     python scripts/ci.py wiki --out DIR
+    python scripts/ci.py notices ABOUT_JSON [--write]
     python scripts/ci.py gate
 
 ``plan`` decides which expensive CI jobs a change needs. It diffs ``--base`` against
@@ -34,6 +35,14 @@ published wiki and the archive's ``docs/`` carry nothing else.
 ``wiki`` writes the tracked ``wiki/`` pages into ``--out`` (which must be empty apart
 from ``.git``) for publishing to the GitHub wiki: relative ``Page.md`` links become the
 wiki's ``Page`` links; everything else is copied byte for byte.
+
+``notices`` renders the third-party notices from the JSON that ``cargo about generate
+--format json`` writes and compares them with the committed root ``NOTICES``, failing
+with the regenerate command when they differ (``--write`` writes ``NOTICES`` instead).
+The rendering groups by license: each license's standard wording is printed once,
+followed by every crate that uses it with the copyright lines of that crate's license
+file; a license file whose wording differs (apart from copyright lines, comment markers,
+a title line, letter case and punctuation) is reproduced in full under its crates.
 
 ``gate`` is the ``Required checks`` job logic. It reads ``CI_NEEDS_JSON`` (the
 ``toJSON(needs)`` of the gate job) plus the ``CI_RUST``, ``CI_LICENSES`` and
@@ -130,8 +139,10 @@ def classify_path(path: str) -> tuple[bool, bool]:
         return BOTH
     if name in ("Cargo.toml", "Cargo.lock"):
         return BOTH
-    if not nested and name in ("about.toml", "about.hbs", "LICENSE"):
+    if not nested and name in ("about.toml", "LICENSE"):
         return LICENSES
+    if not nested and name == "NOTICES":
+        return BOTH  # embedded into the executable with include_str!
     if top == "crates":
         return RUST
     if suffix in MARKDOWN_SUFFIXES:
@@ -139,6 +150,8 @@ def classify_path(path: str) -> tuple[bool, bool]:
     if top == "docs":
         return NEITHER if suffix in DOC_ASSET_SUFFIXES else BOTH
     if top == "scripts":
+        if len(parts) == 2 and name == "ci.py":
+            return LICENSES  # renders NOTICES, which the notices job checks
         if len(parts) == 2 and suffix == ".py" and name not in PACKAGING_SCRIPTS:
             return NEITHER  # other Python tooling only affects the always-on quality job
         return BOTH  # release.py, test_release.py and anything unrecognised
@@ -741,6 +754,242 @@ def run_wiki(args: argparse.Namespace) -> int:
     return 0
 
 
+# ----------------------------------------------------------------------- notices
+
+NOTICES_NAME = "NOTICES"
+NOTICES_REGENERATE = (
+    "cargo about generate --locked --fail --format json --output-file <tmp> "
+    "&& python scripts/ci.py notices <tmp> --write"
+)
+
+NOTICES_HEADER = """\
+ANIMATIC THIRD-PARTY NOTICES
+
+Animatic itself is distributed under the MIT License; see the LICENSE file next to this file.
+
+This program is built from open-source crates and bundled font data. The notices are grouped by
+license: each license text is reproduced once, followed by the crates (name and version) that are
+redistributed under it and the copyright lines of each crate's own license file. Where a crate's
+license file is worded differently, its text is reproduced in full. Where a crate's license file
+names no copyright holder, the authors from its Cargo.toml metadata are listed instead; they are
+not upstream copyright notices. The list covers the dependency graph for the Windows
+(x86_64-pc-windows-msvc) and Linux (x86_64-unknown-linux-gnu) release builds.
+"""
+
+# MAINTAINERS: hand-maintained. cargo-about 0.9.3 cannot fetch license files that crates fail
+# to package, so these upstream copyright lines are copied verbatim from the upstream license
+# files cited here. Re-check whenever Cargo.lock changes a crate listed below (new holders or
+# years, a crate that starts packaging its own license file, or a crate leaving the graph).
+# Sources (GitHub, files verified at the cited commits): egui LICENSE-MIT at
+# 3c6eb8261c3293ad9c7ea1ed58487e038860ebef and 9d317be94fc96df23bd5d9316f357efa2d3631d8 (the
+# commit named in the egui packages, 7c0b40402271e8d40cda69f87cf3c2617c2e4382, could not be
+# fetched; both commits above carry the same notice); aclysma/profiling LICENSE-MIT at
+# 8271551172eb6fa4cba47369aedd93790c623df9; sarah-quinones/pulp LICENSE at
+# 5eb07fd7b68edf0a5e19f71737d315f72a510295.
+NOTICES_UPSTREAM = """\
+UPSTREAM COPYRIGHT NOTICES NOT PACKAGED WITH THEIR CRATES
+
+The crates below are distributed under the MIT License (reproduced below) but do not package the
+upstream license file that carries their copyright line. These lines are copied verbatim from the
+upstream license files named in each entry.
+
+- egui 0.37.0, ecolor 0.37.0, emath 0.37.0, epaint 0.37.0, egui-wgpu 0.37.0, egui-winit 0.37.0,
+  egui_extras 0.37.0, eframe 0.37.0, egui_system_font_provider 0.37.0:
+  Copyright (c) 2018-2021 Emil Ernerfeldt <emil.ernerfeldt@gmail.com>
+  (LICENSE-MIT in https://github.com/emilk/egui, commits 3c6eb8261c3293ad9c7ea1ed58487e038860ebef
+  and 9d317be94fc96df23bd5d9316f357efa2d3631d8)
+- profiling 1.0.18, profiling-procmacros 1.0.18:
+  Copyright (c) 2020 Philip Degarmo and other contributors
+  (LICENSE-MIT in https://github.com/aclysma/profiling, commit 8271551172eb6fa4cba47369aedd93790c623df9)
+- pulp-wasm-simd-flag 0.1.1:
+  Copyright (c) 2021 sarah
+  (LICENSE in https://github.com/sarah-quinones/pulp, commit 5eb07fd7b68edf0a5e19f71737d315f72a510295)
+"""
+
+# Source files cargo-about took a license from: only their leading comment block is the license.
+_SOURCE_SUFFIXES = (".rs", ".c", ".h", ".s", ".pl", ".asm", ".inl", ".cc", ".cpp")
+# A plain line comment (not a `///`/`//!` doc comment, `#!`, `#[` or preprocessor line).
+_LINE_COMMENT = re.compile(r"^\s*(?://(?![/!])|#(?=\s|$))")
+_COMMENT_PREFIX = re.compile(r"^\s*(?:/\*+|\*+/|\*(?!\*)|//+!?|#+)\s?")
+_COMMENT_SUFFIX = re.compile(r"\s*\*+/\s*$")
+# A copyright line names a holder; "copyright notice", "copyright holders" and the like are
+# license wording, and so is a lettered clause such as Apache-2.0's "(c) You must retain".
+_COPYRIGHT = re.compile(
+    r"^\s*(?:copyright\b(?!\s+(?:notice|notices|holder|holders|owner|owners|license|licence|and|"
+    r"statement|law|laws|protection)\b)|\(c\)\s*\d|©|all rights reserved)",
+    re.IGNORECASE,
+)
+_PLACEHOLDER = re.compile(r"\[yyyy\]|\{yyyy\}|<year>|\[name of copyright owner\]|<copyright holders?>", re.I)
+
+
+def normalize_notices(data: bytes) -> bytes:
+    """Convert CRLF and lone CR line endings to LF so every platform yields the same bytes."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def _source_header(raw: list[str]) -> list[str]:
+    """The leading license comment of a source file: its first `/* */` block, or its first run
+    of plain line comments; code, doc comments and anything after a blank line are not part of it."""
+    start = 0
+    while start < len(raw) and not raw[start].strip():
+        start += 1
+    header: list[str] = []
+    if start < len(raw) and raw[start].lstrip().startswith("/*"):
+        for line in raw[start:]:
+            header.append(line)
+            if "*/" in line:
+                break
+        return header
+    for line in raw[start:]:
+        if not _LINE_COMMENT.match(line):
+            break
+        header.append(line)
+    return header
+
+
+def _license_lines(text: str, source_path: str | None) -> list[str]:
+    """The license text as lines without comment markers; a source file keeps its header only."""
+    raw = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if (source_path or "").lower().endswith(_SOURCE_SUFFIXES):
+        raw = _source_header(raw)
+    lines = []
+    for line in raw:
+        previous = None
+        while previous != line:
+            previous, line = line, _COMMENT_PREFIX.sub("", line, count=1)
+        lines.append(_COMMENT_SUFFIX.sub("", line).rstrip())
+    return lines
+
+
+def _split_license(lines: list[str]) -> tuple[list[str], list[str]]:
+    """``(copyright lines, wording)``; a short title line before the wording is dropped."""
+    holders: list[str] = []
+    wording: list[str] = []
+    first = True
+    for line in lines:
+        if _COPYRIGHT.match(line):
+            if not _PLACEHOLDER.search(line):
+                holders.append(" ".join(line.split()))
+            continue
+        if first and line.strip():
+            first = False
+            stripped = line.strip()
+            if len(stripped) < 60 and re.search(r"licen[cs]e", stripped, re.I) and not re.search(
+                r"permission|granted", stripped, re.I
+            ):
+                continue
+        wording.append(line)
+    return holders, wording
+
+
+def _wording_key(wording: list[str]) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", " ".join(wording).lower()))
+
+
+def _tidy(lines: list[str]) -> list[str]:
+    """Collapse blank-line runs and trim leading and trailing blank lines."""
+    out: list[str] = []
+    for line in lines:
+        if line.strip() or (out and out[-1]):
+            out.append(line if line.strip() else "")
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def render_notices(about: Mapping) -> str:
+    """Group the licenses of ``cargo about generate --format json`` output into NOTICES text."""
+    names: dict[str, str] = {}
+    # license id -> wording key -> [(registry crates, copyright lines, lines, standard text)]
+    groups: dict[str, dict[str, list[tuple[list[Mapping], list[str], list[str], bool]]]] = {}
+    for lic in about.get("licenses", []):
+        crates = [u["crate"] for u in lic.get("used_by", []) if u.get("crate", {}).get("source")]
+        if not crates:
+            continue
+        names[lic["id"]] = lic["name"]
+        lines = _license_lines(lic["text"], lic.get("source_path"))
+        holders, wording = _split_license(lines)
+        entry = (crates, holders, lines, not lic.get("source_path"))
+        groups.setdefault(lic["id"], {}).setdefault(_wording_key(wording), []).append(entry)
+    if not groups:
+        raise CiError("the cargo-about JSON lists no licenses")
+
+    def label(crate: Mapping) -> str:
+        return f"{crate['name']} {crate['version']}"
+
+    def sort_key(name: str) -> tuple[str, str]:
+        return (name.lower(), name)
+
+    sections: list[tuple[str, int, list[str]]] = []
+    for lid, by_wording in groups.items():
+        canonical = max(by_wording, key=lambda k: (len(by_wording[k]), k))
+        members = by_wording[canonical]
+        # Print the standard text cargo-about supplies when one is in the group, else the
+        # first by content, so the choice does not depend on input order or local paths.
+        shown = min(members, key=lambda m: (not m[3], "\n".join(_split_license(m[2])[1])))
+        listed: dict[str, tuple[Mapping, list[str]]] = {}
+        for crates, holders, _lines, _standard in members:
+            for crate in crates:
+                _, known = listed.setdefault(label(crate), (crate, []))
+                known.extend(h for h in holders if h not in known)
+        body = ["Used by (with the copyright lines of each crate's own license file):"]
+        for name in sorted(listed, key=sort_key):
+            crate, holders = listed[name]
+            if holders:
+                # Sorted: cargo-about's file order follows local paths, which differ by platform.
+                body.append(f"- {name}: {'; '.join(sorted(holders))}")
+            else:
+                authors = "; ".join(crate.get("authors") or []) or "none listed"
+                body.append(f"- {name}: no copyright line in its license file (Cargo.toml authors: {authors})")
+        body += ["", *_tidy(_split_license(shown[2])[1])]
+        everyone = set(listed)
+        variants: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        for key in by_wording:
+            if key == canonical:
+                continue
+            for crates, _holders, lines, _standard in by_wording[key]:
+                users = sorted({label(c) for c in crates}, key=sort_key)
+                everyone.update(users)
+                variants.add((tuple(users), tuple(_tidy(lines))))
+        for users, lines in sorted(variants):
+            body += ["", "-" * 80, f"{names[lid]} ({lid}) as worded by {', '.join(users)}:", "-" * 80, "", *lines]
+        sections.append((lid, len(everyone), body))
+    sections.sort(key=lambda s: (-s[1], s[0]))
+
+    out = [NOTICES_HEADER, "", "LICENSES", ""]
+    out += [f"- {names[lid]} ({lid}): {count} crate(s)" for lid, count, _ in sections]
+    out += ["", "", NOTICES_UPSTREAM]
+    for lid, _count, body in sections:
+        out += ["", "=" * 80, f"{names[lid]} ({lid})", "=" * 80, "", *body, ""]
+    text = "\n".join(out)
+    return re.sub(r"\n{4,}", "\n\n\n", text).rstrip("\n") + "\n"
+
+
+def run_notices(args: argparse.Namespace) -> int:
+    target = args.root.resolve() / NOTICES_NAME
+    try:
+        about = json.loads(args.about.read_bytes())
+    except (OSError, ValueError) as exc:
+        raise CiError(f"cannot read the cargo-about JSON {args.about}: {exc}") from exc
+    generated = normalize_notices(render_notices(about).encode("utf-8"))
+    if args.write:
+        try:
+            target.write_bytes(generated)
+        except OSError as exc:
+            raise CiError(f"cannot write {target}: {exc}") from exc
+        lines = generated.count(b"\n")
+        print(f"notices: wrote {NOTICES_NAME} ({lines} lines)")
+        return 0
+    try:
+        committed = target.read_bytes()
+    except OSError as exc:
+        raise CiError(f"cannot read {target}: {exc}; regenerate it with: {NOTICES_REGENERATE}") from exc
+    if committed != generated:
+        raise CiError(f"{NOTICES_NAME} is out of date; regenerate it with: {NOTICES_REGENERATE}")
+    print(f"notices: {NOTICES_NAME} is up to date")
+    return 0
+
+
 # -------------------------------------------------------------------------- gate
 
 
@@ -844,6 +1093,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("docs", help="validate tracked Markdown links, anchors, fences and tables")
     p = sub.add_parser("wiki", help="write the tracked wiki/ pages with wiki-style links for publishing")
     p.add_argument("--out", type=Path, required=True, help="missing or empty directory (a .git directory is allowed)")
+    p = sub.add_parser("notices", help="check (or with --write, regenerate) the committed NOTICES file")
+    p.add_argument("about", type=Path, help="JSON written by `cargo about generate --format json`")
+    p.add_argument("--write", action="store_true", help="write the rendered text to NOTICES instead of comparing")
     sub.add_parser("gate", help="judge the needs results (CI_NEEDS_JSON, CI_RUST, CI_LICENSES, CI_PACKAGE)")
     return parser
 
@@ -862,6 +1114,8 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
             return run_docs(args)
         if args.command == "wiki":
             return run_wiki(args)
+        if args.command == "notices":
+            return run_notices(args)
         return run_gate(args, os.environ if environ is None else environ)
     except CiError as exc:
         print(f"error: {exc}", file=sys.stderr)

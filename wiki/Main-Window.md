@@ -8,9 +8,9 @@ and tables, and the menus. The individual pages are described in [Library pages]
   Hashed files, Groups, Genres, Queue, Log. Under a small **LIBRARY** heading are MyList, Anime,
   Advanced search, Hashed files, Groups and Genres; under **ACTIVITY** are Queue and Log;
   Overview stands on top. The Queue entry shows a badge with the number of pending commands, or a
-  red `N blocked`. At the bottom are the **⚙ Options** entry (it opens and closes
-  [Options](Options-Window.md)) and a small line `N anime · N MyList entries` (counts of the
-  loaded snapshot). Every page's title equals its sidebar label.
+  red `N blocked`. At the bottom are two small lines, `N anime` and `N MyList entries` (counts of the
+  loaded snapshot), and below them the **⚙ Options** entry (it opens and closes
+  [Options](Options-Window.md)). Every page's title equals its sidebar label.
 - **Page** (center): the selected page. Table pages are virtualized: only the visible rows
   are drawn, so very large libraries stay responsive.
 - **Status bar** (bottom): current activity or last message, connection state and warnings.
@@ -159,7 +159,9 @@ strongly than watched or in MyList. **Solid (classic AOM)** fills the whole row 
 status color and black or white text, whichever reads better. A color with its own text color
 in `ui.colors` is always drawn solid. The colors come from
 `ui.colors` (see [row colors](Settings-Reference.md#row-colors-uicolors)); plain rows stay
-uncolored unless you set a color for them.
+uncolored unless you set a color for them. **Options → Appearance → Customize status colors**
+edits them: a background and an optional text color for each status above, with a sample of the
+row in the current style and theme.
 
 ## Menus
 
@@ -187,8 +189,8 @@ uncolored unless you set a color for them.
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
 | Help | AniDB website | Opens `https://anidb.net/`. |
 | Help | Keyboard shortcuts ▸ | Lists the [shortcuts](#keyboard-shortcuts). |
-| Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
-| Help | About Animatic | Version and developer (RetroHazard), buttons that open the source code repository, the documentation (the repository wiki) and the AniDB website in your browser, plus **View license** and **Third-party notices**. **View license** shows Animatic's MIT license inside the app (the text built into this version), so it works without a file next to the program. **Third-party notices** opens the notices next to the program in your browser: the versioned `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `THIRD-PARTY-NOTICES.html`; it is disabled when neither exists (for example a bare executable copied out of an archive). |
+| Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer release on your [update channel](Updating-Animatic.md) (stable by default). This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
+| Help | About Animatic | Version and developer (RetroHazard), buttons that open the source code repository, the documentation (the repository wiki) and the AniDB website in your browser, plus **View license** and **Third-party notices**. **View license** shows Animatic's MIT license inside the app (the text built into this version), so it works without a file next to the program. **Third-party notices** shows the licenses of the libraries and fonts Animatic uses (the `NOTICES` text built into this version) in a window inside the app, so it also works without any file next to the program. It is generated automatically and is not a legal audit. |
 
 Items that cannot be used at the moment are greyed out and say why when you hover them. Separators
 group the items; the Tools menu starts with Options…, then the AniDB items (from Run command queue

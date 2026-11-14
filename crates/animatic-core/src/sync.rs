@@ -260,6 +260,17 @@ pub fn manager_mylist_edit(m: &FileManager) -> MylistEdit {
     }
 }
 
+/// What [`Db::queue_edit_mylist_many`] did, entry by entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BatchEdit {
+    /// Entries that got a fresh outbox row and an optimistic local update, in input order.
+    pub queued: Vec<i64>,
+    /// Entries that already had the requested state and watched flag.
+    pub unchanged: usize,
+    /// Entries refused: pending removal, or no local row.
+    pub skipped: usize,
+}
+
 /// Fold `newer` into `base`: the result is the single edit equivalent to applying both in that
 /// order. Unset fields keep the older value; `Some("")` is a real value (it clears the field
 /// on AniDB), not "unset". Marking unwatched drops the watched date, and a later "watched"
@@ -441,6 +452,51 @@ impl Db {
     /// or the merged edit changes nothing.
     pub fn queue_edit_mylist(&self, lid: i64, edit: &MylistEdit) -> Result<i64> {
         self.write_tx(|| self.coalesce_edits(lid, Some(edit)))
+    }
+
+    /// [`Db::queue_edit_mylist`] for several entries at once, in ONE transaction (one commit,
+    /// all or nothing): the same `edit` is merged per entry with that entry's outstanding
+    /// edits, replaced by one row with a fresh id, and applied optimistically, exactly as the
+    /// single-entry call does. A watched mark without a date is stamped with the time of the
+    /// call for every entry.
+    ///
+    /// A batch is meant for "set this on all of them", so it leaves an entry alone whose
+    /// stored state or watched flag already is the requested value (no needless AniDB
+    /// command). For an entry that already is watched, a watched mark without a date (the
+    /// implicit "watched now") is no change, so its watch date stays; an explicit date that
+    /// differs from the stored one is set. Entries with a pending removal, and lids without a
+    /// local row, are refused and counted as `skipped`.
+    pub fn queue_edit_mylist_many(&self, lids: &[i64], edit: &MylistEdit) -> Result<BatchEdit> {
+        self.write_tx(|| {
+            let mut outcome = BatchEdit::default();
+            for &lid in lids {
+                let Some(entry) = self.mylist_entry(lid)? else {
+                    outcome.skipped += 1;
+                    continue;
+                };
+                let mut wanted = edit.clone();
+                if wanted.state == Some(entry.state) {
+                    wanted.state = None;
+                }
+                if wanted.viewed == Some(true) && entry.viewed {
+                    if wanted.viewdate.is_none_or(|date| date == entry.viewdate) {
+                        wanted.viewed = None;
+                        wanted.viewdate = None;
+                    }
+                } else if wanted.viewed == Some(entry.viewed) {
+                    wanted.viewed = None;
+                    wanted.viewdate = None;
+                }
+                if wanted == MylistEdit::default() {
+                    outcome.unchanged += 1;
+                } else if self.coalesce_edits(lid, Some(&wanted))? == 0 {
+                    outcome.skipped += 1;
+                } else {
+                    outcome.queued.push(lid);
+                }
+            }
+            Ok(outcome)
+        })
     }
 
     /// Merge the outstanding `MylistEdit` rows of `lid` (plus `new`) into one fresh row.
@@ -1535,6 +1591,128 @@ mod tests {
         assert_eq!(db.queue_len().unwrap(), 2);
         assert_eq!(sole_edit(&db, 1).1, state(3));
         assert_eq!(sole_edit(&db, 2).1, state(2));
+    }
+
+    #[test]
+    fn a_batch_edit_queues_one_merged_row_per_entry_with_fresh_ids() {
+        let db = Db::memory().unwrap();
+        for lid in 1..=3 {
+            entry(&db, lid);
+        }
+        let earlier = db.queue_edit_mylist(2, &state(4)).unwrap();
+        let before = format::now();
+        let done = db
+            .queue_edit_mylist_many(
+                &[1, 2, 3],
+                &MylistEdit {
+                    viewed: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            done,
+            BatchEdit {
+                queued: vec![1, 2, 3],
+                unchanged: 0,
+                skipped: 0
+            }
+        );
+        assert_eq!(db.queue_len().unwrap(), 3, "one coalesced row per entry");
+        let (second_id, second) = sole_edit(&db, 2);
+        assert!(second_id > earlier, "the merged row has a fresh id");
+        assert_eq!(
+            (second.state, second.viewed),
+            (Some(4), Some(true)),
+            "merged with the entry's earlier outstanding edit"
+        );
+        for lid in 1..=3 {
+            let (_, edit) = sole_edit(&db, lid);
+            let stamped = edit.viewdate.expect("the watch time is stamped per entry");
+            assert!(stamped >= before);
+            let e = db.mylist_entry(lid).unwrap().unwrap();
+            assert_eq!((e.viewed, e.viewdate), (true, stamped), "optimistic row");
+        }
+        assert_eq!(db.mylist_entry(2).unwrap().unwrap().state, 4);
+    }
+
+    #[test]
+    fn a_batch_edit_leaves_matching_removing_and_missing_entries_alone() {
+        let db = Db::memory().unwrap();
+        for lid in 1..=4 {
+            entry(&db, lid);
+        }
+        db.queue_edit_mylist(2, &watched(10)).unwrap();
+        db.queue_push(&Command::MylistDelete { lid: 3 }).unwrap();
+        let queue_before = db.queue_len().unwrap();
+        let mark_watched = MylistEdit {
+            viewed: Some(true),
+            ..Default::default()
+        };
+        let done = db
+            .queue_edit_mylist_many(&[1, 2, 3, 99], &mark_watched)
+            .unwrap();
+        assert_eq!(
+            done,
+            BatchEdit {
+                queued: vec![1],
+                unchanged: 1,
+                skipped: 2
+            },
+            "entry 2 already is watched, 3 is being removed, 99 does not exist"
+        );
+        assert_eq!(db.queue_len().unwrap(), queue_before + 1);
+        assert_eq!(
+            sole_edit(&db, 2).1,
+            watched(10),
+            "an already watched entry keeps its date and its row"
+        );
+        assert!(!db.mylist_entry(3).unwrap().unwrap().viewed);
+        assert!(!db.mylist_entry(4).unwrap().unwrap().viewed);
+        assert!(
+            db.mylist_entry(1).unwrap().unwrap().viewdate > 0,
+            "stamped now"
+        );
+    }
+
+    #[test]
+    fn a_batch_date_change_reaches_entries_that_already_are_watched() {
+        let db = Db::memory().unwrap();
+        for lid in 1..=3 {
+            entry(&db, lid);
+        }
+        db.queue_edit_mylist(1, &watched(10)).unwrap();
+        db.queue_edit_mylist(2, &watched(500)).unwrap();
+        let done = db
+            .queue_edit_mylist_many(&[1, 2, 3], &watched(500))
+            .unwrap();
+        assert_eq!(
+            done,
+            BatchEdit {
+                queued: vec![1, 3],
+                unchanged: 1,
+                skipped: 0
+            },
+            "1 gets the new date, 2 already has it, 3 becomes watched on that date"
+        );
+        for lid in 1..=3 {
+            let e = db.mylist_entry(lid).unwrap().unwrap();
+            assert_eq!((e.viewed, e.viewdate), (true, 500), "entry {lid}");
+            assert_eq!(sole_edit(&db, lid).1, watched(500), "entry {lid}");
+        }
+    }
+
+    #[test]
+    fn a_batch_state_change_skips_entries_that_already_have_the_state() {
+        let db = Db::memory().unwrap();
+        entry(&db, 1);
+        entry(&db, 2);
+        db.queue_edit_mylist(2, &state(2)).unwrap();
+        let done = db.queue_edit_mylist_many(&[1, 2], &state(2)).unwrap();
+        assert_eq!(done.queued, [1]);
+        assert_eq!(done.unchanged, 1);
+        assert_eq!(db.queue_len().unwrap(), 2);
+        assert_eq!(db.mylist_entry(1).unwrap().unwrap().state, 2);
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod console;
 mod hash_jobs;
 mod icon;
 mod media;
+mod mylist_tree;
 mod scheduler;
 mod session;
 mod style;

@@ -2,12 +2,13 @@
 //! **Remove from MyList…**, the **Refresh** actions and the AniDB account figures on the
 //! overview.
 //!
-//! Every change is stored in the command queue first (`Db::queue_edit_mylist` for edits, which
-//! also writes the optimistic local row in the same transaction; `queue_command` for adds,
+//! Every change is stored in the command queue first (`Db::queue_edit_mylist` for edits, and
+//! `Db::queue_edit_mylist_many` for all entries of an anime in one transaction; both also
+//! write the optimistic local rows in the same transaction; `queue_command` for adds,
 //! removals and refreshes). Nothing is sent until the queue runs, and a removal only drops the
 //! local row once AniDB acknowledged it (`animatic_core::sync`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use animatic_anidb::commands::{FileRef, MylistEdit};
 use animatic_core::library::{LocalFile, MylistEntry};
@@ -115,6 +116,21 @@ impl MylistForm {
                     now
                 });
             }
+        }
+        Ok(edit)
+    }
+
+    /// The edit this form stands for when it is applied to many entries at once. They differ
+    /// in whether they are watched, so a ticked watched box is a value to set, never "no
+    /// change" (`Db::queue_edit_mylist_many` leaves entries that already match alone). Only a
+    /// view date typed into the form is a value for every entry; a plain "watched" carries no
+    /// date, so entries that already are watched keep theirs and the others are stamped when
+    /// the batch is queued.
+    pub(super) fn build_many(&self, now: i64) -> Result<MylistEdit, String> {
+        let mut edit = self.build(self.change_watched && !self.watched, now)?;
+        let date_typed = self.change_viewdate && !self.viewdate.trim().is_empty();
+        if edit.viewed == Some(true) && !date_typed {
+            edit.viewdate = None;
         }
         Ok(edit)
     }
@@ -231,9 +247,12 @@ impl AddPlan {
 }
 
 pub(super) struct EntryEditor {
-    lid: i64,
+    /// The entry being edited, or every entry of the anime being edited together.
+    lids: Vec<i64>,
     title: String,
-    entry: MylistEntry,
+    /// The entry's stored values when a single entry is edited (the form shows them);
+    /// `None` for an anime, whose entries differ.
+    entry: Option<MylistEntry>,
     form: MylistForm,
     error: Option<String>,
 }
@@ -244,20 +263,35 @@ pub(super) struct AddDialog {
 }
 
 struct RemoveConfirm {
-    lid: i64,
+    lids: Vec<i64>,
     title: String,
 }
 
 /// UI state of the MyList management features.
 #[derive(Default)]
 pub(super) struct MylistUi {
-    /// The My list row the toolbar acts on.
+    /// The My list entry the toolbar acts on. Never set together with `selected_anime`.
     pub(super) selected_lid: Option<i64>,
+    /// The anime whose entries are all selected (a click on its top-level row), for the
+    /// toolbar actions.
+    pub(super) selected_anime: Option<i64>,
     /// Every selected hashed file (the primary one included).
     pub(super) marked_locals: BTreeSet<i64>,
     editor: Option<EntryEditor>,
     add: Option<AddDialog>,
     remove: Option<RemoveConfirm>,
+}
+
+impl MylistUi {
+    pub(super) fn select_entry(&mut self, lid: i64) {
+        self.selected_lid = Some(lid);
+        self.selected_anime = None;
+    }
+
+    pub(super) fn select_anime(&mut self, aid: i64) {
+        self.selected_lid = None;
+        self.selected_anime = Some(aid);
+    }
 }
 
 const VIEW_DATE_HINT: &str = "YYYY-MM-DD HH:MM, empty = now";
@@ -332,70 +366,222 @@ impl AnimaticApp {
         }
     }
 
-    /// Edit, remove and refresh buttons for the selected My list row.
+    /// The entries the toolbar acts on: the selected entry, or every entry of the selected
+    /// anime (empty when that anime is filtered out of the table).
+    fn selected_mylist_lids(&self) -> Vec<i64> {
+        if let Some(lid) = self.mylist_ui.selected_lid {
+            return vec![lid];
+        }
+        let Some(aid) = self.mylist_ui.selected_anime else {
+            return Vec::new();
+        };
+        self.views
+            .mylist
+            .group_of(aid)
+            .map_or_else(Vec::new, |group| {
+                group
+                    .members
+                    .iter()
+                    .map(|&i| self.projection.mylist[i].entry.lid)
+                    .collect()
+            })
+    }
+
+    /// Title of the selected anime for dialogs and the status line.
+    fn selected_anime_title(&self, aid: i64) -> String {
+        self.views.mylist.group_of(aid).map_or_else(
+            || format!("aid {aid}"),
+            |group| self.projection.mylist_title(group.members[0]),
+        )
+    }
+
+    /// Edit, remove and refresh buttons for the selected My list row (an entry, or every
+    /// entry of an anime), and the expand/collapse buttons of the anime rows.
     pub(super) fn mylist_toolbar(&mut self, ui: &mut egui::Ui) {
-        let selected = self.mylist_ui.selected_lid;
-        let removing = selected
-            .and_then(|lid| self.projection.mylist_pending.get(&lid))
-            .is_some_and(|p| p.delete);
-        let status = selected.map(|lid| {
-            if removing {
-                format!("Entry {lid}: removal queued")
-            } else {
-                format!("Entry {lid} · {}", self.mylist_row_title(lid))
-            }
-        });
+        let lids = self.selected_mylist_lids();
+        // Entries whose removal is queued refuse edits and cannot be removed twice.
+        let actionable: Vec<i64> = lids
+            .iter()
+            .copied()
+            .filter(|lid| {
+                !self
+                    .projection
+                    .mylist_pending
+                    .get(lid)
+                    .is_some_and(|p| p.delete)
+            })
+            .collect();
+        let removing = lids.len() - actionable.len();
+        let anime = self.mylist_ui.selected_anime.filter(|_| !lids.is_empty());
+        let status = match (self.mylist_ui.selected_lid, anime) {
+            (Some(lid), _) if removing > 0 => Some(format!("Entry {lid}: removal queued")),
+            (Some(lid), _) => Some(format!("Entry {lid} · {}", self.mylist_row_title(lid))),
+            (None, Some(aid)) => Some(format!(
+                "{} · all {} selected{}",
+                self.selected_anime_title(aid),
+                crate::style::plural(lids.len(), "entry", "entries"),
+                if removing > 0 {
+                    format!(" ({removing} being removed)")
+                } else {
+                    String::new()
+                }
+            )),
+            (None, None) => None,
+        };
         let (mut edit, mut remove, mut refresh) = (false, false, false);
+        let (mut expand, mut collapse) = (false, false);
+        let any_anime = self.views.mylist.anime_count() > 0;
         ui.horizontal(|ui| {
             edit = ui
-                .add_enabled(selected.is_some() && !removing, egui::Button::new("Edit…"))
+                .add_enabled(!actionable.is_empty(), egui::Button::new("Edit…"))
+                .on_hover_text("Edit the selected entry, or every entry of the selected anime")
                 .on_disabled_hover_text(
                     "Select a row (click its episode) that is not being removed",
                 )
                 .clicked();
             remove = ui
                 .add_enabled(
-                    selected.is_some() && !removing,
+                    !actionable.is_empty(),
                     egui::Button::new("Remove from MyList…"),
                 )
                 .clicked();
             refresh = ui
-                .add_enabled(selected.is_some(), egui::Button::new("Refresh from AniDB"))
-                .on_hover_text("Queues a request that re-reads this entry from AniDB")
+                .add_enabled(!lids.is_empty(), egui::Button::new("Refresh from AniDB"))
+                .on_hover_text("Queues a request that re-reads the selected entries from AniDB")
+                .clicked();
+            expand = ui
+                .add_enabled(any_anime, egui::Button::new("Expand all"))
+                .on_hover_text("Show the entries of every anime")
+                .clicked();
+            collapse = ui
+                .add_enabled(any_anime, egui::Button::new("Collapse all"))
+                .on_hover_text("Show one row per anime")
                 .clicked();
             match status {
                 Some(text) => ui.label(text),
                 None => ui.label(
-                    RichText::new("Click a row's episode to select it")
-                        .weak()
-                        .small(),
+                    RichText::new(
+                        "Click a row's episode to select it; an anime's episode count selects \
+                         all of its entries",
+                    )
+                    .weak()
+                    .small(),
                 ),
             };
         });
-        let Some(lid) = selected else { return };
+        if expand {
+            self.views.mylist.expand_all();
+        }
+        if collapse {
+            self.views.mylist.collapse_all();
+        }
+        let Some(&first) = lids.first() else { return };
+        let title = match anime {
+            Some(aid) => format!(
+                "{} — {}",
+                self.selected_anime_title(aid),
+                crate::style::plural(actionable.len(), "entry", "entries")
+            ),
+            None => self.mylist_row_title(first),
+        };
         if edit {
-            self.open_entry_editor(lid);
+            match anime {
+                Some(_) => {
+                    self.mylist_ui.editor = Some(EntryEditor {
+                        lids: actionable.clone(),
+                        title: title.clone(),
+                        entry: None,
+                        form: MylistForm::for_add(),
+                        error: None,
+                    });
+                }
+                None => self.open_entry_editor(first),
+            }
         }
         if remove {
             self.mylist_ui.remove = Some(RemoveConfirm {
-                lid,
-                title: self.mylist_row_title(lid),
+                lids: actionable,
+                title,
             });
         }
         if refresh {
-            self.queue_command(Command::MylistRefresh { lid });
-            self.log(format!("Queued a refresh of MyList entry {lid}"));
+            for &lid in &lids {
+                self.queue_command(Command::MylistRefresh { lid });
+            }
+            self.log(match lids.as_slice() {
+                [lid] => format!("Queued a refresh of MyList entry {lid}"),
+                _ => format!("Queued a refresh of {} MyList entries", lids.len()),
+            });
         }
+    }
+
+    /// Queue `edit` for every entry of `lids` in one transaction and show the result at once
+    /// (the overlay bridges the time until a projection requested after the write arrives).
+    /// Entries that already have the requested values are left alone, entries with a queued
+    /// removal are refused (see `Db::queue_edit_mylist_many`).
+    ///
+    /// This runs on the UI thread like the single-entry edit does, deliberately: it is one
+    /// transaction with one commit, bounded by the entries of one anime, that waits for no
+    /// network and no hashing; moving it to the worker would queue the click behind a running
+    /// job and would show an optimistic state before it is saved (rule 13). A busy database
+    /// changes nothing and is reported, like the single-entry edit.
+    pub(super) fn queue_mylist_edit_many(
+        &mut self,
+        lids: &[i64],
+        edit: &MylistEdit,
+    ) -> animatic_core::Result<animatic_core::sync::BatchEdit> {
+        let wanted: HashSet<i64> = lids.iter().copied().collect();
+        let shown: HashMap<i64, (i64, bool)> = self
+            .projection
+            .mylist
+            .iter()
+            .filter(|m| wanted.contains(&m.entry.lid))
+            .map(|m| {
+                let lid = m.entry.lid;
+                let current = self
+                    .mylist_overlay
+                    .get(&lid)
+                    .map_or((m.entry.state, m.entry.viewed), |o| (o.state, o.viewed));
+                (lid, current)
+            })
+            .collect();
+        let done = self.db.queue_edit_mylist_many(lids, edit)?;
+        for &lid in &done.queued {
+            let (state, viewed) = shown.get(&lid).copied().unwrap_or((0, false));
+            self.mylist_overlay.insert(
+                lid,
+                MylistOverlay {
+                    state: edit.state.unwrap_or(state),
+                    viewed: edit.viewed.unwrap_or(viewed),
+                    generation: self.loader.next_generation,
+                },
+            );
+        }
+        if done.skipped > 0 {
+            self.log(format!(
+                "{} MyList {} pending removal or missing; edit ignored",
+                done.skipped,
+                if done.skipped == 1 {
+                    "entry is"
+                } else {
+                    "entries are"
+                }
+            ));
+        }
+        if !done.queued.is_empty() {
+            self.request_library_refresh();
+        }
+        Ok(done)
     }
 
     fn open_entry_editor(&mut self, lid: i64) {
         match self.db.mylist_entry(lid) {
             Ok(Some(entry)) => {
                 self.mylist_ui.editor = Some(EntryEditor {
-                    lid,
+                    lids: vec![lid],
                     title: self.mylist_row_title(lid),
                     form: MylistForm::for_entry(&entry),
-                    entry,
+                    entry: Some(entry),
                     error: None,
                 });
             }
@@ -441,11 +627,13 @@ impl AnimaticApp {
         let Some(mut editor) = self.mylist_ui.editor.take() else {
             return;
         };
-        let removing = self
-            .projection
-            .mylist_pending
-            .get(&editor.lid)
-            .is_some_and(|p| p.delete);
+        let removing = editor.lids.iter().all(|lid| {
+            self.projection
+                .mylist_pending
+                .get(lid)
+                .is_some_and(|p| p.delete)
+        });
+        let many = editor.entry.is_none();
         let mut open = true;
         let mut cancel = false;
         let mut to_save: Option<MylistEdit> = None;
@@ -455,10 +643,14 @@ impl AnimaticApp {
             .show(ctx, |ui| {
                 ui.strong(&editor.title);
                 ui.label(
-                    RichText::new(
-                        "Tick a field to change it. Unticked fields stay as they are on AniDB; \
-                         a ticked empty field clears the value.",
-                    )
+                    RichText::new(if many {
+                        "Tick a field to change it for every one of these entries; entries \
+                         that already have the value are left alone. A ticked empty field \
+                         clears the value."
+                    } else {
+                        "Tick a field to change it. Unticked fields stay as they are on \
+                         AniDB; a ticked empty field clears the value."
+                    })
                     .weak(),
                 );
                 if removing {
@@ -468,16 +660,14 @@ impl AnimaticApp {
                     );
                 }
                 ui.add_space(6.0);
+                let watched_now = editor.entry.as_ref().is_some_and(|e| e.viewed);
                 ui.add_enabled_ui(!removing, |ui| {
-                    form_ui(
-                        ui,
-                        &mut editor.form,
-                        "Change",
-                        editor.entry.viewed,
-                        "entry-editor",
-                    );
+                    form_ui(ui, &mut editor.form, "Change", watched_now, "entry-editor");
                 });
-                let built = editor.form.build(editor.entry.viewed, format::now());
+                let built = match &editor.entry {
+                    Some(entry) => editor.form.build(entry.viewed, format::now()),
+                    None => editor.form.build_many(format::now()),
+                };
                 match &built {
                     Err(message) => {
                         ui.colored_label(crate::style::error(ui.visuals()), message);
@@ -512,30 +702,58 @@ impl AnimaticApp {
         let escape = super::dialog::escape_closes(ctx, shown.as_ref());
         let mut keep = open && !cancel && !escape;
         if let Some(edit) = to_save {
-            let lid = editor.lid;
-            match self.db.queue_edit_mylist(lid, &edit) {
-                Ok(0) => {
-                    editor.error = Some(
-                        "Nothing was queued: the entry is waiting to be removed from MyList."
-                            .into(),
-                    );
+            if let Some(entry) = editor.entry.clone() {
+                let lid = editor.lids[0];
+                match self.db.queue_edit_mylist(lid, &edit) {
+                    Ok(0) => {
+                        editor.error = Some(
+                            "Nothing was queued: the entry is waiting to be removed from MyList."
+                                .into(),
+                        );
+                    }
+                    Ok(_) => {
+                        self.mylist_overlay.insert(
+                            lid,
+                            MylistOverlay {
+                                state: edit.state.unwrap_or(entry.state),
+                                viewed: edit.viewed.unwrap_or(entry.viewed),
+                                generation: self.loader.next_generation,
+                            },
+                        );
+                        self.log(format!("Queued an edit of MyList entry {lid}"));
+                        self.request_library_refresh();
+                        keep = false;
+                    }
+                    Err(e) => {
+                        self.db_write_error(&format!("Could not edit MyList entry {lid}"), &e);
+                        editor.error = Some(e.to_string());
+                    }
                 }
-                Ok(_) => {
-                    self.mylist_overlay.insert(
-                        lid,
-                        MylistOverlay {
-                            state: edit.state.unwrap_or(editor.entry.state),
-                            viewed: edit.viewed.unwrap_or(editor.entry.viewed),
-                            generation: self.loader.next_generation,
-                        },
-                    );
-                    self.log(format!("Queued an edit of MyList entry {lid}"));
-                    self.request_library_refresh();
-                    keep = false;
-                }
-                Err(e) => {
-                    self.db_write_error(&format!("Could not edit MyList entry {lid}"), &e);
-                    editor.error = Some(e.to_string());
+            } else {
+                match self.queue_mylist_edit_many(&editor.lids, &edit) {
+                    Ok(done) if done.queued.is_empty() && done.unchanged == 0 => {
+                        editor.error = Some(
+                            "Nothing was queued: the entries are waiting to be removed from \
+                             MyList."
+                                .into(),
+                        );
+                    }
+                    Ok(done) => {
+                        self.log(format!(
+                            "Queued an edit of {} ({} already as asked)",
+                            crate::style::plural(
+                                done.queued.len(),
+                                "MyList entry",
+                                "MyList entries"
+                            ),
+                            done.unchanged
+                        ));
+                        keep = false;
+                    }
+                    Err(e) => {
+                        self.db_write_error("Could not edit the MyList entries", &e);
+                        editor.error = Some(e.to_string());
+                    }
                 }
             }
         }
@@ -654,17 +872,30 @@ impl AnimaticApp {
             return;
         };
         let mut decision = None;
+        let several = confirm.lids.len() > 1;
         let modal = egui::Modal::new(egui::Id::unique("mylist_remove_confirm")).show(ctx, |ui| {
             ui.set_max_width(440.0);
             crate::style::section(ui, "Remove from MyList");
-            ui.label("Remove this entry from your AniDB MyList?");
+            ui.label(if several {
+                "Remove all of these entries from your AniDB MyList?"
+            } else {
+                "Remove this entry from your AniDB MyList?"
+            });
             ui.strong(&confirm.title);
             ui.add_space(6.0);
-            ui.label(
-                "Your media file on disk is not touched. The request is queued and sent \
-                 when the command queue runs; this list keeps the row until AniDB confirms \
-                 the removal. Edits of this entry that are still queued are discarded.",
-            );
+            ui.label(format!(
+                "Your media {} on disk {} not touched. The request is queued and sent \
+                 when the command queue runs; this list keeps the {} until AniDB confirms \
+                 the removal. Edits of {} that are still queued are discarded.",
+                if several { "files" } else { "file" },
+                if several { "are" } else { "is" },
+                if several { "rows" } else { "row" },
+                if several {
+                    "these entries"
+                } else {
+                    "this entry"
+                },
+            ));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 let label = crate::style::destructive(ui, "Remove from MyList");
@@ -681,11 +912,18 @@ impl AnimaticApp {
         }
         match decision {
             Some(true) => {
-                self.queue_command(Command::MylistDelete { lid: confirm.lid });
-                self.log(format!(
-                    "Queued removal of MyList entry {}; run the command queue to send it",
-                    confirm.lid
-                ));
+                for &lid in &confirm.lids {
+                    self.queue_command(Command::MylistDelete { lid });
+                }
+                self.log(match confirm.lids.as_slice() {
+                    [lid] => format!(
+                        "Queued removal of MyList entry {lid}; run the command queue to send it"
+                    ),
+                    lids => format!(
+                        "Queued removal of {} MyList entries; run the command queue to send them",
+                        lids.len()
+                    ),
+                });
             }
             None => self.mylist_ui.remove = Some(confirm),
             Some(false) => {}
@@ -866,6 +1104,50 @@ mod tests {
             unmark.build(true, 5).unwrap(),
             MylistEdit {
                 viewed: Some(false),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_form_for_many_entries_sets_watched_either_way_and_ignores_unticked_fields() {
+        let mut form = MylistForm::for_add();
+        assert_eq!(form.build_many(5).unwrap(), MylistEdit::default());
+        form.change_watched = true;
+        form.watched = true;
+        assert_eq!(
+            (
+                form.build_many(5).unwrap().viewed,
+                form.build_many(5).unwrap().viewdate
+            ),
+            (Some(true), None),
+            "a plain mark carries no date: watched entries keep theirs, the batch stamps the rest"
+        );
+        form.change_viewdate = true;
+        form.viewdate = "2025-03-04 18:30".into();
+        let dated = form.build_many(5).unwrap();
+        assert_eq!(dated.viewed, Some(true));
+        assert!(
+            dated.viewdate.is_some_and(|d| d != 5),
+            "a typed date is a value for every entry"
+        );
+        form.change_viewdate = false;
+        form.watched = false;
+        assert_eq!(
+            form.build_many(5).unwrap(),
+            MylistEdit {
+                viewed: Some(false),
+                ..Default::default()
+            },
+            "unmarking applies to entries that are watched"
+        );
+        form.change_watched = false;
+        form.change_state = true;
+        form.state = 3;
+        assert_eq!(
+            form.build_many(5).unwrap(),
+            MylistEdit {
+                state: Some(3),
                 ..Default::default()
             }
         );

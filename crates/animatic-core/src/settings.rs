@@ -31,6 +31,48 @@ pub enum Theme {
     System,
 }
 
+/// The accent family of the interface, chosen independently of [`Theme`]: every scheme has a dark
+/// and a light palette (`animatic`'s `style` module owns the colours).
+///
+/// Stored by name; a settings file without the field, or with a name this version does not know
+/// (for example one written by a newer version), loads as `Sakura` instead of failing the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ColorScheme {
+    Ocean,
+    Forest,
+    Sunset,
+    Wisteria,
+    Graphite,
+    /// The original cherry-blossom pink. Declared last because `serde(other)` must be the last
+    /// variant: it is what an unknown name loads as.
+    #[default]
+    #[serde(other)]
+    Sakura,
+}
+
+impl ColorScheme {
+    /// The schemes offered in Options, in menu order.
+    pub const ALL: [ColorScheme; 6] = [
+        ColorScheme::Sakura,
+        ColorScheme::Ocean,
+        ColorScheme::Forest,
+        ColorScheme::Sunset,
+        ColorScheme::Wisteria,
+        ColorScheme::Graphite,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorScheme::Sakura => "Sakura",
+            ColorScheme::Ocean => "Ocean",
+            ColorScheme::Forest => "Forest",
+            ColorScheme::Sunset => "Sunset",
+            ColorScheme::Wisteria => "Wisteria",
+            ColorScheme::Graphite => "Graphite",
+        }
+    }
+}
+
 /// How status-tinted table rows are drawn.
 ///
 /// Stored as `"Soft"` or `"Solid"`; a settings file without the field loads as `Soft`.
@@ -587,6 +629,8 @@ pub struct ColumnState {
 #[serde(default)]
 pub struct UiSettings {
     pub theme: Theme,
+    /// The accent family and tint of the interface, in both themes.
+    pub color_scheme: ColorScheme,
     pub zoom: f32,
     pub window: Option<[f32; 4]>,
     pub maximized: bool,
@@ -611,6 +655,7 @@ impl Default for UiSettings {
     fn default() -> Self {
         UiSettings {
             theme: Theme::Dark,
+            color_scheme: ColorScheme::Sakura,
             zoom: 1.0,
             window: None,
             maximized: false,
@@ -656,6 +701,11 @@ impl UiSettings {
         } else {
             self.colors.insert(format!("{slot:?}"), c);
         }
+    }
+
+    /// Puts `slot` back to its default colours.
+    pub fn reset_color(&mut self, slot: ColorSlot) {
+        self.colors.remove(&format!("{slot:?}"));
     }
 }
 
@@ -750,19 +800,48 @@ impl Default for AvdumpSettings {
     }
 }
 
+/// Which published releases the update check offers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    /// Stable releases (`YYYY.M.PATCH`) only.
+    #[default]
+    Stable,
+    /// Stable releases and betas (`YYYY.M.PATCH-rc.N`, published as GitHub prereleases): the same
+    /// program and data, with newer features that may still have bugs.
+    Beta,
+}
+
+impl UpdateChannel {
+    pub const ALL: [UpdateChannel; 2] = [UpdateChannel::Stable, UpdateChannel::Beta];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "Stable",
+            UpdateChannel::Beta => "Beta",
+        }
+    }
+}
+
 /// Release-check preferences. Animatic never downloads or installs without an explicit action,
-/// so the only persisted choice is whether the startup check may contact GitHub.
+/// so the persisted choices are whether the startup check may contact GitHub and which releases
+/// it offers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateSettings {
-    /// Check GitHub for a newer stable release at startup (skipped in AniDB offline mode and
-    /// after settings recovery). The Help menu check does not depend on it.
+    /// Check GitHub for a newer release at startup (skipped in AniDB offline mode and after
+    /// settings recovery). The Help menu check does not depend on it.
     pub auto_check: bool,
+    /// Release channel of every check, the startup one and Help → Check for updates….
+    pub channel: UpdateChannel,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        UpdateSettings { auto_check: true }
+        UpdateSettings {
+            auto_check: true,
+            channel: UpdateChannel::Stable,
+        }
     }
 }
 
@@ -910,6 +989,7 @@ impl Settings {
     pub fn keep_preferences_unknown_to_legacy(&mut self, current: &Settings) {
         self.updates = current.updates.clone();
         self.media = current.media.clone();
+        self.ui.color_scheme = current.ui.color_scheme;
     }
 
     /// Location of the backup written by [`Settings::save`] next to the primary file.
@@ -1891,6 +1971,41 @@ x</renamingPattern>
     }
 
     #[test]
+    fn color_scheme_defaults_to_sakura_round_trips_and_tolerates_unknown_names() {
+        assert_eq!(Settings::default().ui.color_scheme, ColorScheme::Sakura);
+        assert_eq!(ColorScheme::default(), ColorScheme::Sakura);
+        let mut document = serde_json::to_value(Settings::default()).unwrap();
+        let ui = document["ui"].as_object_mut().unwrap();
+        assert_eq!(ui["color_scheme"], "Sakura");
+        ui.remove("color_scheme");
+        let old: Settings = serde_json::from_value(document).unwrap();
+        assert_eq!(old.ui.color_scheme, ColorScheme::Sakura);
+
+        for scheme in ColorScheme::ALL {
+            let mut settings = Settings::default();
+            settings.ui.color_scheme = scheme;
+            let round: Settings =
+                serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(round.ui.color_scheme, scheme);
+        }
+
+        // A name from another version must not fail the whole file or reset the other settings.
+        let future: Settings =
+            serde_json::from_str(r#"{"ui":{"color_scheme":"Aurora","zoom":1.5}}"#).unwrap();
+        assert_eq!(future.ui.color_scheme, ColorScheme::Sakura);
+        assert_eq!(future.ui.zoom, 1.5);
+    }
+
+    #[test]
+    fn importing_legacy_settings_keeps_the_chosen_color_scheme() {
+        let mut current = Settings::default();
+        current.ui.color_scheme = ColorScheme::Graphite;
+        let mut imported = Settings::default();
+        imported.keep_preferences_unknown_to_legacy(&current);
+        assert_eq!(imported.ui.color_scheme, ColorScheme::Graphite);
+    }
+
+    #[test]
     fn settings_files_without_row_style_load_as_soft_and_the_style_round_trips() {
         let mut document = serde_json::to_value(Settings::default()).unwrap();
         let ui = document["ui"].as_object_mut().unwrap();
@@ -1911,13 +2026,26 @@ x</renamingPattern>
     }
 
     #[test]
+    fn update_channel_defaults_to_stable_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"updates":{"auto_check":true}}"#).unwrap();
+        assert_eq!(old.updates.channel, UpdateChannel::Stable);
+        let beta: Settings = serde_json::from_str(r#"{"updates":{"channel":"beta"}}"#).unwrap();
+        assert_eq!(beta.updates.channel, UpdateChannel::Beta);
+        assert!(beta.updates.auto_check, "unset keys keep their defaults");
+        let json = serde_json::to_value(&beta).unwrap();
+        assert_eq!(json["updates"]["channel"], "beta");
+    }
+
+    #[test]
     fn legacy_import_keeps_the_current_update_preference() {
         let mut current = Settings::default();
         current.updates.auto_check = false;
+        current.updates.channel = UpdateChannel::Beta;
         let mut imported = Settings::default();
         imported.anidb.username = "legacy-user".into();
         imported.keep_preferences_unknown_to_legacy(&current);
         assert!(!imported.updates.auto_check);
+        assert_eq!(imported.updates.channel, UpdateChannel::Beta);
         assert_eq!(imported.anidb.username, "legacy-user");
     }
 

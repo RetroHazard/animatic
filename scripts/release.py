@@ -2,22 +2,32 @@
 """Release tooling for Animatic (Python 3.11+, standard library only).
 
 Animatic uses calendar versions ``YYYY.M.PATCH`` (year >= 2000, month 1-12 without
-zero padding, non-negative patch) with an optional SemVer-style ``-prerelease``
-such as ``2026.11.0-rc.1``. Tags are ``v<version>``. Build metadata is rejected.
+zero padding, non-negative patch). Tags are ``v<version>``. Build metadata is rejected.
+There are two release streams: **stable** (``YYYY.M.PATCH``) and **beta**
+(``YYYY.M.PATCH-rc.N``, N >= 1, published as GitHub prereleases); no other prerelease
+form is released.
 
 Commands (``--root`` is a global option and goes BEFORE the subcommand):
 
-    python scripts/release.py prepare --version YYYY.M.PATCH
-    python scripts/release.py validate [--tag vYYYY.M.PATCH]
-    python scripts/release.py notes --version YYYY.M.PATCH --output PATH
-    python scripts/release.py package --platform windows|linux --binary PATH --notices PATH --output DIR
+    python scripts/release.py prepare --stream stable|beta [--version VERSION]
+    python scripts/release.py stream --version VERSION
+    python scripts/release.py validate [--tag vVERSION]
+    python scripts/release.py notes --version VERSION --output PATH
+    python scripts/release.py package --platform windows|linux --binary PATH --output DIR
     python scripts/release.py checksums --directory DIR
 
 ``prepare`` bumps the workspace version, every explicit internal dependency
 requirement and the local crate entries of Cargo.lock in lockstep, then turns
 CHANGELOG.md's Unreleased section plus the commit subjects since the latest
-reachable ``vYYYY.M.PATCH`` tag into a dated release section. The new version
+reachable ``vVERSION`` tag into a dated release section. Without ``--version`` it
+computes the next version of the stream: a beta raises the ``rc`` number of a pending
+stable version (or starts ``-rc.1`` of the next one), a stable releases the pending
+version (or the next patch). A stable section also folds in the sections of every beta
+since the previous stable release, so its notes cover the whole cycle. The new version
 must belong to the current UTC year and month. It never commits, tags or pushes.
+
+``stream`` prints ``stable`` or ``beta`` for a version and fails for any other
+prerelease form.
 """
 
 from __future__ import annotations
@@ -51,7 +61,7 @@ PLATFORMS = {
     "linux": (".tar.gz", "animatic"),
 }
 # Fixed top-level files that ship in every archive; the user guide is added under docs/.
-PACKAGED_FILES = ("LICENSE", "README.md", CHANGELOG_NAME)
+PACKAGED_FILES = ("LICENSE", "NOTICES", "README.md", CHANGELOG_NAME)
 # The user guide's source (published as the GitHub wiki) and its directory in the archive.
 GUIDE_DIR = "wiki"
 ARCHIVE_DOCS_DIR = "docs"
@@ -230,6 +240,18 @@ def is_repo_root(root: Path) -> bool:
         return os.path.samefile(proc.stdout.strip(), root)
     except OSError:
         return False
+
+
+def becomes_latest(version: Version, published_tags: list[str]) -> bool:
+    """Whether publishing ``version`` may mark it as GitHub's latest release.
+
+    Only a stable release that is newer than every published stable release may; retrying an
+    older stable after a newer one is out must not turn the older one into the default download.
+    """
+    if stream_of(version) != "stable":
+        return False
+    stables = [v for v in release_tags(published_tags).values() if not v.pre]
+    return all(version.key() > v.key() for v in stables)
 
 
 def release_tags(tags: list[str]) -> dict[str, Version]:
@@ -790,17 +812,84 @@ def utc_today() -> dt.date:
     return dt.datetime.now(dt.timezone.utc).date()
 
 
-def prepare(root: Path, version_text: str, *, today: dt.date | None = None) -> PrepareResult:
-    """Prepare a release. ``today`` exists only so tests can pin the UTC date; the CLI never sets it."""
-    new = parse_version(version_text)
+STREAMS = ("stable", "beta")
+
+
+def stream_of(version: Version) -> str:
+    """``stable`` for ``YYYY.M.PATCH``, ``beta`` for ``YYYY.M.PATCH-rc.N``; any other prerelease is refused."""
+    if not version.pre:
+        return "stable"
+    if len(version.pre) == 2 and version.pre[0] == "rc" and version.pre[1].isdigit() and version.pre[1] != "0":
+        return "beta"
+    raise ReleaseError(
+        f"{version.text}: the only prerelease form is -rc.N (N >= 1), which is the beta stream"
+    )
+
+
+def next_version(latest: Version, released: bool, stream: str, today: dt.date) -> Version:
+    """The next version of ``stream`` in the current UTC month.
+
+    ``latest`` is the highest version known (the workspace version when nothing is ``released``
+    yet). A beta that has no stable release yet keeps its stable version pending: the next beta
+    raises its ``rc`` number and the next stable releases it. A pending version from an earlier
+    month, or a released stable, moves to the next patch of the current month (``.0`` in a new month).
+    """
+    if stream not in STREAMS:
+        raise ReleaseError(f"unknown stream {stream!r}; expected one of {', '.join(STREAMS)}")
+    month = (today.year, today.month)
+    core = Version(latest.year, latest.month, latest.patch)
+    pending = not released or bool(latest.pre)
+    if (core.year, core.month) != month:
+        target, rc = Version(today.year, today.month, 0), 0
+    elif pending:
+        target = core
+        rc = int(latest.pre[1]) if released and stream_of(latest) == "beta" else 0
+    else:
+        target, rc = Version(core.year, core.month, core.patch + 1), 0
+    if stream == "stable":
+        return target
+    return Version(target.year, target.month, target.patch, ("rc", str(rc + 1)))
+
+
+def fold_betas(unreleased: Section | None, betas: list[Section]) -> Section | None:
+    """The Unreleased text of a stable release plus the sections of the betas it supersedes.
+
+    Headings are merged (Unreleased first, then the betas newest first), and a first line names
+    the betas, so a stable release's notes cover everything since the previous stable release.
+    """
+    if not betas:
+        return unreleased
+    preamble: list[str] = []
+    groups: list[list] = []
+    for lines in [unreleased.lines if unreleased else [], *(b.lines for b in betas)]:
+        part_preamble, part_groups = split_groups(lines)
+        if part_preamble:
+            preamble += part_preamble + [""]
+        for title, body in part_groups:
+            group = next((g for g in groups if g[0].lower() == title.lower()), None)
+            if group is None:
+                groups.append([title, trim_blank(body)])
+            else:
+                group[1] = trim_blank(group[1]) + trim_blank(body)
+    names = ", ".join(b.title or "" for b in reversed(betas))
+    plural = "s" if len(betas) > 1 else ""
+    lines = [f"Includes the changes of the beta release{plural} {names}.", ""] + trim_blank(preamble)
+    for title, body in groups:
+        lines += ["", f"### {title}", ""] + body
+    return Section("## Unreleased", "Unreleased", lines)
+
+
+def prepare(
+    root: Path, version_text: str | None, *, stream: str | None = None, today: dt.date | None = None
+) -> PrepareResult:
+    """Prepare a release of ``version_text``, or of the next version of ``stream`` when it is None.
+
+    ``today`` exists only so tests can pin the UTC date; the CLI never sets it.
+    """
+    if version_text is None and stream is None:
+        raise ReleaseError("give a version or a stream")
     if today is None:
         today = utc_today()
-    if (new.year, new.month) != (today.year, today.month):
-        kind = "future-dated" if (new.year, new.month) > (today.year, today.month) else "backdated"
-        raise ReleaseError(
-            f"{new.text} is {kind}: new releases must use the current UTC year and month "
-            f"({today.year}.{today.month}.PATCH)"
-        )
     date = today.isoformat()
 
     ws = load_workspace(root)
@@ -818,29 +907,52 @@ def prepare(root: Path, version_text: str, *, today: dt.date | None = None) -> P
             "run 'git fetch --unshallow --tags' first"
         )
 
-    if log.find(new.text):
-        raise ReleaseError(f"{CHANGELOG_NAME} already has a section for {new.text}")
     all_tags = release_tags(list_tags(root))
-    tag_name = f"v{new.text}"
-    if tag_name in set(list_tags(root)):
-        raise ReleaseError(f"tag {tag_name} already exists")
     reachable = release_tags(list_tags(root, merged_into_head=True))
-
     released_versions = [s.version for s in log.released() if s.version]
     first_release = not released_versions and not all_tags
     known = [current, *released_versions, *reachable.values()]
-    if first_release:
-        if new.key() < current.key():
-            raise ReleaseError(f"{new.text} is lower than the workspace version {current.text}")
+    latest = max(known, key=Version.key)
+
+    if version_text is None:
+        new = next_version(current if first_release else latest, not first_release, stream or "", today)
     else:
-        latest = max(known, key=Version.key)
-        if new.key() <= latest.key():
-            verb = "equal to" if new.key() == latest.key() else "lower than"
-            raise ReleaseError(f"{new.text} is {verb} the latest version {latest.text}; versions must increase")
+        new = parse_version(version_text)
+    kind = stream_of(new)
+    if stream is not None and kind != stream:
+        raise ReleaseError(f"{new.text} is a {kind} version, not {stream}")
+    if (new.year, new.month) != (today.year, today.month):
+        verb = "future-dated" if (new.year, new.month) > (today.year, today.month) else "backdated"
+        raise ReleaseError(
+            f"{new.text} is {verb}: new releases must use the current UTC year and month "
+            f"({today.year}.{today.month}.PATCH)"
+        )
+
+    if log.find(new.text):
+        raise ReleaseError(f"{CHANGELOG_NAME} already has a section for {new.text}")
+    tag_name = f"v{new.text}"
+    if tag_name in set(list_tags(root)):
+        raise ReleaseError(f"tag {tag_name} already exists")
+    if first_release:
+        # The first release may be the workspace version or one of its betas (-rc.N).
+        if (new.year, new.month, new.patch) < (current.year, current.month, current.patch):
+            raise ReleaseError(f"{new.text} is lower than the workspace version {current.text}")
+    elif new.key() <= latest.key():
+        verb = "equal to" if new.key() == latest.key() else "lower than"
+        raise ReleaseError(f"{new.text} is {verb} the latest version {latest.text}; versions must increase")
 
     previous_tag = max(reachable, key=lambda name: reachable[name].key()) if reachable else None
-    commits = collect_commits(root, previous_tag)
     unreleased = log.unreleased()
+    if kind == "stable":
+        stables = [v for v in [*released_versions, *reachable.values()] if not v.pre]
+        last_stable = max(stables, key=Version.key) if stables else None
+        betas = [
+            s
+            for s in log.released()
+            if s.version and s.version.pre and (last_stable is None or s.version.key() > last_stable.key())
+        ]
+        unreleased = fold_betas(unreleased, betas)
+    commits = collect_commits(root, previous_tag)
     section = render_release_section(new.text, date, unreleased, commits)
     if not section:
         scope = f"since {previous_tag}" if previous_tag else "in the repository history"
@@ -971,6 +1083,8 @@ def package_files(root: Path) -> list[tuple[str, str]]:
         if not (root / name).exists():
             raise ReleaseError(f"{name} is missing")
         _require_regular(root, name)
+    if (root / "NOTICES").stat().st_size == 0:
+        raise ReleaseError("NOTICES is empty")
     return [*((name, name) for name in PACKAGED_FILES), *doc_files(root)]
 
 
@@ -999,10 +1113,7 @@ def _add_to_tar(tf: tarfile.TarFile, arcname: str, source: Path | None, mode: in
         tf.addfile(info, src)
 
 
-NOTICES_NAME = "THIRD-PARTY-NOTICES.html"
-
-
-def build_package(root: Path, platform: str, binary: Path, notices: Path, output: Path) -> Path:
+def build_package(root: Path, platform: str, binary: Path, output: Path) -> Path:
     if platform not in PLATFORMS:
         raise ReleaseError(f"unsupported platform {platform!r}; expected one of {', '.join(PLATFORMS)}")
     state = check_repository(root)
@@ -1014,14 +1125,6 @@ def build_package(root: Path, platform: str, binary: Path, notices: Path, output
         raise ReleaseError(f"binary {binary} must be a file, not a directory")
     if binary.stat().st_size == 0:
         raise ReleaseError(f"binary {binary} is empty")
-    if notices.is_symlink():
-        raise ReleaseError(f"notices file {notices} must be a regular file, not a symbolic link")
-    if not notices.exists():
-        raise ReleaseError(f"notices file {notices} does not exist")
-    if not notices.is_file():
-        raise ReleaseError(f"notices file {notices} must be a regular file")
-    if notices.stat().st_size == 0:
-        raise ReleaseError(f"notices file {notices} is empty")
     if output.exists() and not output.is_dir():
         raise ReleaseError(f"output {output} exists and is not a directory")
 
@@ -1030,7 +1133,6 @@ def build_package(root: Path, platform: str, binary: Path, notices: Path, output
     binary_name = PLATFORMS[platform][1]
     entries: list[tuple[str, Path, int]] = [(binary_name, binary, 0o755)]
     entries += [(name, root / name, 0o644) for name in PACKAGED_FILES]
-    entries.append((NOTICES_NAME, notices, 0o644))
     entries += [(archive, root / source, 0o644) for archive, source in files if archive not in PACKAGED_FILES]
 
     output.mkdir(parents=True, exist_ok=True)
@@ -1121,7 +1223,22 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("prepare", help="bump versions and generate the changelog release section")
-    p.add_argument("--version", required=True, help="new calendar version, e.g. 2026.11.0 or 2026.11.1-rc.1")
+    p.add_argument(
+        "--stream",
+        choices=STREAMS,
+        help="release stream: stable (YYYY.M.PATCH) or beta (YYYY.M.PATCH-rc.N); "
+        "without --version the next version of the stream is computed",
+    )
+    p.add_argument("--version", help="explicit calendar version, e.g. 2026.11.0 or 2026.11.1-rc.1")
+
+    p = sub.add_parser("stream", help="print the release stream (stable or beta) of a version")
+    p.add_argument("--version", required=True)
+    p.add_argument(
+        "--published",
+        type=Path,
+        help="file listing the tags of the published GitHub Releases, one per line; then also print "
+        "whether VERSION may become the latest release ('latest=true|false')",
+    )
 
     p = sub.add_parser("validate", help="check version/changelog/lock consistency")
     p.add_argument("--tag", help="release tag (vVERSION) that must match the workspace version")
@@ -1133,7 +1250,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("package", help="build a release archive")
     p.add_argument("--platform", required=True, choices=sorted(PLATFORMS))
     p.add_argument("--binary", required=True, type=Path)
-    p.add_argument("--notices", required=True, type=Path, help="generated third-party license notices (HTML)")
     p.add_argument("--output", required=True, type=Path, help="output directory")
 
     p = sub.add_parser("checksums", help="write SHA256SUMS for the release archives")
@@ -1146,15 +1262,28 @@ def run(args: argparse.Namespace) -> None:
     if not (root / "Cargo.toml").is_file():
         raise ReleaseError(f"{root} is not a Cargo workspace root (Cargo.toml not found)")
     if args.command == "prepare":
-        result = prepare(root, args.version)
+        if args.version is None and args.stream is None:
+            raise ReleaseError("prepare needs --stream, --version or both")
+        result = prepare(root, args.version, stream=args.stream)
         since = f"since {result.previous_tag}" if result.previous_tag else "from the repository history"
         print(f"Prepared release {result.version}: {result.commit_count} commit(s) {since}")
         for path in result.changed:
             print(f"  updated {path}")
+    elif args.command == "stream":
+        version = parse_version(args.version)
+        stream = stream_of(version)
+        print(stream)
+        if args.published is not None:
+            try:
+                published = args.published.read_text(encoding="utf-8").split()
+            except OSError as exc:
+                raise ReleaseError(f"cannot read {args.published}: {exc}") from None
+            print(f"latest={'true' if becomes_latest(version, published) else 'false'}")
     elif args.command == "validate":
         state = check_repository(root, args.tag)
+        stream = stream_of(state.version)
         suffix = f" (tag {args.tag})" if args.tag else ""
-        print(f"OK: release metadata is consistent at {state.version.text}{suffix}")
+        print(f"OK: release metadata is consistent at {state.version.text}{suffix}, {stream} stream")
     elif args.command == "notes":
         text = extract_notes(root, args.version)
         if args.output.is_dir():
@@ -1163,7 +1292,7 @@ def run(args: argparse.Namespace) -> None:
         args.output.write_bytes(text.encode("utf-8"))
         print(f"Wrote release notes for {args.version} to {args.output}")
     elif args.command == "package":
-        print(build_package(root, args.platform, args.binary, args.notices, args.output))
+        print(build_package(root, args.platform, args.binary, args.output))
     elif args.command == "checksums":
         path = write_checksums(root, args.directory)
         print(path.read_text(encoding="ascii"), end="")

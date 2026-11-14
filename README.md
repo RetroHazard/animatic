@@ -1,4 +1,4 @@
-# Animatic
+# <img src="crates/animatic/assets/animatic.png" alt="" width="48" height="48" align="texttop"> Animatic
 
 Animatic is a native Rust successor to **AniDB O'Matic (AOM)** for Windows and Linux.
 It manages local media and AniDB metadata, preserves offline synchronization intent,
@@ -14,9 +14,13 @@ and imports user-supplied AOM databanks without modifying the originals.
   checklist and a **Needs attention** list, searchable library views, anime details, local-file
   identification and MyList editing (state, watched, view date, storage, source and other,
   removal after confirmation).
+- Browse by genre: filter the Anime page by one or several genres, or open a genre from the
+  Genres page or an anime's detail window. Descriptions and reviews show AniDB's formatting
+  (bold, links, quotes, spoilers, lists); pictures are never downloaded.
 - Keyboard shortcuts (`Ctrl+O`, `Ctrl+F`, `Ctrl+,`, `F5`, `Ctrl+Shift+S`, `Ctrl+1` … `Ctrl+9`,
-  `Esc`), a dark, light or system theme with a UI scale, and optional status colours for table
-  rows (soft tint or solid, as in AOM).
+  `Esc`), a dark, light or system theme with a UI scale, six colour schemes (Sakura, Ocean,
+  Forest, Sunset, Wisteria, Graphite), and optional status colours for table rows (soft tint or
+  solid, as in AOM) that you can customize per status.
 - Durable synchronization queue with latest-intent edits, retained failures and
   restart-persistent cooldowns; AniDB's request spacing and once-a-day limits hold across
   runs and restarts.
@@ -52,17 +56,22 @@ There is **no media-deletion UI**, and renaming is never implicit. See the
 Published [GitHub Releases](https://github.com/RetroHazard/animatic/releases) carry an
 unsigned `animatic-vVERSION-windows-x86_64.zip`, an unsigned
 `animatic-vVERSION-linux-x86_64.tar.gz` and a `SHA256SUMS` file. Each archive contains the
-executable plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the user
+executable plus `LICENSE`, `NOTICES`, `README.md`, `CHANGELOG.md` and the user
 guide from the [wiki](https://github.com/RetroHazard/animatic/wiki) as `docs/*.md` for offline
 reading (developer and Rust API documentation are not included). There is no installer or code signing.
 Verify the checksum before unpacking; the Windows PowerShell and Linux `sha256sum` commands
 are in [Releases](docs/releases.md#install-a-release). Linux runtime behavior has not been
 exercised by the project, and the Linux build is made on Ubuntu 22.04.
 
+Releases come in two streams: **stable** (`YYYY.M.PATCH`) and **beta** (`YYYY.M.PATCH-rc.N`),
+which GitHub lists as a prerelease. The in-app updater offers only stable releases by default;
+switch **Options → Updates → Release channel** to **Beta** to be offered betas too, or download
+a beta manually from its release page.
+
 ### Update an installed release
 
-On Windows and Linux x86_64, Animatic can update **its own executable** from the latest stable
-published GitHub release. Updates are always explicit: **Help → Check for updates…** (or the
+On Windows and Linux x86_64, Animatic can update **its own executable** from a newer published
+GitHub release on your **release channel** (Stable by default; Beta also offers newer betas). Updates are always explicit: **Help → Check for updates…** (or the
 optional startup check) only looks for a newer version; you then press **Download and
 verify**, confirm the installation, and choose **Restart now** or **Later**. Nothing is
 downloaded or installed unattended, and there is no privilege elevation: the folder that

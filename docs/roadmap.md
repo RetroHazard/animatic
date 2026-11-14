@@ -486,6 +486,8 @@ activity, and runs on the worker (rules 1, 2, 8 and 15).
 - **Shipped as:** Options → Appearance has **Tint table rows by status** and a **Row color
   style**: *Soft* (default; a light tint plus a coloured marker at the start of the row) or
   *Solid* (the whole row in the status colour, as in AOM).
+  **Customize status colors** edits each status's background and optional text colour
+  (`ui.colors`) with a live sample; the colour scheme (`ui.color_scheme`) is separate.
 
 ### M7.4 Player open and enqueue actions
 
@@ -578,7 +580,7 @@ Each of these items is platform-specific and goes behind a cross-platform abstra
 
 - Retired AniDB protocols (TCP `ADDANIMEDATA`/`ADDEP`). The web editors replace them (rule 9).
 - The ED2K-blue variant in the desktop application, unless a user workflow needs it.
-- Unattended or scheduled updates, prerelease channels, signing claims, installers and rollback
-  (rule 20).
+- Unattended or scheduled updates, update channels beyond Stable and Beta, signing claims,
+  installers and rollback (rule 20).
 - The deliberate non-ports listed on the parity page: the object inspector, unreachable AOM
   dialogs, splash screens, MDI layouts and COM shell extensions.

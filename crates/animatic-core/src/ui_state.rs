@@ -288,6 +288,41 @@ pub fn readable_text(background: u32) -> u32 {
     }
 }
 
+/// Smallest contrast of text on its row colour (WCAG AA for body text): the defaults all reach
+/// it, a soft tint is weakened until the theme text reaches it, and a text colour the user
+/// chose is checked against it.
+pub const MIN_TEXT_CONTRAST: f64 = 4.5;
+
+/// The contrast ratio of a slot colour's own text colour on its background when it falls
+/// below [`MIN_TEXT_CONTRAST`]; `None` when the pair reads well or the slot has no text colour
+/// (black or white is then chosen by [`readable_text`], which always reaches the minimum, and
+/// a soft tint is weakened by the painter until it does).
+pub fn text_contrast_warning(color: SlotColor) -> Option<f64> {
+    let ratio = contrast_ratio(color.background, color.text?);
+    (ratio < MIN_TEXT_CONTRAST).then_some(ratio)
+}
+
+/// The slots the tables actually use, grouped by where they appear (see [`local_file_slot`],
+/// [`anime_slot`] and [`mylist_slot`]); the other [`ColorSlot`]s are stored for AOM
+/// compatibility only. `Watched` is shared by every table.
+pub const TABLE_SLOT_GROUPS: [(&str, &[ColorSlot]); 4] = [
+    (
+        "Hashed files",
+        &[
+            ColorSlot::LocalFileInvalidCrc,
+            ColorSlot::LocalFileUnknown,
+            ColorSlot::LocalFileInMylist,
+            ColorSlot::LocalFile,
+        ],
+    ),
+    (
+        "Anime and Advanced search",
+        &[ColorSlot::AnimeInMylist, ColorSlot::Anime],
+    ),
+    ("MyList", &[ColorSlot::File]),
+    ("Every table", &[ColorSlot::Watched]),
+];
+
 /// The colours of a row whose status maps to `slot`, or `None` for an untinted row: status
 /// colours are off, or the slot is a neutral one the user did not customise.
 ///
@@ -735,5 +770,80 @@ mod tests {
     fn mylist_rows_are_tinted_when_watched() {
         assert_eq!(mylist_slot(true), ColorSlot::Watched);
         assert_eq!(mylist_slot(false), ColorSlot::File);
+    }
+
+    #[test]
+    fn the_editable_slots_are_exactly_those_the_tables_use_once_each() {
+        let used = [
+            local_file_slot(&LocalFile {
+                anidb_crc: Some("00000000".into()),
+                crc32: Some("AABBCCDD".into()),
+                fid: Some(1),
+                ..LocalFile::default()
+            }),
+            local_file_slot(&local(None, None, false)),
+            local_file_slot(&local(Some(1), Some(2), false)),
+            local_file_slot(&local(Some(1), None, false)),
+            anime_slot(&Anime::default(), None),
+            anime_slot(
+                &Anime::default(),
+                Some(&AnimeMylistState {
+                    eps: 1,
+                    ..AnimeMylistState::default()
+                }),
+            ),
+            mylist_slot(false),
+            mylist_slot(true),
+        ];
+        let mut listed: Vec<ColorSlot> = TABLE_SLOT_GROUPS
+            .iter()
+            .flat_map(|(_, slots)| slots.iter().copied())
+            .collect();
+        listed.sort();
+        let mut used = used.to_vec();
+        used.sort();
+        used.dedup();
+        assert_eq!(listed, used);
+    }
+
+    #[test]
+    fn only_a_chosen_text_colour_below_the_minimum_contrast_is_flagged() {
+        let pair = |background, text| SlotColor { background, text };
+        // No text colour: black or white is picked by contrast, so it always reads.
+        assert_eq!(text_contrast_warning(pair(0x808080, None)), None);
+        assert_eq!(text_contrast_warning(pair(0x70A0FF, Some(0x000000))), None);
+        let weak = text_contrast_warning(pair(0x70A0FF, Some(0x90E090))).unwrap();
+        assert!((1.0..MIN_TEXT_CONTRAST).contains(&weak));
+        assert_eq!(
+            text_contrast_warning(pair(0x336699, Some(0x336699))),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn resetting_a_slot_restores_its_default_and_equal_to_default_is_not_stored() {
+        let mut ui = UiSettings::default();
+        let custom = SlotColor {
+            background: 0x123456,
+            text: Some(0xFFFFFF),
+        };
+        ui.set_color(ColorSlot::Watched, custom);
+        assert_eq!(ui.color(ColorSlot::Watched), custom);
+        ui.reset_color(ColorSlot::Watched);
+        assert!(ui.colors.is_empty());
+        assert_eq!(
+            ui.color(ColorSlot::Watched).background,
+            ColorSlot::Watched.default_background()
+        );
+        // Picking the default background again with no text colour stores nothing.
+        ui.set_color(ColorSlot::Watched, custom);
+        ui.set_color(
+            ColorSlot::Watched,
+            SlotColor {
+                background: ColorSlot::Watched.default_background(),
+                text: None,
+            },
+        );
+        assert!(ui.colors.is_empty());
     }
 }

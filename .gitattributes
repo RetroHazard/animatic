@@ -2,8 +2,9 @@
 # platform. Without this, a Windows checkout with core.autocrlf=true embeds CRLF.
 crates/animatic-core/src/rename/*_pattern.txt text eol=lf
 crates/animatic-core/src/db/schema.sql text eol=lf
-# Shown by Help → About Animatic → View license.
+# Shown by Help → About Animatic → View license and Third-party notices.
 /LICENSE text eol=lf
+/NOTICES text eol=lf
 
 # Application icon (crates/animatic/assets), embedded with include_bytes! and the Windows resource compiler.
 *.png binary
