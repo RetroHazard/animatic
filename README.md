@@ -1,4 +1,4 @@
-# <img src="crates/animatic/assets/animatic.png" alt="" width="32" height="32" align="top"> Animatic
+# <img src="crates/animatic/assets/animatic.png" alt="" width="40" height="40" align="absmiddle"> Animatic
 
 Animatic is a native Rust successor to **AniDB O'Matic (AOM)** for Windows and Linux.
 It manages local media and AniDB metadata, preserves offline synchronization intent,
