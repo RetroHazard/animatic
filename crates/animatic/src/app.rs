@@ -4226,6 +4226,8 @@ impl AnimaticApp {
         };
         // One detail read per (anime, projection version), not one per frame.
         let version = self.loader.version;
+        // A different anime starts at the top; a reload of the same one keeps the reader's place.
+        let other_anime = self.detail.as_ref().is_none_or(|cached| cached.aid != aid);
         let detail = match self.detail.take() {
             Some(cached) if cached.aid == aid && cached.version == version => cached.detail,
             _ => self.db.anime_detail(aid).ok().flatten(),
@@ -4246,6 +4248,9 @@ impl AnimaticApp {
             .max_height(ctx.content_rect().height() * 0.85)
             .vscroll(true)
             .show(ctx, |ui| {
+                if other_anime {
+                    ui.scroll_to_cursor(Some(Align::TOP));
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Open on AniDB").clicked() {
                         let _ = open::that(format!("https://anidb.net/anime/{aid}"));
