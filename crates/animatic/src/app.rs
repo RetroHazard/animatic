@@ -4991,11 +4991,12 @@ impl AnimaticApp {
         ui.checkbox(
             &mut self.settings.updates.auto_check,
             "Check for updates at startup",
-        );
+        )
+        .on_hover_text("Skipped in offline mode. Help → Check for updates… always works.");
         let blocked = self.update.stage.channel_change_blocker();
         let before = self.settings.updates.channel;
         ui.horizontal(|ui| {
-            ui.label("Release channel");
+            field_label(ui, "Release channel");
             ui.add_enabled_ui(blocked.is_none(), |ui| {
                 for channel in UpdateChannel::ALL {
                     ui.selectable_value(
@@ -5016,30 +5017,24 @@ impl AnimaticApp {
             self.update.ready = None;
         }
         let channel_text = match self.settings.updates.channel {
-            UpdateChannel::Stable => "Stable: only stable releases are offered.",
-            UpdateChannel::Beta => {
-                "Beta: newer beta releases are offered as well as stable ones. A beta is the same \
-                 program with the same library and settings, packaged like a stable release; its \
-                 newest features may still have bugs. Switching back to Stable never installs an \
-                 older version: the next stable release newer than the one you run is offered."
-            }
+            UpdateChannel::Stable => "Stable releases only.",
+            UpdateChannel::Beta => "Stable releases and betas. Betas may have bugs.",
         };
-        ui.label(RichText::new(channel_text).weak());
+        ui.horizontal(|ui| {
+            ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+            ui.label(RichText::new(channel_text).weak())
+                .on_hover_text("Switching back to Stable never installs an older version.");
+        });
+        ui.add_space(4.0);
         let repository = env!("CARGO_PKG_REPOSITORY");
-        ui.label(
-            RichText::new(
-                "Looks for a newer Animatic release of the chosen channel on Animatic's GitHub \
-                 releases page. Only GitHub (github.com and its download servers) is contacted, \
-                 anonymously; never AniDB. Skipped in offline mode. Nothing is downloaded or \
-                 installed without your confirmation.",
-            )
-            .weak(),
-        );
         let releases = format!("{repository}/releases");
-        ui.hyperlink_to(
-            releases.trim_start_matches("https://").to_string(),
-            &releases,
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("Checks GitHub only, anonymously. Nothing installs without asking.")
+                    .weak(),
+            );
+            ui.hyperlink_to("Releases", &releases);
+        });
         style::section(ui, "MyList states");
         ui.label(RichText::new("The states a MyList entry can have on AniDB:").weak());
         ui.label(MYLIST_STATES.join(" · "));
