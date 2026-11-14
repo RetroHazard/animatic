@@ -33,8 +33,8 @@ tag at that exact commit and publishes. Nobody pushes release tags by hand, and 
 nothing. No other pull request, development branch or `main` CI run can create a release; a manual
 **Release** run from `main` can rehearse (dry run) or retry a commit that has no release yet (see
 [Workflows](#workflows)). Publishing matters beyond the page itself: installed copies of Animatic
-offer **published** stable releases (see [In-app updates](#in-app-updates)), so merging a release
-pull request is what makes a stable version an update candidate.
+offer **published** releases according to the user's update channel (see [In-app updates](#in-app-updates)),
+so merging a release pull request is what makes that version an update candidate.
 
 What is deliberately **not** shipped: installers, packages (MSI, deb, rpm, Flatpak, AppImage),
 unattended or automatic updates, code signing, notarization or build-provenance attestations.
@@ -112,13 +112,16 @@ limits and install contract are in
 must keep true** for it to work. Everything here describes the implemented code; none of it has
 been run against a real GitHub release or on Linux by the project.
 
-- **Only stable, published releases are offered.** The updater lists GitHub releases
-  (anonymously; `RetroHazard/animatic` only) and ignores drafts, prereleases (including any tag
-  with a `-` suffix such as `-rc.1`) and tags that are not `vYYYY.M.PATCH`. It takes the **highest
-  CalVer** across all pages, not the first or "latest" entry, and offers it only if it is strictly
-  newer than the running version: equal or lower versions are never offered and there is no
-  downgrade. A beta (`-rc.N`) is therefore *not* an update; testers download it from its GitHub
-  release page and install it manually. A stable is offered as soon as it is published.
+- **What is offered depends on the channel.** The updater lists GitHub releases
+  (anonymously; `RetroHazard/animatic` only) and ignores drafts and tags that are not
+  `vYYYY.M.PATCH` (or `vYYYY.M.PATCH-rc.N` on the Beta channel). On the **Stable** channel
+  (`updates.channel`, the default) it also ignores every prerelease; on the **Beta** channel it
+  additionally considers GitHub prereleases versioned `YYYY.M.PATCH-rc.N` (`N` >= 1); any other
+  prerelease form is never offered. It takes the **highest version** across all pages, not the
+  first or "latest" entry, and offers it only if it is strictly newer than the running version:
+  equal or lower versions are never offered and there is no downgrade (switching back to Stable
+  never installs an older version; the next stable newer than the running one is offered). A beta
+  or stable is offered as soon as it is published.
 - **Asset contract.** The published release must contain the platform archive
   `animatic-vVERSION-windows-x86_64.zip` or `animatic-vVERSION-linux-x86_64.tar.gz` and
   `SHA256SUMS` with the standard `sha256sum` format (64 lowercase hex digits, two spaces, the file
@@ -178,8 +181,9 @@ been run against a real GitHub release or on Linux by the project.
   `YYYY.M.PATCH-rc.N` with `N` >= 1, a candidate for the stable `YYYY.M.PATCH`. No other
   prerelease form (`-beta.2`, `-alpha`, `-rc.0`) is released: `release.py` refuses it in
   `prepare`, `validate` and `stream`. `python scripts/release.py stream --version VERSION`
-  prints `stable` or `beta`. Betas are published as GitHub prereleases and stay invisible to
-  the in-app updater; a stable is published as the latest release and is offered by it.
+  prints `stable` or `beta`. Betas are published as GitHub prereleases and are offered by the
+  in-app updater only on the Beta channel; a stable is published as the latest release and is
+  offered on both channels.
 - **Scheme (CalVer):** `YYYY.M.PATCH`, for example `2026.11.0`. `YYYY` is the four-digit year
   (2000 to 9999), `M` the month `1`-`12` **without zero padding**, and `PATCH` a counter of
   releases within that month. Starting each month at `0` is the recommended convention, not a
@@ -346,8 +350,8 @@ Token permissions: `contents: write` only in the preparation job that pushes the
 
 The pull request is titled `chore(release): vVERSION (stream)` and opened with the label `release`
 (the label must exist in the repository). Its description says what merging publishes for that
-stream (a stable: the latest release, offered by the in-app updater; a beta: a prerelease that the
-updater does not offer); removing the label before merging merges without releasing.
+stream (a stable: the latest release, offered on both update channels; a beta: a prerelease that
+installed copies on the Beta channel offer); removing the label before merging merges without releasing.
 
 ### `auto-release.yml` (Auto release)
 

@@ -21,7 +21,7 @@ use animatic_core::maintenance::{BackupInfo, IntegrityReport};
 use animatic_core::rename::plan::{self, BatchRow, Candidate, PatternKind, Plan};
 use animatic_core::rename::{presets, reference};
 use animatic_core::secrets::{CredentialStorage, Credentials};
-use animatic_core::settings::{MYLIST_STATES, RowStyle, Settings, StatFormat, Theme};
+use animatic_core::settings::{ColorScheme, MYLIST_STATES, RowStyle, Settings, StatFormat, Theme};
 use animatic_core::ui_state::{
     self, anime_slot, local_file_slot, mylist_slot, row_colors, window_to_save,
 };
@@ -40,6 +40,7 @@ mod mylist_export;
 mod player_actions;
 mod refresh;
 mod shell_menu;
+mod status_colors;
 mod tray_ui;
 
 /// Minimum spacing between projection requests, so a long sync does not reload continuously.
@@ -1094,7 +1095,8 @@ impl AnimaticApp {
         }
         if self.update.stage.begin_check(manual) {
             self.update.error = None;
-            self.updater.submit(UpdateJob::Check);
+            self.updater
+                .submit(UpdateJob::Check(self.settings.updates.channel));
         }
     }
 
@@ -2856,8 +2858,10 @@ impl AnimaticApp {
                     if ui
                         .add_enabled(
                             !self.import_pending,
-                            egui::Button::new(RichText::new("Add files…").color(Color32::WHITE))
-                                .fill(accent),
+                            egui::Button::new(
+                                RichText::new("Add files…").color(style::on_accent(ui.visuals())),
+                            )
+                            .fill(accent),
                         )
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::ADD_FILES))
                         .clicked()
@@ -4446,7 +4450,8 @@ impl AnimaticApp {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("Save options").color(Color32::WHITE),
+                                    RichText::new("Save options")
+                                        .color(style::on_accent(ui.visuals())),
                                 )
                                 .fill(accent),
                             )
@@ -4583,6 +4588,36 @@ impl AnimaticApp {
                         }
                     });
                 ui.end_row();
+                ui.label("Color scheme");
+                ui.horizontal(|ui| {
+                    let dark_mode = ui.visuals().dark_mode;
+                    style::swatch(
+                        ui,
+                        style::scheme_accent(self.settings.ui.color_scheme, dark_mode),
+                    );
+                    egui::ComboBox::from_id_salt("options-color-scheme")
+                        .selected_text(self.settings.ui.color_scheme.label())
+                        .show_ui(ui, |ui| {
+                            for scheme in ColorScheme::ALL {
+                                ui.horizontal(|ui| {
+                                    style::swatch(ui, style::scheme_accent(scheme, dark_mode));
+                                    restyle |= ui
+                                        .selectable_value(
+                                            &mut self.settings.ui.color_scheme,
+                                            scheme,
+                                            scheme.label(),
+                                        )
+                                        .changed();
+                                });
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "The accent and the tint of the interface, in the dark and in the \
+                             light theme. The status colors of table rows are separate.",
+                        );
+                });
+                ui.end_row();
                 ui.label("UI scale");
                 let scale = ui.add(
                     egui::Slider::new(&mut self.settings.ui.zoom, 0.75..=2.0)
@@ -4627,6 +4662,7 @@ impl AnimaticApp {
         if restyle {
             self.apply_visuals(ui.ctx());
         }
+        status_colors::options_ui(ui, &mut self.settings.ui);
         self.tray_options_ui(ui);
     }
 
@@ -4919,17 +4955,45 @@ impl AnimaticApp {
     }
 
     fn options_updates(&mut self, ui: &mut egui::Ui) {
+        use animatic_core::settings::UpdateChannel;
         ui.checkbox(
             &mut self.settings.updates.auto_check,
             "Check for updates at startup",
         );
+        let before = self.settings.updates.channel;
+        ui.horizontal(|ui| {
+            ui.label("Release channel");
+            for channel in UpdateChannel::ALL {
+                ui.selectable_value(&mut self.settings.updates.channel, channel, channel.label());
+            }
+        });
+        if self.settings.updates.channel != before
+            && matches!(
+                self.update.stage,
+                UpdateStage::Available | UpdateStage::UpToDate
+            )
+        {
+            // A result found on the other channel no longer applies; the next check uses this one.
+            self.update.stage = UpdateStage::Idle;
+            self.update.release = None;
+        }
+        let channel_text = match self.settings.updates.channel {
+            UpdateChannel::Stable => "Stable: only stable releases are offered.",
+            UpdateChannel::Beta => {
+                "Beta: newer beta releases are offered as well as stable ones. A beta is the same \
+                 program with the same library and settings, packaged like a stable release; its \
+                 newest features may still have bugs. Switching back to Stable never installs an \
+                 older version: the next stable release newer than the one you run is offered."
+            }
+        };
+        ui.label(RichText::new(channel_text).weak());
         let repository = env!("CARGO_PKG_REPOSITORY");
         ui.label(
             RichText::new(
-                "Looks for a newer stable Animatic release on Animatic's GitHub releases page. \
-                 Only GitHub (github.com and its download servers) is contacted, anonymously; \
-                 never AniDB. Skipped in offline mode. Nothing is downloaded or installed \
-                 without your confirmation.",
+                "Looks for a newer Animatic release of the chosen channel on Animatic's GitHub \
+                 releases page. Only GitHub (github.com and its download servers) is contacted, \
+                 anonymously; never AniDB. Skipped in offline mode. Nothing is downloaded or \
+                 installed without your confirmation.",
             )
             .weak(),
         );
@@ -5164,6 +5228,7 @@ impl AnimaticApp {
     }
 
     pub fn apply_visuals(&self, ctx: &egui::Context) {
+        style::set_scheme(ctx, self.settings.ui.color_scheme);
         // `System` follows the operating system's light or dark mode, also while running.
         ctx.set_theme(match self.settings.ui.theme {
             Theme::Dark => egui::ThemePreference::Dark,

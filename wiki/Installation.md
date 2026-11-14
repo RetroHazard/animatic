@@ -24,7 +24,7 @@ for where data is kept and [First launch](First-Launch.md) for safe first-run se
   HTTP), so you need only your AniDB username and password; there is no client to register or
   enter ([AniDB client registration](First-Launch.md#anidb-client-registration)).
 - Separately, a startup **update check** (`updates.auto_check`, on by default) asks GitHub for
-  a newer stable release unless *Work offline* is on or the settings were recovered from a
+  a newer release on your update channel (stable by default) unless *Work offline* is on or the settings were recovered from a
   backup. It only looks for a version: nothing is downloaded or installed until you choose
   **Download and verify** and confirm the installation
   ([Updating Animatic](Updating-Animatic.md)). On a brand-new profile that means
@@ -36,9 +36,10 @@ for where data is kept and [First launch](First-Launch.md) for safe first-run se
 ### Option A: download a release
 
 Releases come in two streams: **stable** (`YYYY.M.PATCH`) and **beta** (`YYYY.M.PATCH-rc.N`,
-shown on GitHub as a prerelease). Betas are for testing: the in-app updater never offers them,
-so download a beta from its release page and install it manually, as below. A stable release is
-offered by the updater once it is published.
+shown on GitHub as a prerelease). Betas are for testing: the in-app updater offers them only
+if you switch **Options → Updates → Release channel** to **Beta**; otherwise download a beta
+from its release page and install it manually, as below. A stable release is offered by the
+updater on both channels once it is published.
 
 Each GitHub Release lists three assets (if the project has published one):
 

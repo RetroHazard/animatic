@@ -125,9 +125,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ "$STREAM" = beta ]; then
-            published="a GitHub prerelease (beta stream). Installed copies do not offer betas as updates; testers download them from the release page"
+            published="a GitHub prerelease (beta stream). Installed copies on the Beta update channel offer it as soon as it is published"
           else
-            published="the latest GitHub Release (stable stream). Installed copies offer it as an update as soon as it is published"
+            published="the latest GitHub Release (stable stream). Installed copies on either update channel offer it as soon as it is published"
           fi
           printf '%s\n' \
             "Prepared $STREAM version v$VERSION and its changelog. Review the generated notes for accuracy and privacy before merging." \

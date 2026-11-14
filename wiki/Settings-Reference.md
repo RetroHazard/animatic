@@ -53,7 +53,7 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 | `ed2k_space_replacement` | string or `null` | `null` | [Top-level keys](#top-level-keys) |
 | `first_launch` | boolean | `true` | [Top-level keys](#top-level-keys) |
 | `secrets_in_keystore` | boolean | `false` | [Top-level keys](#top-level-keys) |
-| `updates` | object | `{ "auto_check": true }` | [Updates](#updates) |
+| `updates` | object | `{ "auto_check": true, "channel": "stable" }` | [Updates](#updates) |
 | `media` | object | `{ "read_properties": false, "ffprobe_path": "" }` | [Media properties](#media-properties-media) |
 
 ## AniDB account
@@ -121,7 +121,7 @@ The ED2K variant is fixed (the "red" variant AniDB expects); there is no setting
 
 ## UI
 
-Object `ui`. Theme, scale, window geometry, column layouts and status row colors are applied by
+Object `ui`. Theme, color scheme, scale, window geometry, column layouts and status row colors are applied by
 the desktop application; the remaining keys mirror AOM's interface options and are **not** read.
 
 ### Appearance and paths
@@ -129,6 +129,7 @@ the desktop application; the remaining keys mirror AOM's interface options and a
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
 | `theme` | `"Dark"`, `"Light"` or `"System"` | `"Dark"` | "Theme" combo (Dark, Light, "Same as the system") | **Active.** Applied at startup, at once when you choose it in Options, and by **Save options** or **Apply imported settings**. `System` follows the operating system's light or dark mode and changes with it while Animatic runs (where the platform does not report a mode, it is dark). Values are case-sensitive. |
+| `color_scheme` | `"Sakura"`, `"Ocean"`, `"Forest"`, `"Sunset"`, `"Wisteria"` or `"Graphite"` | `"Sakura"` | "Color scheme" combo (each entry with a swatch of its accent) | **Active.** The accent family of the interface, used with the dark or the light palette that `theme` picks; applied at startup, at once when you choose it in Options, and by **Save options** or **Apply imported settings** (an AOM import keeps the scheme you chose, since AOM has no such setting). A missing key or a name this version does not know loads as `"Sakura"` without affecting the rest of the file. Every scheme is checked to keep body text at 7:1 contrast or better and links, accent text and selected text at 4.5:1. |
 | `zoom` | number (f32) | `1.0` | "UI scale" slider 0.75-2.0 | **Active.** Applied (clamped to 0.75-2.0) at startup and at the same moments as `theme`. Load-time fixup resets values `<= 0.3` to `1.0`; other out-of-range values are kept in the file and clamped when applied. |
 | `last_directory` | string | `""` | none | **Active.** Start folder for the Add files picker and the AOM settings XML picker; updated to the folder of the files you last added. |
 | `colored_rows` | boolean | `true` | "Tint table rows by status" (Status colors) | **Active.** Tints table rows by status with the [row colors](#row-colors-uicolors) below; `false` draws every row plainly. Every status is also written in the row, so the color is never the only signal. Takes effect immediately, no save needed. |
@@ -172,8 +173,17 @@ their columns (all sortable except the queue, whose order is the run order):
 `{ "background": number, "text": number or null }`. Numbers are `0xRRGGBB` written as decimal
 integers (JSON has no hex literals); `text` may be omitted or `null` (no text override), but
 `background` is required in every entry. An absent slot uses the default background below.
-With `colored_rows` on, the table rows take these colors (no Options control edits them; an AOM
-import fills them). The background is the status color of the `Solid` row style, and in the
+With `colored_rows` on, the table rows take these colors. **Options → Appearance → Customize
+status colors** edits the eight slots the tables use (listed under "Where Animatic uses a slot"
+below): a background color, an optional text color ("Text" ticked) and a sample row drawn like a
+table row in the current `row_style` and theme, per slot, plus a per-slot **Reset** and
+**Reset all** (which touch only those eight slots). Edits apply at once and **Save options**
+writes them; choosing a slot's default background with no text color removes its entry. A chosen
+text color whose contrast on its background is below 4.5 shows a yellow note and is kept anyway
+(a soft tint is weakened by the painter until the theme text reads, and the automatic black or
+white text always reaches 4.5, so only a chosen text color can warn). The other slots are not in
+Options; an AOM import fills them. The
+background is the status color of the `Solid` row style, and in the
 default `Soft` style it is blended into the page background and drawn as the left marker bar.
 Without a `text` color a solid row's text is black or white, whichever contrasts
 more with the background; the defaults all reach a contrast ratio of at least 4.5. A slot that
@@ -400,20 +410,22 @@ such preference. An older Animatic build ignores and drops the unknown `media` k
 
 ## Updates
 
-Object `updates`. It controls only the *automatic* check for a newer Animatic release on GitHub.
+Object `updates`. It controls the *automatic* check for a newer Animatic release on GitHub and which releases the checks offer.
 Checking, downloading and installing are always started by you; see
 [Updating Animatic](Updating-Animatic.md) for the flow and
 [Storage and network](https://github.com/RetroHazard/animatic/blob/main/docs/storage-and-network.md#github-update-transport) for the traffic.
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
-| `auto_check` | boolean | `true` | "Check for updates at startup" | **Active.** When true, one background check for a newer stable GitHub release runs at startup, but only if `anidb.offline` is false and the settings were not recovered from a backup. It never downloads or installs anything. When false, no request is made until you choose **Help → Check for updates…**, which works regardless of this key and of `anidb.offline`. |
+| `auto_check` | boolean | `true` | "Check for updates at startup" | **Active.** When true, one background check for a newer release on the selected channel runs at startup, but only if `anidb.offline` is false and the settings were not recovered from a backup. It never downloads or installs anything. When false, no request is made until you choose **Help → Check for updates…**, which works regardless of this key and of `anidb.offline`. |
+| `channel` | string | `"stable"` | "Release channel" (**Stable** / **Beta**) | **Active.** `"stable"` offers only published, non-prerelease `YYYY.M.PATCH` releases. `"beta"` also offers newer GitHub prereleases versioned `YYYY.M.PATCH-rc.N`; other prerelease forms and drafts are never offered. Only a strictly newer version is ever offered, so switching back to `"stable"` never installs an older version. Changing it discards an "available" or "up to date" result found on the other channel; the next check (startup or Help → Check for updates…) uses the new channel. |
 
-There is no automatic install, no last-check timestamp, no skipped-version list and no
-release channel setting. A file without an `updates` object (every earlier version's file) loads
-with `auto_check` true, so upgrading to this version turns the startup check on unless you set it
-to `false`. An older Animatic build ignores and drops the unknown `updates` key on its next save.
-Applying an AOM settings import keeps your current `updates` object because AOM has no such preference.
+There is no automatic install, no last-check timestamp and no skipped-version list. A file
+without an `updates` object (every earlier version's file) loads with `auto_check` true, so
+upgrading to this version turns the startup check on unless you set it to `false`; a file
+without `channel` loads as `"stable"`. An older Animatic build ignores and drops the unknown
+`updates` key on its next save.
+Applying an AOM settings import keeps your current `updates` object (including `channel`) because AOM has no such preference.
 
 ## Hash export template tokens
 

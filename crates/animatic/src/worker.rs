@@ -1081,8 +1081,8 @@ pub fn spawn_restore(db_path: PathBuf, source: PathBuf) -> Receiver<RestoreResul
 /// A request for the updater thread (see [`Updater`]).
 #[derive(Debug)]
 pub enum UpdateJob {
-    /// Look for a newer stable release. Needs only the public release list.
-    Check,
+    /// Look for a newer release on the channel. Needs only the public release list.
+    Check(animatic_core::update::UpdateChannel),
     /// Download and verify the archive of a release found by a check.
     Download(Box<ReleaseInfo>),
     /// Replace the executable with the verified update. Runs to completion once started.
@@ -1230,7 +1230,7 @@ fn run_updates(
             break;
         }
         let event = match job {
-            UpdateJob::Check => guarded(
+            UpdateJob::Check(channel) => guarded(
                 || {
                     if let Some(refusal) = INSTALL_ATTEMPT.lock().refusal() {
                         return UpdateEvent::CheckFailed(refusal.into());
@@ -1240,9 +1240,9 @@ fn run_updates(
                             "Updates are only available for 64-bit Windows and Linux".into(),
                         );
                     };
-                    match update_client(&mut client)
-                        .and_then(|c| c.check(env!("CARGO_PKG_VERSION"), platform, &cancel))
-                    {
+                    match update_client(&mut client).and_then(|c| {
+                        c.check(env!("CARGO_PKG_VERSION"), platform, channel, &cancel)
+                    }) {
                         Ok(release) => UpdateEvent::Checked(release.map(Box::new)),
                         Err(_) if cancel.load(Ordering::SeqCst) => UpdateEvent::Cancelled,
                         Err(e) => UpdateEvent::CheckFailed(e.to_string()),

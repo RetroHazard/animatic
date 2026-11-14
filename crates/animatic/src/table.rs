@@ -279,12 +279,10 @@ fn packed(color: Color32) -> u32 {
 
 /// Width in points of the full-colour marker bar at the left edge of a soft row.
 const MARKER_WIDTH: f32 = 3.0;
-/// Smallest contrast of theme text on a soft row band (WCAG AA for body text).
-const MIN_TEXT_CONTRAST: f64 = 4.5;
 
 /// Soft row band: the panel colour blended toward the status colour `slot`, weaker for the
 /// expected states than for those asking for action, and weakened further until the theme
-/// `text` colour reads on it at [`MIN_TEXT_CONTRAST`].
+/// `text` colour reads on it at [`ui_state::MIN_TEXT_CONTRAST`].
 fn soft_fill(panel: Color32, text: Color32, slot: u32, attention: bool, dark: bool) -> Color32 {
     let mut k: f32 = match (attention, dark) {
         (false, true) => 0.14,
@@ -294,7 +292,9 @@ fn soft_fill(panel: Color32, text: Color32, slot: u32, attention: bool, dark: bo
     };
     loop {
         let fill = panel.lerp_to_gamma(rgb(slot), k);
-        if k <= 0.0 || ui_state::contrast_ratio(packed(fill), packed(text)) >= MIN_TEXT_CONTRAST {
+        if k <= 0.0
+            || ui_state::contrast_ratio(packed(fill), packed(text)) >= ui_state::MIN_TEXT_CONTRAST
+        {
             return fill;
         }
         k = (k - 0.02).max(0.0);
@@ -356,6 +356,21 @@ fn paint_tint(ui: &mut egui::Ui, colors: RowColors, marker: bool) {
     // heavier outline in the text colour keeps it apparent on any status colour.
     visuals.selection.bg_fill = status.lerp_to_gamma(text, 0.35);
     visuals.selection.stroke = Stroke::new(2.0, text);
+}
+
+/// A sample row for Options → Status colors: a chip of `width` points painted with the very
+/// code a table row uses (`None`: the row is not tinted, so the chip is plain), with `text`
+/// in it. The soft marker bar is included.
+pub fn tint_preview(ui: &mut egui::Ui, colors: Option<RowColors>, width: f32, text: &str) {
+    let size = egui::vec2(width, ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_size(size);
+        if let Some(colors) = colors {
+            paint_tint(ui, colors, true);
+        }
+        ui.add_space(MARKER_WIDTH + 2.0);
+        ui.label(text);
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -654,10 +669,8 @@ mod tests {
         assert_eq!(sort_key(&layouts, "groups"), descending("votes"));
     }
 
-    /// Panel and text colours of both themes: egui's own and Animatic's palettes.
-    fn theme_colours() -> Vec<(&'static str, Color32, Color32, bool)> {
-        let ctx = egui::Context::default();
-        crate::style::install(&ctx);
+    /// Panel and text colours of both themes: egui's own and every scheme's palettes.
+    fn theme_colours() -> Vec<(String, Color32, Color32, bool)> {
         let mut themes = Vec::new();
         for (name, dark) in [("dark", true), ("light", false)] {
             let egui_default = if dark {
@@ -665,19 +678,29 @@ mod tests {
             } else {
                 egui::Visuals::light()
             };
-            let theme = if dark {
-                egui::Theme::Dark
-            } else {
-                egui::Theme::Light
-            };
-            let app = ctx.style_of(theme).visuals.clone();
             themes.push((
-                name,
+                name.to_string(),
                 egui_default.panel_fill,
                 egui_default.text_color(),
                 dark,
             ));
-            themes.push((name, app.panel_fill, app.text_color(), dark));
+            for scheme in animatic_core::settings::ColorScheme::ALL {
+                let ctx = egui::Context::default();
+                crate::style::install(&ctx);
+                crate::style::set_scheme(&ctx, scheme);
+                let theme = if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                };
+                let app = ctx.style_of(theme).visuals.clone();
+                themes.push((
+                    format!("{name} {}", scheme.label()),
+                    app.panel_fill,
+                    app.text_color(),
+                    dark,
+                ));
+            }
         }
         themes
     }
@@ -703,7 +726,10 @@ mod tests {
 
     #[test]
     fn soft_row_bands_tint_the_panel_and_attention_is_stronger() {
-        for (theme, panel, text, dark) in theme_colours().into_iter().skip(1).step_by(2) {
+        for (theme, panel, text, dark) in theme_colours()
+            .into_iter()
+            .filter(|(name, ..)| name.contains(' '))
+        {
             let expected = soft_fill(panel, text, 0xFF7070, false, dark);
             let attention = soft_fill(panel, text, 0xFF7070, true, dark);
             assert_ne!(expected, panel, "{theme}: tint must show");

@@ -54,6 +54,8 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use ureq::http::Uri;
 
+pub use crate::settings::UpdateChannel;
+
 const REPOSITORY: &str = "RetroHazard/animatic";
 const API_ORIGIN: &str = "https://api.github.com";
 const WEB_ORIGIN: &str = "https://github.com";
@@ -254,6 +256,19 @@ fn parse_tag(tag: &str) -> std::result::Result<semver::Version, String> {
         .strip_prefix('v')
         .ok_or_else(|| format!("tag {tag:?} does not start with 'v'"))?;
     parse_calver(rest)
+}
+
+/// Whether a published release of `version` (marked `prerelease` on GitHub) is offered on
+/// `channel`. Stable: a stable version that is not a prerelease. Beta: that, or a beta, which is
+/// a prerelease versioned `-rc.N` (N >= 1, the only prerelease form Animatic releases).
+fn offered_on(channel: UpdateChannel, version: &semver::Version, prerelease: bool) -> bool {
+    if version.pre.is_empty() {
+        return !prerelease;
+    }
+    let beta = version.pre.as_str().strip_prefix("rc.").is_some_and(|n| {
+        !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && !n.starts_with('0')
+    });
+    channel == UpdateChannel::Beta && prerelease && beta
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -694,16 +709,19 @@ impl UpdateClient {
         Ok((releases, has_next))
     }
 
-    /// Looks for a stable, published release newer than `current_version` for `platform`.
+    /// Looks for a published release newer than `current_version` for `platform` on `channel`:
+    /// stable releases only, or on the beta channel also betas (GitHub prereleases versioned
+    /// `YYYY.M.PATCH-rc.N`).
     ///
-    /// All release pages are read (bounded) and the highest stable CalVer wins regardless of
-    /// the order GitHub lists them in. `Ok(None)` means no newer compatible release exists. If
-    /// the highest release is newer but incomplete or invalid, that is an error: an older
-    /// release is never offered instead.
+    /// All release pages are read (bounded) and the highest CalVer of the channel wins
+    /// regardless of the order GitHub lists them in. `Ok(None)` means no newer compatible
+    /// release exists. If the highest release is newer but incomplete or invalid, that is an
+    /// error: an older release is never offered instead.
     pub fn check(
         &self,
         current_version: &str,
         platform: Platform,
+        channel: UpdateChannel,
         cancel: &AtomicBool,
     ) -> Result<Option<ReleaseInfo>> {
         let current = parse_calver(current_version).map_err(UpdateError::InvalidVersion)?;
@@ -717,13 +735,13 @@ impl UpdateClient {
             let (releases, has_next) = self.fetch_release_page(&url, cancel)?;
             let count = releases.len();
             for release in releases {
-                if release.draft || release.prerelease {
+                if release.draft {
                     continue;
                 }
                 let Ok(version) = parse_tag(&release.tag_name) else {
                     continue;
                 };
-                if !version.pre.is_empty() {
+                if !offered_on(channel, &version, release.prerelease) {
                     continue;
                 }
                 if best.as_ref().is_some_and(|(b, _)| *b >= version) {
@@ -2269,8 +2287,84 @@ mod tests {
     }
 
     fn check_site(site: Site, current: &str, platform: Platform) -> Result<Option<ReleaseInfo>> {
+        check_site_on(site, current, platform, UpdateChannel::Stable)
+    }
+
+    fn check_site_on(
+        site: Site,
+        current: &str,
+        platform: Platform,
+        channel: UpdateChannel,
+    ) -> Result<Option<ReleaseInfo>> {
         let fixture = site.start();
-        fixture.client().check(current, platform, &cancel_flag())
+        fixture
+            .client()
+            .check(current, platform, channel, &cancel_flag())
+    }
+
+    #[test]
+    fn the_beta_channel_also_offers_newer_betas_and_the_stable_one_never_does() {
+        let platform = Platform::Linux;
+        let stable = standard_package(platform, "2026.12.0");
+        let beta = standard_package(platform, "2026.12.1-rc.2");
+        let mut beta_release = full_release(&beta);
+        beta_release["prerelease"] = json!(true);
+        let site = Site::default()
+            .page(vec![beta_release.clone(), full_release(&stable)])
+            .serve(&stable)
+            .serve(&beta);
+        let offered = |channel, current| {
+            check_site_on(site.clone(), current, platform, channel)
+                .unwrap()
+                .map(|r| r.version)
+        };
+        assert_eq!(
+            offered(UpdateChannel::Stable, CURRENT).as_deref(),
+            Some("2026.12.0")
+        );
+        assert_eq!(
+            offered(UpdateChannel::Beta, CURRENT).as_deref(),
+            Some("2026.12.1-rc.2")
+        );
+        // A beta user who switches back to stable is not downgraded, and gets the next stable.
+        assert_eq!(offered(UpdateChannel::Stable, "2026.12.1-rc.2"), None);
+        let next = standard_package(platform, "2026.12.1");
+        let site = Site::default()
+            .page(vec![beta_release, full_release(&next)])
+            .serve(&next)
+            .serve(&beta);
+        assert_eq!(
+            check_site_on(site, "2026.12.1-rc.2", platform, UpdateChannel::Stable)
+                .unwrap()
+                .map(|r| r.version)
+                .as_deref(),
+            Some("2026.12.1")
+        );
+    }
+
+    #[test]
+    fn only_rc_prereleases_are_betas() {
+        let v = |s: &str| parse_calver(s).unwrap();
+        assert!(offered_on(UpdateChannel::Beta, &v("2026.12.0-rc.1"), true));
+        assert!(!offered_on(
+            UpdateChannel::Beta,
+            &v("2026.12.0-rc.1"),
+            false
+        ));
+        assert!(!offered_on(UpdateChannel::Beta, &v("2026.12.0-rc.0"), true));
+        assert!(!offered_on(
+            UpdateChannel::Beta,
+            &v("2026.12.0-alpha.1"),
+            true
+        ));
+        assert!(!offered_on(
+            UpdateChannel::Stable,
+            &v("2026.12.0-rc.1"),
+            true
+        ));
+        assert!(offered_on(UpdateChannel::Stable, &v("2026.12.0"), false));
+        assert!(!offered_on(UpdateChannel::Stable, &v("2026.12.0"), true));
+        assert!(offered_on(UpdateChannel::Beta, &v("2026.12.0"), false));
     }
 
     /// Serves `entries` as the newest release and runs check + download.
@@ -2283,7 +2377,7 @@ mod tests {
         let client = fixture.client();
         let cancel = cancel_flag();
         let release = client
-            .check(CURRENT, platform, &cancel)
+            .check(CURRENT, platform, UpdateChannel::Stable, &cancel)
             .unwrap()
             .expect("a newer release is offered");
         client.download(&release, &cancel, &mut |_, _| {})
@@ -2580,7 +2674,7 @@ mod tests {
         let fixture = site.start();
         let release = fixture
             .client()
-            .check(CURRENT, platform, &cancel_flag())
+            .check(CURRENT, platform, UpdateChannel::Stable, &cancel_flag())
             .unwrap()
             .expect("offered from the second page");
         assert_eq!(release.version, "2027.1.0");
@@ -2599,7 +2693,12 @@ mod tests {
         let fixture = Fixture::start(move |_, _| Reply::ok(page.clone().into_bytes()));
         let err = fixture
             .client()
-            .check(CURRENT, Platform::Linux, &cancel_flag())
+            .check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag(),
+            )
             .unwrap_err();
         assert!(matches!(err, UpdateError::Limit(_)), "{err:?}");
         assert_eq!(fixture.hits().len(), MAX_RELEASE_PAGES);
@@ -2749,9 +2848,12 @@ mod tests {
     fn check_maps_http_failures() {
         let respond = |status: u16| {
             let fixture = Fixture::start(move |_, _| Reply::status(status));
-            fixture
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag())
+            fixture.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag(),
+            )
         };
         assert!(matches!(respond(404), Err(UpdateError::NotFound)));
         assert!(matches!(respond(403), Err(UpdateError::RateLimited(403))));
@@ -2765,7 +2867,12 @@ mod tests {
     fn check_rejects_oversized_truncated_and_malformed_metadata() {
         let big = Fixture::start(|_, _| Reply::ok(vec![b' '; MAX_METADATA_BYTES as usize + 1]));
         assert!(matches!(
-            big.client().check(CURRENT, Platform::Linux, &cancel_flag()),
+            big.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::TooLarge { .. })
         ));
 
@@ -2775,26 +2882,35 @@ mod tests {
             reply
         });
         assert!(matches!(
-            truncated
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            truncated.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Truncated { .. } | UpdateError::Network(_))
         ));
 
         let garbage = Fixture::start(|_, _| Reply::ok(b"{\"not\": \"a list\"}".to_vec()));
         assert!(matches!(
-            garbage
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            garbage.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Metadata(_))
         ));
 
         let encoded =
             Fixture::start(|_, _| Reply::ok(b"[]".to_vec()).header("Content-Encoding", "gzip"));
         assert!(matches!(
-            encoded
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            encoded.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Network(_))
         ));
     }
@@ -2804,7 +2920,9 @@ mod tests {
         let fixture = Site::default().start();
         let cancel = AtomicBool::new(true);
         assert!(matches!(
-            fixture.client().check(CURRENT, Platform::Linux, &cancel),
+            fixture
+                .client()
+                .check(CURRENT, Platform::Linux, UpdateChannel::Stable, &cancel),
             Err(UpdateError::Cancelled)
         ));
         assert!(fixture.hits().is_empty());
@@ -2815,7 +2933,12 @@ mod tests {
         let fixture = Site::default().start();
         fixture
             .client()
-            .check(CURRENT, Platform::Linux, &cancel_flag())
+            .check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag(),
+            )
             .unwrap();
         let hits = fixture.hits();
         assert_eq!(hits.len(), 1);
@@ -2836,34 +2959,46 @@ mod tests {
             Reply::status(302).header("Location", "https://evil.example/releases")
         });
         assert!(matches!(
-            foreign
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            foreign.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Redirect(_))
         ));
         let downgrade = Fixture::start(|_, _| {
             Reply::status(302).header("Location", "http://github.com/releases")
         });
         assert!(matches!(
-            downgrade
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            downgrade.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Redirect(_))
         ));
         let looping = Fixture::start(|origin, path| {
             Reply::status(302).header("Location", &format!("{origin}{path}"))
         });
         assert!(matches!(
-            looping
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            looping.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Redirect(_))
         ));
         let nowhere = Fixture::start(|_, _| Reply::status(302));
         assert!(matches!(
-            nowhere
-                .client()
-                .check(CURRENT, Platform::Linux, &cancel_flag()),
+            nowhere.client().check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag()
+            ),
             Err(UpdateError::Redirect(_))
         ));
 
@@ -2885,7 +3020,12 @@ mod tests {
         });
         let release = fixture
             .client()
-            .check(CURRENT, Platform::Linux, &cancel_flag())
+            .check(
+                CURRENT,
+                Platform::Linux,
+                UpdateChannel::Stable,
+                &cancel_flag(),
+            )
             .unwrap();
         assert!(release.is_some());
         assert!(fixture.hits().iter().any(|h| h.starts_with("GET /moved")));
@@ -2903,7 +3043,10 @@ mod tests {
             .start();
         let client = fixture.client();
         let cancel = cancel_flag();
-        let release = client.check(CURRENT, platform, &cancel).unwrap().unwrap();
+        let release = client
+            .check(CURRENT, platform, UpdateChannel::Stable, &cancel)
+            .unwrap()
+            .unwrap();
         client.download(&release, &cancel, &mut |_, _| {}).unwrap();
         let hits = fixture.hits();
         assert!(
@@ -2930,7 +3073,10 @@ mod tests {
                 .start();
             let client = fixture.client();
             let cancel = cancel_flag();
-            let release = client.check(CURRENT, platform, &cancel).unwrap().unwrap();
+            let release = client
+                .check(CURRENT, platform, UpdateChannel::Stable, &cancel)
+                .unwrap()
+                .unwrap();
             let mut calls: Vec<(u64, u64)> = Vec::new();
             let update = client
                 .download(&release, &cancel, &mut |done, total| {
@@ -2991,7 +3137,7 @@ mod tests {
         let fixture = Site::default().page(vec![release]).serve(&pkg).start();
         let client = fixture.client();
         let info = client
-            .check(CURRENT, platform, &cancel_flag())
+            .check(CURRENT, platform, UpdateChannel::Stable, &cancel_flag())
             .unwrap()
             .unwrap();
         let update = client
@@ -3017,7 +3163,7 @@ mod tests {
         });
         let client = fixture.client();
         let info = client
-            .check(CURRENT, pkg.platform, &cancel_flag())
+            .check(CURRENT, pkg.platform, UpdateChannel::Stable, &cancel_flag())
             .unwrap()
             .unwrap();
         client.download(&info, &cancel_flag(), &mut |_, _| {})
@@ -3150,7 +3296,10 @@ mod tests {
             .start();
         let client = fixture.client();
         let cancel = cancel_flag();
-        let info = client.check(CURRENT, platform, &cancel).unwrap().unwrap();
+        let info = client
+            .check(CURRENT, platform, UpdateChannel::Stable, &cancel)
+            .unwrap()
+            .unwrap();
         let mut seen = 0;
         let result = client.download(&info, &cancel, &mut |done, _| {
             seen = done;
@@ -3345,7 +3494,7 @@ mod tests {
                 .start();
             let client = fixture.client();
             let info = client
-                .check(CURRENT, platform, &cancel_flag())
+                .check(CURRENT, platform, UpdateChannel::Stable, &cancel_flag())
                 .unwrap()
                 .unwrap();
             let r = client.download(&info, &cancel_flag(), &mut |_, _| {});
@@ -3817,7 +3966,12 @@ mod tests {
             UpdateClient::with_endpoints(Endpoints::loopback(&required_env(ORIGIN))).unwrap();
         let cancel = cancel_flag();
         let release = client
-            .check(env!("CARGO_PKG_VERSION"), platform, &cancel)
+            .check(
+                env!("CARGO_PKG_VERSION"),
+                platform,
+                UpdateChannel::Stable,
+                &cancel,
+            )
             .unwrap()
             .expect("the fixture release is newer");
         assert_eq!(release.version, VER);

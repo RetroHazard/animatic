@@ -128,7 +128,7 @@ Verified absent from the application (some exist in `animatic-core` or are store
   (the Edit AniDB data menu opens web pages).
 - Resumable downloads; hashing a folder from the shell file menu.
 - Encryption of the database and of backups.
-- Unattended or scheduled updates, update channels (prereleases), release signatures, rollback,
+- Unattended or scheduled updates, update channels other than Stable and Beta, release signatures, rollback,
   package or installer integration; an update replaces only the executable and versioned license files.
 - Reading media properties without an external tool: Animatic has no media parser of its own and
   does not bundle `ffprobe`. The optional [`ffprobe` step](External-Tools.md#media-properties-ffprobe)

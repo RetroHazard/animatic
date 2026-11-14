@@ -159,7 +159,9 @@ strongly than watched or in MyList. **Solid (classic AOM)** fills the whole row 
 status color and black or white text, whichever reads better. A color with its own text color
 in `ui.colors` is always drawn solid. The colors come from
 `ui.colors` (see [row colors](Settings-Reference.md#row-colors-uicolors)); plain rows stay
-uncolored unless you set a color for them.
+uncolored unless you set a color for them. **Options → Appearance → Customize status colors**
+edits them: a background and an optional text color for each status above, with a sample of the
+row in the current style and theme.
 
 ## Menus
 
@@ -187,7 +189,7 @@ uncolored unless you set a color for them.
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
 | Help | AniDB website | Opens `https://anidb.net/`. |
 | Help | Keyboard shortcuts ▸ | Lists the [shortcuts](#keyboard-shortcuts). |
-| Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
+| Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer release on your [update channel](Updating-Animatic.md) (stable by default). This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
 | Help | About Animatic | Version and developer (RetroHazard), buttons that open the source code repository, the documentation (the repository wiki) and the AniDB website in your browser, plus **View license** and **Third-party notices**. **View license** shows Animatic's MIT license inside the app (the text built into this version), so it works without a file next to the program. **Third-party notices** shows the licenses of the libraries and fonts Animatic uses (the `NOTICES` text built into this version) in a window inside the app, so it also works without any file next to the program. It is generated automatically and is not a legal audit. |
 
 Items that cannot be used at the moment are greyed out and say why when you hover them. Separators

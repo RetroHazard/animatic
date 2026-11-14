@@ -13,6 +13,18 @@ the generated line for that pull request's squash commit.
 
 ### Added
 
+- Colour schemes: Options → Appearance → **Color scheme** offers Sakura (the original pink,
+  default), Ocean, Forest, Sunset, Wisteria and Graphite, each with a dark and a light variant
+  (`ui.color_scheme`). Every scheme is checked by tests for readable contrast. Text on accent
+  buttons (Add files…, Save options) is dark in the dark themes so it stays readable.
+- Customizable status colours: Options → Appearance → **Customize status colors** edits the row
+  colours of the statuses the tables use (background and optional text colour per status, a live
+  sample in the current row style and theme, per-status and overall reset, a warning when a
+  chosen text colour is hard to read). They are stored in the existing `ui.colors`.
+- Update channel: Options → Updates has a **Stable** / **Beta** release channel switch
+  (`updates.channel`, default Stable). On Beta the update check also offers newer betas
+  (`-rc.N` prereleases), which are packaged and run exactly like stable releases with the same
+  library and settings; switching back to Stable never installs an older version.
 - Browse anime by genre: the Anime page has a genre filter (one or several genres; with several,
   anime that have all of them), and clicking a genre on the Genres page or in an anime's detail
   window opens it (Ctrl+click adds the genre to those already chosen).

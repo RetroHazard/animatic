@@ -904,16 +904,19 @@ assert.
 (`/repos/RetroHazard/animatic/releases?per_page=30&page=N`, up to 100 pages, then an explicit error) and
 trusts neither API order nor the "latest" shortcut:
 
-1. Skip drafts, releases flagged prerelease, tags containing `-` and tags that are not `v` + a valid CalVer version.
-2. Choose the **highest CalVer** among the rest, wherever it appears in the pages.
+1. Skip drafts and tags that are not `v` + a valid CalVer version. On the stable channel
+   (`updates.channel`, default) also skip every release flagged prerelease and every tag containing `-`;
+   on the beta channel keep a prerelease only when it is flagged prerelease and its version is
+   `YYYY.M.PATCH-rc.N` with `N` >= 1; any other prerelease form is skipped.
+2. Choose the **highest version** among the rest, wherever it appears in the pages.
 3. Offer it only if it is strictly greater than the running version (`current_version`). An equal or
-   lower version, or no stable release, yields `Ok(None)`: no downgrade, no repeat. A 404 or other
+   lower version, or nothing eligible on the channel, yields `Ok(None)`: no downgrade, no repeat. A 404 or other
    access failure is an error, never `Ok(None)` (see above).
 4. Validate that release: the platform archive `animatic-vVERSION-windows-x86_64.zip` or
    `animatic-vVERSION-linux-x86_64.tar.gz` and `SHA256SUMS` must be present, fully uploaded, non-empty,
    within their size limit, with `browser_download_url` exactly
    `https://github.com/RetroHazard/animatic/releases/download/TAG/NAME`, and the release page must be
-   `https://github.com/RetroHazard/animatic/releases/tag/TAG`. If the highest stable release fails this,
+   `https://github.com/RetroHazard/animatic/releases/tag/TAG`. If the highest eligible release fails this,
    the check reports `UpdateError::IncompleteRelease`; it **never falls back** to an older release.
 
 The public `ReleaseInfo` fields are `version`, `tag`, `page_url` and `archive_size`; the validated asset

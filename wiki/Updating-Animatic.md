@@ -1,18 +1,23 @@
-Animatic can replace **its own executable** with a newer stable release published at
+Animatic can replace **its own executable** with a newer release (stable, or beta if you choose the Beta channel) published at
 <https://github.com/RetroHazard/animatic/releases>. It is supported on Windows x86_64 and
 Linux x86_64 only; elsewhere the update controls are disabled. Nothing is ever downloaded or
 installed unattended. Linux runtime behavior of the updater has not been exercised by the project.
 
-**What counts as an update.** Only a *published, non-draft, non-prerelease* GitHub release whose
-tag is a valid `vYYYY.M.PATCH` CalVer version. Animatic reads the release list (not just the
-API's first or "latest" entry) and takes the **highest CalVer version**; it is offered only when
-it is strictly newer than the running version, so an equal version or a downgrade is never
+**What counts as an update.** It depends on the **release channel** (Options → Updates →
+*Release channel*; default **Stable**). On **Stable**, only a *published, non-draft,
+non-prerelease* GitHub release whose tag is a valid `vYYYY.M.PATCH` CalVer version is offered.
+On **Beta**, newer betas (GitHub prereleases `vYYYY.M.PATCH-rc.N`) are offered as well as stable
+releases; any other prerelease form and drafts are never offered. Animatic reads the release list
+(not just the API's first or "latest" entry) and takes the **highest version**; it is offered only
+when it is strictly newer than the running version, so an equal version or a downgrade is never
 offered. A release that lacks the expected archive or `SHA256SUMS` asset for your platform is not
 offered.
 
-**Betas are not updates.** A beta (`YYYY.M.PATCH-rc.N`) is published as a GitHub prerelease and
-is never offered in the app; download it from its release page and install it manually. The
-stable release that follows it is offered like any other.
+**Betas and the Beta channel.** A beta is the same program with the same library and settings,
+packaged exactly like a stable release, but its newest features may still have bugs. Switching
+back to Stable never installs an older version: the next stable release newer than the running
+version is offered. Changing the channel discards an "available" or "up to date" result found on
+the other channel; the next check uses the new channel.
 
 **The steps** (each needs a click; the **Software updates** window shows the installed version
 and the current step):

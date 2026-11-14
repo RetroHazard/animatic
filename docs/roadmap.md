@@ -578,7 +578,7 @@ Each of these items is platform-specific and goes behind a cross-platform abstra
 
 - Retired AniDB protocols (TCP `ADDANIMEDATA`/`ADDEP`). The web editors replace them (rule 9).
 - The ED2K-blue variant in the desktop application, unless a user workflow needs it.
-- Unattended or scheduled updates, prerelease channels, signing claims, installers and rollback
-  (rule 20).
+- Unattended or scheduled updates, update channels beyond Stable and Beta, signing claims,
+  installers and rollback (rule 20).
 - The deliberate non-ports listed on the parity page: the object inspector, unreachable AOM
   dialogs, splash screens, MDI layouts and COM shell extensions.

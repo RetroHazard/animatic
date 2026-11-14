@@ -321,7 +321,8 @@ The same rule applies to the updater: **no automated test contacts GitHub or Ani
   versions and fictitious tags. Build archives in the test from explicit bytes; never embed a real
   binary, a real checksum or data copied from a real release.
 - Cover at least: CalVer parsing and ordering, highest-version selection independent of API
-  order, draft/prerelease/equal/lower skipped, checksum mismatch or missing/duplicate lines,
+  order, draft/other-prerelease/equal/lower skipped, channel selection (stable vs beta, `-rc.N` only),
+  checksum mismatch or missing/duplicate lines,
   traversal and unexpected archive entries, size limits, truncated downloads and cancellation.
 - **Never run `self-replace` against the test harness executable** (it would replace the running
   test binary). Exercise the real swap only from a throwaway helper process that copies itself to a
@@ -767,8 +768,8 @@ instructions are in [Releases](releases.md). In short:
 - Archives are unsigned. There are no installers, packages or build-provenance attestations; with
   immutable releases enabled, GitHub adds its release attestation (download integrity only, see
   [Releases](releases.md#immutable-releases-and-githubs-release-attestation)). The app can update
-  *itself* from a published stable release (betas are never offered; testers download them from
-  the release page; see
+  *itself* from a published release (stable releases on both channels; betas only on the Beta
+  channel, otherwise testers download them from the release page; see
   [Releases](releases.md#in-app-updates)), so the archive names, the single root folder
   and the `SHA256SUMS` format are a compatibility contract with `update.rs`. A release run is
   not evidence of Linux desktop behavior or production AniDB validation.

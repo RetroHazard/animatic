@@ -60,13 +60,14 @@ are in [Releases](docs/releases.md#install-a-release). Linux runtime behavior ha
 exercised by the project, and the Linux build is made on Ubuntu 22.04.
 
 Releases come in two streams: **stable** (`YYYY.M.PATCH`) and **beta** (`YYYY.M.PATCH-rc.N`),
-which GitHub lists as a prerelease. Only stable releases are offered by the in-app updater;
-download a beta manually from its release page.
+which GitHub lists as a prerelease. The in-app updater offers only stable releases by default;
+switch **Options → Updates → Release channel** to **Beta** to be offered betas too, or download
+a beta manually from its release page.
 
 ### Update an installed release
 
-On Windows and Linux x86_64, Animatic can update **its own executable** from the latest stable
-published GitHub release. Updates are always explicit: **Help → Check for updates…** (or the
+On Windows and Linux x86_64, Animatic can update **its own executable** from a newer published
+GitHub release on your **release channel** (Stable by default; Beta also offers newer betas). Updates are always explicit: **Help → Check for updates…** (or the
 optional startup check) only looks for a newer version; you then press **Download and
 verify**, confirm the installation, and choose **Restart now** or **Later**. Nothing is
 downloaded or installed unattended, and there is no privilege elevation: the folder that
