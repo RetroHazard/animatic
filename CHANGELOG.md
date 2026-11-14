@@ -280,9 +280,11 @@ the generated line for that pull request's squash commit.
 
 ### Fixed
 
-- Review bodies in the anime detail window show their formatting (bold, italic, underline,
-  strike-through, links, line breaks, `&amp;`-style characters) instead of raw `[b]` tags and
-  `<br />`.
+- Anime descriptions and review bodies in the anime detail window show their formatting (bold,
+  italic, underline, strike-through, links, quotes, spoilers, rules, bulleted and numbered lists,
+  line breaks, `&amp;`-style characters, apostrophes stored as backticks) instead of raw
+  `[url=…]`, `[b]`, `[hr]` and `[ol]` tags, `<br />` and backticks. An `[img]` shows the
+  picture's address; pictures are never downloaded.
 - Typing in a managed folder's Name no longer closes that folder's section in Options.
 - The status bar's Online/Offline dot is centred on the text.
 - About Animatic shows its three link buttons on one row, and the license window opens wide

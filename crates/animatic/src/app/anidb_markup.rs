@@ -1,8 +1,10 @@
 //! AniDB's stored text (anime descriptions and review bodies, from the HTTP API or an AOM
-//! import): BBCode style tags (`[b]`, `[i]`, `[u]`, `[s]`, `[url]`), the HTTP API's link form
-//! `http://anidb.net/ch123 [Name]`, HTML line breaks (`<br />`), HTML character references and
-//! the backtick AniDB stores for an apostrophe. They are shown as styled text; anything not
-//! recognised stays literal, so no text is ever dropped.
+//! import): BBCode style tags (`[b]`, `[i]`, `[u]`, `[s]`, `[url]`, `[quote]`, `[spoiler]`,
+//! `[img]`), rules and lists (`[hr]`, `[ul]`/`[ol]` with `[li]` or `[*]`), the HTTP API's link
+//! form `http://anidb.net/ch123 [Name]`, HTML line breaks (`<br />`), HTML character references
+//! and the backtick AniDB stores for an apostrophe. They are shown as styled text; images are
+//! shown as their address and never downloaded; anything not recognised stays literal, so no
+//! text is ever dropped.
 
 use eframe::egui::{self, Color32, Stroke, text::LayoutJob};
 
@@ -49,27 +51,96 @@ impl Depth {
 const MAX_TAG: usize = 512;
 const MAX_ENTITY: usize = 12;
 
+/// What a recognised `[tag]` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tag {
+    /// `[b]`, `[/b]` and the like: start or end a style.
+    Style(Kind, bool),
+    /// A style whose opening tag is announced by a label in the surrounding style: `[img]`
+    /// (the address is shown as a link, never fetched) and `[spoiler]`.
+    Labelled(Kind, bool, &'static str),
+    /// `[hr]`: a horizontal rule on its own line.
+    Rule,
+    /// `[ul]`/`[ol]` (true = ordered) and their closing tags (`List(_, false)`).
+    List(bool, bool),
+    /// `[li]`/`[*]`: a list item; `[/li]` ends it.
+    Item(bool),
+}
+
+/// Characters of a horizontal rule.
+const RULE: &str = "────────────────────────────────";
+
+/// Whether the next text starts a line.
+fn at_line_start(spans: &[Span], text: &str) -> bool {
+    match text.chars().last() {
+        Some(c) => c == '\n',
+        None => spans.last().is_none_or(|s| s.text.ends_with('\n')),
+    }
+}
+
 /// Splits `body` into styled runs.
 fn parse(body: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut text = String::new();
     let mut style = Depth::default();
+    // Open lists, innermost last: `Some(next number)` for ordered ones.
+    let mut lists: Vec<Option<u32>> = Vec::new();
     let mut rest = body;
     while let Some(c) = rest.chars().next() {
         let consumed = match c {
-            '[' => tag(rest).map(|(len, kind, open)| {
-                if !text.is_empty() {
-                    spans.push(Span {
-                        text: std::mem::take(&mut text),
-                        style,
-                    });
+            '[' => tag(rest).map(|(len, tag)| {
+                match tag {
+                    Tag::Style(kind, open) | Tag::Labelled(kind, open, _) => {
+                        if let Tag::Labelled(_, true, label) = tag {
+                            text.push_str(label);
+                        }
+                        if !text.is_empty() {
+                            spans.push(Span {
+                                text: std::mem::take(&mut text),
+                                style,
+                            });
+                        }
+                        let counter = style.counter(kind);
+                        *counter = if open {
+                            counter.saturating_add(1)
+                        } else {
+                            counter.saturating_sub(1)
+                        };
+                    }
+                    Tag::Rule => {
+                        if !at_line_start(&spans, &text) {
+                            text.push('\n');
+                        }
+                        text.push_str(RULE);
+                        text.push('\n');
+                    }
+                    Tag::List(ordered, open) => {
+                        if open {
+                            lists.push(ordered.then_some(1));
+                        } else {
+                            lists.pop();
+                        }
+                        if !at_line_start(&spans, &text) {
+                            text.push('\n');
+                        }
+                    }
+                    Tag::Item(true) => {
+                        if !at_line_start(&spans, &text) {
+                            text.push('\n');
+                        }
+                        for _ in 1..lists.len() {
+                            text.push_str("    ");
+                        }
+                        match lists.last_mut() {
+                            Some(Some(n)) => {
+                                text.push_str(&format!("{n}. "));
+                                *n += 1;
+                            }
+                            _ => text.push_str("• "),
+                        }
+                    }
+                    Tag::Item(false) => {}
                 }
-                let counter = style.counter(kind);
-                *counter = if open {
-                    counter.saturating_add(1)
-                } else {
-                    counter.saturating_sub(1)
-                };
                 len
             }),
             '<' => line_break(rest).inspect(|_| text.push('\n')),
@@ -130,8 +201,8 @@ fn bare_link(s: &str) -> Option<(usize, &str)> {
         .then_some((url_end + 2 + label_len + 1, label))
 }
 
-/// A recognised tag at the start of `s`: its byte length, kind and whether it opens.
-fn tag(s: &str) -> Option<(usize, Kind, bool)> {
+/// A recognised tag at the start of `s`: its byte length and what it does.
+fn tag(s: &str) -> Option<(usize, Tag)> {
     let end = s.bytes().take(MAX_TAG).position(|b| b == b']')?;
     let inner = s[1..end].trim();
     let (open, name) = match inner.strip_prefix('/') {
@@ -139,16 +210,25 @@ fn tag(s: &str) -> Option<(usize, Kind, bool)> {
         None => (true, inner),
     };
     let lower = name.to_ascii_lowercase();
-    let kind = match lower.as_str() {
-        "b" => Kind::Bold,
-        "i" => Kind::Italic,
-        "u" => Kind::Underline,
-        "s" => Kind::Strike,
-        "url" => Kind::Link,
-        _ if open && lower.starts_with("url=") => Kind::Link,
-        _ => return None,
-    };
-    Some((end + 1, kind, open))
+    let style = |kind| Some(Tag::Style(kind, open));
+    let tag = match lower.as_str() {
+        "b" => style(Kind::Bold),
+        "i" => style(Kind::Italic),
+        "u" => style(Kind::Underline),
+        "s" => style(Kind::Strike),
+        "url" => style(Kind::Link),
+        _ if open && lower.starts_with("url=") => style(Kind::Link),
+        "quote" => style(Kind::Italic),
+        "img" => Some(Tag::Labelled(Kind::Link, open, "Image: ")),
+        "spoiler" => Some(Tag::Labelled(Kind::Italic, open, "Spoiler: ")),
+        "hr" if open => Some(Tag::Rule),
+        "ul" => Some(Tag::List(false, open)),
+        "ol" => Some(Tag::List(true, open)),
+        "li" => Some(Tag::Item(open)),
+        "*" if open => Some(Tag::Item(true)),
+        _ => None,
+    }?;
+    Some((end + 1, tag))
 }
 
 /// Length of an HTML line break (`<br>`, `<br/>`, `<br />`, any case) at the start of `s`.
@@ -294,9 +374,33 @@ mod tests {
     }
 
     #[test]
+    fn rules_lists_and_images_become_lines() {
+        assert_eq!(
+            plain(
+                "end.[hr][u]Art[/u]\nbody[ol][li]one[/li][li]two[/li][/ol]after[ul][*]a[*]b[/ul]"
+            ),
+            format!("end.\n{RULE}\nArt\nbody\n1. one\n2. two\nafter\n• a\n• b\n")
+        );
+        assert_eq!(
+            plain("[ol]Heading[/ol]text"),
+            "Heading\ntext",
+            "a list without items only breaks the line"
+        );
+        assert_eq!(
+            parse("see [img]http://example.invalid/a.jpg[/img] and [spoiler]x[/spoiler]"),
+            vec![
+                styled("see Image: ", |_| {}),
+                styled("http://example.invalid/a.jpg", |s| s.link = 1),
+                styled(" and Spoiler: ", |_| {}),
+                styled("x", |s| s.italic = 1),
+            ]
+        );
+    }
+
+    #[test]
     fn unknown_or_malformed_markup_stays_literal() {
         for body in [
-            "[spoiler]x[/spoiler]",
+            "[blink]x[/blink]",
             "a [b unclosed",
             "x [/url=y] z",
             "<b>bold</b> <br",
