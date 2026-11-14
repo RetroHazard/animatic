@@ -15,12 +15,14 @@ and tables, and the menus. The individual pages are described in [Library pages]
   are drawn, so very large libraries stay responsive.
 - **Status bar** (bottom): current activity or last message, connection state and warnings.
 - **Floating windows**: [Anime detail](Library-Pages.md#anime-detail-window), [Options](Options-Window.md),
-  "Confirm rename", "Review imported AOM settings", "Import into a database that has data?",
+  "Edit MyList entry", "Add to MyList", "Request MyList export", "Confirm rename", "Batch rename",
+  "Renaming pattern reference", "Review imported AOM settings", "Import into a database that has data?",
   "Leftover import files", "Settings recovered", the
   "Restore library", "Restoring library", "Library unavailable" and "Compact library" dialogs
   (modal: nothing else can be used while one is open), the
   [Software updates](Updating-Animatic.md) window and "About Animatic" (the build's version from
-  `Cargo.toml`, the developer, links and the license buttons). Windows open centred and have no collapse
+  `Cargo.toml`, the developer, links and the license buttons; the license opens in its own
+  "Animatic license" window). Windows open centred and have no collapse
   triangle; **Esc** closes the topmost one (see [Keyboard shortcuts](#keyboard-shortcuts)).
 
 The window opens with the size, position and maximized state it had when you last used
@@ -174,22 +176,23 @@ uncolored unless you set a color for them.
 | File | Reload (`F5`) | Re-reads the library from disk into a new snapshot. Nothing is sent to AniDB. |
 | File | Quit | Closes; saves settings (unless guarded) and tries to save unsaved commands. |
 | Tools | Options… (`Ctrl+,`) | Opens [Options](Options-Window.md). |
-| Tools | Scan managed folders | Starts a [scan](Managed-Folders-and-Scans.md). Disabled during a settings review. |
+| Tools | Run command queue (`Ctrl+Shift+S`) | Starts the [synchronization](AniDB-Synchronization.md#synchronization) job. Disabled during a settings review or an active cooldown (hover for the reason). |
 | Tools | Download anime titles | Queues the title-list download (nothing is sent yet). The list is requested at most once per 24 hours: inside that window after the last attempt (even a failed one) nothing is queued and the log says when the next download is allowed. |
-| Tools | Full update… | Works out in the background what a [full update](AniDB-Synchronization.md#synchronization) would queue (the title list, a file refresh and an anime refresh for each identified hashed local file, minus what AniDB's limits do not allow yet and what the queue holds already) and asks for confirmation, showing the counts, how many were left out and when the title list is next allowed. **Queue** adds them (the same as `--full-update`); nothing is sent until you run the queue. Disabled during an import or settings review and while a preview is open. |
 | Tools | Fetch MyList statistics | Queues a MyList-statistics request. When run, the figures are stored with the time they arrived and shown on the [Overview](Library-Pages.md#overview) under **Your AniDB account**, apart from the local figures; the log also gets a line (`N anime, N episodes, N files in mylist`). |
+| Tools | Full update… | Works out in the background what a [full update](AniDB-Synchronization.md#synchronization) would queue (the title list, a file refresh and an anime refresh for each identified hashed local file, minus what AniDB's limits do not allow yet and what the queue holds already) and asks for confirmation, showing the counts, how many were left out and when the title list is next allowed. **Queue** adds them (the same as `--full-update`); nothing is sent until you run the queue. Disabled during an import or settings review and while a preview is open. |
 | Tools | Request MyList export… | Opens a dialog that explains the [MyList export](AniDB-Synchronization.md#full-account-mylist-import): AniDB prepares the export for up to 24 hours, announces it as an AniDB message, and the file is downloaded from AniDB's web export page. **Request export** queues the request (nothing is sent until the command queue runs; one request per 24 hours, and it is disabled with the next allowed time inside that window), **Open export page** opens the page in the browser, **Cancel pending export** queues the cancellation. |
+| Tools | Edit AniDB data ▸ | Opens AniDB web pages in the browser: Add anime, Add episode, Add file, Submit change request (`anidb.net/anime/add`, `/episode/add`, `/file/add`, `/creq`). |
+| Tools | Scan managed folders | Starts a [scan](Managed-Folders-and-Scans.md). Disabled during a settings review. |
 | Tools | Check library | Runs [`integrity_check` and `foreign_key_check`](Backups-and-Recovery.md#check-and-compact-the-library) in the background; never repairs. Disabled while a job runs, during an import or settings review, or during a restore. |
 | Tools | Compact library… | After a confirmation runs `VACUUM` in the background ([details](Backups-and-Recovery.md#check-and-compact-the-library)). Disabled like Check library. |
-| Tools | Edit AniDB data ▸ | Opens AniDB web pages in the browser: Add anime, Add episode, Add file, Submit change request (`anidb.net/anime/add`, `/episode/add`, `/file/add`, `/creq`). |
-| Tools | Run command queue (`Ctrl+Shift+S`) | Starts the [synchronization](AniDB-Synchronization.md#synchronization) job. Disabled during a settings review or an active cooldown (hover for the reason). |
 | Help | AniDB website | Opens `https://anidb.net/`. |
 | Help | Keyboard shortcuts ▸ | Lists the [shortcuts](#keyboard-shortcuts). |
 | Help | Check for updates… | Opens the [Software updates window](Updating-Animatic.md) and starts a check for a newer stable release. This is an explicit request and works even when *Work offline* is on (that setting only governs AniDB and the automatic startup check). Disabled on platforms other than Windows or Linux x86_64. |
 | Help | About Animatic | Version and developer (RetroHazard), buttons that open the source code repository, the documentation (the repository wiki) and the AniDB website in your browser, plus **View license** and **Third-party notices**. **View license** shows Animatic's MIT license inside the app (the text built into this version), so it works without a file next to the program. **Third-party notices** opens the notices next to the program in your browser: the versioned `THIRD-PARTY-NOTICES-vVERSION.html` for the running version if present (left by an update), otherwise the bundled `THIRD-PARTY-NOTICES.html`; it is disabled when neither exists (for example a bare executable copied out of an archive). |
 
 Items that cannot be used at the moment are greyed out and say why when you hover them. Separators
-group the items; the Tools menu starts with Options…, then the command-queue items.
+group the items; the Tools menu starts with Options…, then the AniDB items (from Run command queue
+to Edit AniDB data), then the local ones (Scan managed folders, Check library, Compact library…).
 
 There is no menu item for downloading images (a
 [cover](Library-Pages.md#cover) is downloaded when an anime detail window opens). MyList
@@ -209,10 +212,13 @@ shortcuts lists them.
 | `F5` | Reload the library (File → Reload) |
 | `Ctrl+Shift+S` | Run the command queue (when Tools → Run command queue is enabled) |
 | `Ctrl+1` … `Ctrl+9` | Open the sidebar pages in order: Overview, MyList, Anime, Advanced search, Hashed files, Groups, Genres, Queue, Log |
-| `Esc` | Close the topmost window (Options, Anime detail, Edit MyList entry and the other floating windows) |
+| `Esc` | Close the topmost window (Options, Anime detail, Edit MyList entry, Add to MyList, Confirm rename, About and the other windows with a **Close**, **Cancel** or title-bar button) |
 
-No shortcut acts while a modal dialog is open. `Esc` does not act while you type in a text field or
-while a menu is open.
+No shortcut acts while a modal dialog is open; in the confirmation dialogs (Remove from MyList,
+Clear the command queue, Full update, Compact and Restore library, Install ffprobe, Turn on
+automatic rename) `Esc` cancels. Windows that need a decision first (Review imported AOM settings,
+Import into a database that has data?, Leftover import files, Settings recovered) ignore it.
+`Esc` does not act while you type in a text field or while a menu is open.
 
 ## System tray
 

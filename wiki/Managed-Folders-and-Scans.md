@@ -4,7 +4,7 @@ MyList policy. Scans start from **Tools → Scan managed folders**, optionally a
 watcher, and the [tray icon](Main-Window.md#system-tray) starts nothing by itself. The scan itself never deletes media files, never renames files and never writes
 MyList; it can hash files and forget missing local records. Hashing is not the end of it, though:
 every file the scan hashes raises the same event as any other hashing, so with *Identify files with
-AniDB after hashing* on and the folder rule's **Add to mylist** on, an Identify command with an add
+AniDB after hashing* on and the folder rule's **Add to MyList** on, an Identify command with an add
 policy is queued, and **running the queue later adds the file to your AniDB MyList**.
 
 Planning (`file_manager::plan_scan`), per rule in list order:

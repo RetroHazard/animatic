@@ -753,7 +753,7 @@ proportional to the dump, during which other connections wait up to their busy t
 dump is rejected on any failure), conditional requests, protection against a valid but wrong
 dump and cancellation inside the dump (cancel acts between commands). The dump is not a MyList
 download: MyList rows come from legacy import, FILE replies for identified local files,
-`MYLISTADD` results, the (non-desktop) `MylistRefresh` and the
+`MYLISTADD` results, `MylistRefresh` (MyList **Refresh from AniDB**, one entry at a time) and the
 [MyList export import](#mylist-export-import).
 
 ## MyList export import

@@ -27,7 +27,9 @@ If a scan hashes nothing:
    Symbolic links are not followed. **Include
    subdirectories** controls depth: a non-recursive rule sees only its own folder.
 4. Unreadable subfolders are skipped silently; they produce no hash actions.
-5. The delay fields of the rule are stored but not used by scans; a scan never deletes folders
+5. A file that may still be being written is **deferred** to the next scan (the Log says `Scan
+   deferred N file(s) that may still be written`; see [Settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing)).
+   A scan never deletes folders
    (see **Remove emptied folders** under [Rename problems](#rename-problems)). **Auto rename**
    is separate: a rule set to Dry run only logs planned renames, and one set to On renames
    identified files (see
@@ -154,10 +156,10 @@ Details:
   can still show the old path; add the file again at its new location with **File → Add files…**,
   or let a scan hash it, and remove the stale record with a scan that has **auto remove** or
   accept it as stale.
-- On the same drive the existence check and the rename are two separate steps, so a file created
-  at the target in between is not detected by Animatic. The rename can then **replace** that newly
-  created file instead of failing with a collision, so do not let other programs write to
-  the destination folder while you rename. A move to another drive never replaces such a file.
+- An existing target is never replaced. The check happens before the move and the move itself
+  refuses to replace, so a file another program created at the target in between makes the
+  rename fail (an `I/O error` that says the file exists) and leaves that file alone. A move to
+  another drive never replaces such a file either.
 
 For syntax and functions see [Rename language](Rename-Language.md).
 

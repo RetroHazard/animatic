@@ -115,7 +115,8 @@ character that is not allowed makes the rename fail with a message. Sanitizing i
 pattern's job, as the built-in conventions do. A trailing dot or space is the exception: it is
 removed from each component, so `Show.` becomes `Show`.
 
-Because the default pattern limits titles by **characters** (`limit(…, 90)`, `200`, `235`),
+Because the built-in conventions limit titles by **characters** (for example `limit(atitle, 150)`
+and `230` for the whole name in the default, `90`, `200` and `235` in the AniDB O'Matic pattern),
 a title made of multi-byte characters can still exceed 255 **bytes** on a POSIX build, and the
 plan then reports a length problem. This is a reading of the code; Linux was not exercised.
 
@@ -291,7 +292,7 @@ Two details of the clean-up are easy to miss. The double-space replacement is a 
 three consecutive spaces become two, not one. Titles containing `\` are turned into spaces
 because the result would otherwise create folders.
 
-For the synthetic sample used in [Working patterns](Rename-Patterns.md#working-patterns) the default produces:
+For the synthetic sample used in [Working patterns](Rename-Patterns.md#working-patterns) this pattern produces:
 
 ```
 Example Series - 03v2 - The Long Road [ExGroup](EB420C97).mkv

@@ -121,16 +121,17 @@ and applying overwrites your settings file. A save first tries to copy your prev
 holds the *previous* settings, including credentials you may have since removed (blanked once the
 keystore holds credentials), and is only loaded
 automatically when the primary is missing or invalid. Copy your settings file yourself first if you
-may want it back. The one exception is `updates.auto_check`: AOM has no such preference, so applying an
-import keeps your current value.
+may want it back. The exceptions are the `updates` and `media` objects (`updates.auto_check`,
+`media.read_properties`, `media.ffprobe_path`): AOM has no such preferences, so applying an
+import keeps your current values.
 
 What is read: username and password, image server, file-information flag, hashing flags and extension
 list, hash export template, rename pattern, statistics export settings, AVDump enable and key, last
 folder, folder rules (with their MyList policy), players, window/tray/tree preferences and row
 colors, the folder-scan settle delay and AOM's pause between scans (which becomes the scan interval
 of the [scheduled scan](Managed-Folders-and-Scans.md#scheduled-scans), left switched off). Several
-of those have no effect in Animatic (see the
-[settings reference](Settings-Files.md#aom-settings-import)). Applying saves the credentials like any
+of those have no effect in Animatic (see
+[Settings files](Settings-Files.md#aom-settings-import) and the [settings reference](Settings-Reference.md)). Applying saves the credentials like any
 save: into the system keystore when one is available, otherwise in plain text in the settings file
 ([details](Settings-Files.md#credentials-and-the-system-keystore)). After
 applying: review folder rules and players, check

@@ -247,6 +247,6 @@ Editing the text clears the previous validation result. Validation uses the patt
 currently in the editor, saved or not.
 
 The rename unit tests (`crates/animatic-core/src/rename/tests.rs`, plus tests in `parser.rs`
-and `value.rs`) cover the default pattern output, counter widths, Unicode, `classify`,
+and `value.rs`) cover the built-in conventions' output, counter widths, Unicode, `classify`,
 user functions, target paths, reserved names and length limits. Run them with the commands in
 [Development](https://github.com/RetroHazard/animatic/blob/main/docs/development.md).

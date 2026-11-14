@@ -100,7 +100,8 @@ the license, the source page and the install folder, and the install does the fo
 the files that job hashed (progress shows as *Reading media properties*; **Cancel** stops it).
 Hashing itself never reads the file a second time for this. Files that were hashed before you
 enabled the option are read with **Read missing properties now**, which probes every hashed file
-without figures for its current content. Each probe runs `ffprobe` directly (no shell) with a 60
+without figures for its current content. Each probe runs `ffprobe` directly (no shell, and on
+Windows without opening a console window, like the `ffprobe -version` check) with a 60
 second limit and a bounded output, and may open only local files: a playlist that points at a
 network address is not followed.
 

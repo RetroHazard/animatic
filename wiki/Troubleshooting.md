@@ -119,9 +119,10 @@ creates no files.
 
 ## Startup problems
 
-Animatic is built as a console-subsystem program on Windows (no GUI-subsystem attribute in
-`main.rs`), and startup failures are returned from `main`, so they are printed to standard
-error. If double-clicking appears to do nothing, run it from a terminal to read the message.
+On Windows Animatic is a GUI program (it opens no console window), and a startup failure is reported
+as `Error: <message>` on standard error when a terminal started it; started from Explorer or a
+shortcut there is no terminal, so the same message is shown in an error dialog titled "Animatic"
+("Animatic could not start:" followed by the cause). Run it from a terminal to keep the text.
 
 | Message | Cause and action |
 |---|---|

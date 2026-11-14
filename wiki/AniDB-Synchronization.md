@@ -29,8 +29,8 @@ The job (`process_queue`):
    and the login is kept for the next run ([below](#automatic-runs-and-the-anidb-session)).
 4. Requests are paced for the whole program, not per run: UDP packets at least 2 s apart for
    the first five of a burst and 4 s apart afterwards (10 idle minutes restart the burst), HTTP
-   requests (anime records, the title list, images) at least 2 s apart. Repeated **Synchronize
-   now** clicks therefore share one burst allowance, and the time of every request is saved
+   requests (anime records, the title list, images) at least 2 s apart. Repeated **Run command
+   queue** clicks therefore share one burst allowance, and the time of every request is saved
    before it is sent, so closing and restarting Animatic cannot shorten the gaps: after a
    restart the first packet waits 4 s from the last one. A long queue takes a long time; that
    is not a hang. UDP login is lazy (first UDP command). The local UDP port is always the one in
@@ -173,12 +173,12 @@ watched, view date, storage, source, other), is a *local-first* edit:
 Failures and edge cases:
 
 - *No such entry on AniDB:* the edit is kept and **blocked** with an explanation (the local entry
-  stays). Refresh the data or discard the row, then **Retry failed**.
+  stays). Use **Refresh from AniDB** on the entry or empty the queue with **Clear queue…**, then **Retry failed**.
 - Permanent errors block the one edit; transient errors pause the queue ([below](#failure-handling));
   authentication problems block everything until fixed.
-- **Clear queue** deletes the pending edit rows only. Nothing restores the previous local values, so
-  the screen keeps showing the edit even though AniDB will never receive it. A later AniDB
-  refresh of that entry may overwrite it [INFERENCE: no pending intent remains to protect it].
+- **Clear queue…** deletes every queue row, the pending edits among them. Nothing restores the
+  previous local values, so the screen keeps showing the edit even though AniDB will never receive
+  it. A later AniDB refresh of that entry may overwrite it [INFERENCE: no pending intent remains to protect it].
 - If the database is locked by a background write the edit is refused with a visible message;
   repeat it.
 - An entry with a queued removal ignores edits (`Mylist entry N is pending removal; edit
@@ -268,5 +268,5 @@ How the queue reacts. The retry, cooldown and blocking *policy* lives in the des
 | Permanent errors (illegal input, protocol/XML problem, unexpected reply, unknown command) | Only that command is blocked; the queue continues |
 
 Cooldowns are stored in the database (`sync_cooldown`) and survive restarts. **Retry failed** does
-not clear them; Run/Synchronize are disabled until the shown time passes. Blocked rows stay
+not clear them; **Run command queue** is disabled until the shown time passes. Blocked rows stay
 visible with their last error until you retry, clear or the underlying problem is fixed.
