@@ -32,3 +32,9 @@ debug = "line-tables-only"
 
 [profile.ci.package."*"]
 opt-level = 0
+
+# The rename language's tests prove that its nesting limits fit the 1 MiB stack of a
+# Windows UI thread. Stack frames depend on optimization, so the crate is compiled as in
+# dev (opt-level 1); unoptimized frames are several times larger than any shipped build's.
+[profile.ci.package.animatic-core]
+opt-level = 1

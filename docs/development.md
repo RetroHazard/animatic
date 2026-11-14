@@ -101,6 +101,10 @@ Build profiles ([`Cargo.toml`](../Cargo.toml)):
 - `dev`: `opt-level = 1`, with all dependencies at `opt-level = 3` (so hashing, SQLite and
   rendering are usable without a release build, at the cost of a slower first dependency
   build).
+- `ci` (used by the CI checks): `dev` without optimization and with line tables only, so a
+  cold build is cheap; `animatic-core` alone stays at `opt-level = 1`, because the rename
+  language tests prove its nesting limits fit a 1 MiB UI-thread stack, and unoptimized frames
+  are several times larger than those of any shipped build.
 
 `Cargo.lock` is tracked. CI builds, tests and lints with `--locked`, so commit lockfile
 changes together with any dependency change or the run fails.
