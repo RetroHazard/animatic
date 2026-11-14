@@ -51,7 +51,10 @@ Each GitHub Release lists three assets (if the project has published one):
 Download the archive for your platform and `SHA256SUMS`, verify the checksum, then unpack. The
 commands for PowerShell and for Linux `sha256sum` are in
 [Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md#install-a-release). Each archive has a single root folder named after
-the archive; the Linux binary keeps its executable bit. The archives are **unsigned**. Links
+the archive; the Linux binary keeps its executable bit. The archives are **unsigned**. If the
+release page shows it as **Immutable**, GitHub also attests the release; with the GitHub CLI,
+`gh release verify-asset vVERSION FILE -R RetroHazard/animatic` confirms a downloaded archive is
+exactly the one published in that release (it does not make the program signed). Links
 between the bundled guide pages work offline; links to developer documentation and source files
 point to GitHub, and the Rust API documentation is not included.
 

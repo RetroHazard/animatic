@@ -37,9 +37,12 @@ offer **published** stable releases (see [In-app updates](#in-app-updates)), so 
 pull request is what makes a stable version an update candidate.
 
 What is deliberately **not** shipped: installers, packages (MSI, deb, rpm, Flatpak, AppImage),
-unattended or automatic updates, code signing, notarization or build attestations. Archives are
-unsigned; the only integrity aid is the `SHA256SUMS` file, which proves the download matches what
-the workflow produced, not who produced it. The in-app updater is an explicit, user-confirmed
+unattended or automatic updates, code signing, notarization or build-provenance attestations.
+Archives are unsigned; the integrity aids are the `SHA256SUMS` file, which proves the download
+matches what the workflow produced, not who produced it, and, when the repository's immutable
+releases setting is on, the release attestation GitHub generates for each published release (see
+[Immutable releases and GitHub's release attestation](#immutable-releases-and-githubs-release-attestation)).
+The in-app updater is an explicit, user-confirmed
 download of these same assets and adds no signing. Other architectures, distributions and Rust
 targets are not built.
 
@@ -393,9 +396,23 @@ rehearsal can neither delay nor replace a queued publication.
    overwritten (the command fails). The tag is created with the workflow token, so it starts no
    other workflow.
 
-No signing, attestations or installers are produced, and a successful run does not show that
-the Linux binary starts on any particular machine beyond the CI `--help` smoke run on the Ubuntu
-22.04 runner.
+No code signing, build-provenance attestation or installer is produced by the workflows, and a
+successful run does not show that the Linux binary starts on any particular machine beyond the CI
+`--help` smoke run on the Ubuntu 22.04 runner.
+
+### Immutable releases and GitHub's release attestation
+
+With **immutable releases** enabled for the repository (Settings → General → Releases; the
+repository API reported `{"enabled": true}` on 2026-11-14, before any release was published),
+GitHub locks each published release's tag and assets and generates a **release attestation**: a
+GitHub-signed record of the tag, the commit SHA and the assets. It can be checked with
+`gh release verify vVERSION` and `gh release verify-asset vVERSION FILE`. It proves that a
+download is exactly what was published in that release; it is **not** a signature of the
+executable, not a build-provenance attestation of how the binary was built, and the archives and
+executables stay unsigned (Windows SmartScreen and similar checks are unaffected). Immutability
+does not lock a release's title, notes, prerelease flag or *latest* marking, which is why the
+Release workflow still decides *latest* itself. Whether a given release is immutable and attested
+is shown on its release page; this repository does not prove the setting stays enabled.
 
 ## Repository settings the maintainer must provide
 
@@ -422,6 +439,11 @@ The workflows need these; nothing here asserts they are already configured.
   development-branch CI can publish.
 - **Tags** are created only by the Release workflow, at the validated merge commit. There is no
   manual tagging step.
+- **Immutable releases (recommended):** locks each published release's tag and assets and adds
+  GitHub's release attestation; see
+  [Immutable releases and GitHub's release attestation](#immutable-releases-and-githubs-release-attestation).
+  It changes nothing in the workflows: `gh release create` uploads the assets before the release
+  is published.
 - **Tag protection (recommended):** a ruleset for `v*` tags that blocks updates and deletion keeps
   a published version from being moved or recreated. If it also restricts tag *creation*, it must
   let the Release workflow (the `github-actions` app) create tags, or publishing fails. No such

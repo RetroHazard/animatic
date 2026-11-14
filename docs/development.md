@@ -764,7 +764,9 @@ instructions are in [Releases](releases.md). In short:
   release, a beta as a prerelease) with a Windows ZIP, a
   Linux tar.gz and `SHA256SUMS`. Nobody pushes release tags by hand; a dry **Release** run can
   rehearse the release branch before merging.
-- Archives are unsigned. There are no installers, packages or attestations. The app can update
+- Archives are unsigned. There are no installers, packages or build-provenance attestations; with
+  immutable releases enabled, GitHub adds its release attestation (download integrity only, see
+  [Releases](releases.md#immutable-releases-and-githubs-release-attestation)). The app can update
   *itself* from a published stable release (betas are never offered; testers download them from
   the release page; see
   [Releases](releases.md#in-app-updates)), so the archive names, the single root folder
