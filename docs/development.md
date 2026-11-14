@@ -15,7 +15,7 @@ Repository-specific engineering rules for coding agents live in
 | Workspace members | `animatic-core`, `animatic-anidb`, `animatic` | [`Cargo.toml`](../Cargo.toml) |
 | Version | One version in `[workspace.package]`, inherited by all three crates; internal dependency pins and the `Cargo.lock` local entries move with it (see [Releases](releases.md)) | [`Cargo.toml`](../Cargo.toml) |
 | Targets | Windows (`x86_64-pc-windows-msvc`) and Linux (`x86_64-unknown-linux-gnu`, CI on Ubuntu 22.04) | [`ci.yml`](../.github/workflows/ci.yml) |
-| CI | Pull requests **targeting `main`** (a cheap `scope` job defers stacked children at runtime) and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. Enforcing it is a GitHub setting outside this repository (see [Pull request gate and branch protection](#pull-request-gate-and-branch-protection)) | [`ci.yml`](../.github/workflows/ci.yml) |
+| CI | Pull requests **targeting `main`**, including every pull request of a native stack on `main` (a cheap `scope` job defers other stacked children at runtime), and `main` pushes (plus manual and reusable runs): a planner selects the Rust and license jobs, a quality job covers Python tests, docs and workflow validation and must pass before the expensive Rust and license jobs start, and a stable `Required checks` job gates the result; reusable by the release workflows. Enforcing it is a GitHub setting outside this repository (see [Pull request gate and branch protection](#pull-request-gate-and-branch-protection)) | [`ci.yml`](../.github/workflows/ci.yml) |
 | Distribution | GitHub Releases published when a `release`-labelled release pull request merges: the Release workflow tags the merge commit and publishes an unsigned Windows ZIP, an unsigned Linux tar.gz and `SHA256SUMS`. No installer, package or signing. Installed copies can update themselves from a *published* release through the explicit in-app flow (`animatic-core::update`) | [Releases](releases.md) |
 | License | MIT | [`LICENSE`](../LICENSE) |
 
@@ -457,10 +457,14 @@ requests that each passed alone can still conflict on `main`, and nothing after 
 checks it. `ci.yml` itself never creates a GitHub Release, tag or push, so it cannot cut a
 release from a pull request or a development branch. A plain push
 to a development branch starts nothing. A pull request whose base is another development branch
-(a stacked child) may still start the workflow, because GitHub can evaluate the branch filter with
-`main` as context; the authoritative `scope` job therefore queries the pull request REST API for the
-actual base and, when it is not `main`, defers all code and expensive jobs under the separately named
-*Stacked PR (deferred)* job (never `Required checks`) until the pull request is retargeted to `main`.
+may still start the workflow. GitHub's native stacked pull requests (`main` ← #1 ← #2 …) start it
+for every pull request of the stack as if it targeted `main`, and GitHub evaluates the `main`
+ruleset, including the required `Required checks`, against each of them; a merge of the stack
+needs every pull request in it to pass. The authoritative `scope` job therefore queries the pull
+request REST API for the actual base and its `stack.base`: when either is `main` the full checks
+run and report `Required checks`. Any other pull request whose base is not `main` (a branch
+outside a stack on `main`) defers all code and expensive jobs under the separately named
+*Stacked PR (deferred)* job (never `Required checks`) until it is retargeted to `main`.
 A `scope` API error fails closed. To check a branch earlier, run the workflow manually
 (**Actions → CI → Run workflow**), which always runs the full checks on any branch and, with
 **executables** ticked, also uploads release executables. How releases are made is in
@@ -484,7 +488,8 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   an `edited` event that does not change the base (a title or body edit) **does start the
   workflow**, but its code-check jobs are intentionally skipped by job conditions. Such a run
   only reports a separately named job (*PR metadata (no code checks)*; see the workflow for the
-  exact name), which writes a run summary and passes; a stacked pull request likewise reports a
+  exact name), which writes a run summary and passes; a pull request on another branch that is
+  not in a stack on `main` likewise reports a
   passing *Stacked PR (deferred)* job. Neither ever emits a `Required checks` result, passing or
   skipped: a skipped or passing `Required checks` on the same commit could mask an earlier failed
   one. Only real code-check runs use the exact `Required checks` name, so a failed `Required
@@ -511,7 +516,7 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Check and package: installs or restores the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices`. Refresh: only fetches the registry and installs the renderer when their caches are missing |
   | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust and `quality` succeeded | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`. Check: locked Clippy with warnings denied, tests and rustdoc with warnings denied, all in the `ci` profile for the matrix target. Refresh: a cache lookup, and the check steps only on a miss. Package, or a manual run with **executables**: the release build and a `--help` smoke run, uploading `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
   | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust` and `notices`; wraps their executables and notices with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
-  | `required` (**Required checks**; *Main cache refresh* on a `main` push; *PR metadata (no code checks)* on a title or description edit; *Stacked PR (deferred)* when the actual base is not `main`) | every event, even when upstream jobs failed or were skipped | Fails closed unless every job the plan selected succeeded (see below). Under the metadata and stacked names it only writes a run summary and passes; those names are never required. A `main` push uses its own name because it normally runs no Rust checks |
+  | `required` (**Required checks**; *Main cache refresh* on a `main` push; *PR metadata (no code checks)* on a title or description edit; *Stacked PR (deferred)* when the actual base is not `main` and the pull request is not in a stack on `main`) | every event, even when upstream jobs failed or were skipped | Fails closed unless every job the plan selected succeeded (see below). Under the metadata and stacked names it only writes a run summary and passes; those names are never required. A `main` push uses its own name because it normally runs no Rust checks |
 
   **Quality first.** The expensive jobs need both `plan` and `quality`, so a failing quality
   check (tests, docs, workflow validation) stops the Windows and Linux Rust runners and the
@@ -699,9 +704,11 @@ manual run reports a check named `Required checks` on the branch commit, which s
 requirement. The reusable run inside Prepare release is reported under a different, prefixed
 name and does not.
 
-Stacked child pull requests (base other than `main`) run no code checks; they only report a
-passing *Stacked PR (deferred)* job. They get the checks when retargeted to `main`; a manual run
-on the branch gives earlier feedback.
+Pull requests in a native stack on `main` get the full checks on each pull request, because
+GitHub requires `Required checks` on all of them before the stack (or any pull request above
+the bottom one) can merge. A pull request whose base is another branch and that is not in such
+a stack runs no code checks; it only reports a passing *Stacked PR (deferred)* job and gets the
+checks when retargeted to `main`; a manual run on the branch gives earlier feedback.
 
 Also available to the maintainer, and equally unconfigured here: a `release` environment and a
 `v*` tag ruleset ([Releases](releases.md#repository-settings-the-maintainer-must-provide)).
