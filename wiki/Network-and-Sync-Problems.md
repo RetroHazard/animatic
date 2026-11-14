@@ -1,16 +1,18 @@
-Problems reaching AniDB or GitHub: network access, credentials, cooldowns and bans, queue
-states, missing library entries and failed updates.
+Problems reaching AniDB or GitHub: why commands are not sent, network access, credentials,
+cooldowns and bans, AniDB reply codes, queue states, missing library entries and failed updates.
+Read it when the status bar shows **Offline**, a red blocked counter or a pause message, or when
+an update does not work.
 
 ## Network and firewall
 
-What the code uses (source: `animatic-anidb`):
+What Animatic connects to:
 
 | Purpose | Endpoint | Notes |
 |---|---|---|
-| UDP API | `api.anidb.net:9000` by default (**AniDB account** settings can change the server and local port) | IPv4 only. The client binds `0.0.0.0` on the configured local port (default 29456) and **never uses another port**: if it cannot be bound the run stops with an error naming `anidb.local_port` and nothing is sent. Each exchange waits up to 20 s and a first timeout is retried once |
+| UDP API | `api.anidb.net:9000` by default (the server `anidb.udp_server` and the local port `anidb.local_port` can only be changed in the settings file; Options has no field for them) | IPv4 only. The client binds `0.0.0.0` on the configured local port (default 29456) and **never uses another port**: if it cannot be bound the run stops with an error naming `anidb.local_port` and nothing is sent. Each exchange waits up to 20 s and a first timeout is retried once |
 | HTTP API | `http://api.anidb.net:9001/httpapi` | Plain HTTP; every HTTP request (anime records, the title list, cover pictures) is spaced at least 2 s from the previous one; 60 s timeout |
 | Titles dump | `https://anidb.net/api/anime-titles.xml.gz` | Public download, at most once per 24 hours, bounded as described in [Disk space, temporary files and leftovers](Backups-and-Recovery.md#disk-space-temporary-files-and-leftovers) |
-| Cover pictures | `https://<image host>/images/main/<picture>`, HTTPS; the host AniDB announced at the last login, else `anidb.image_server` (`cdn.anidb.net`) | One picture per request, only when an anime detail window opens on an anime whose cover is not in the [covers folder](Data-Locations.md#cover-pictures); never offline or during a ban; spaced with every other HTTP request; no `Referer`; at most 16 MiB; 60 s timeout. Turn it off with **Download anime covers…** in Options |
+| Cover pictures | `https://<image host>/images/main/<picture>`, HTTPS; the host AniDB announced at the last login, else `anidb.image_server` (`cdn.anidb.net`) | One picture per request, only when an anime detail window opens on an anime whose cover is not in the [covers folder](Data-Locations.md#cover-pictures); never offline or during a ban; spaced with every other HTTP request; no `Referer`; at most 16 MiB; 60 s timeout; after a failed try the same anime's cover is not requested again for an hour. Turn it off with **Download anime covers when a detail window opens** (**Tools → Options… → AniDB account → Downloads**) |
 | Update check and download | `https://api.github.com/` and `https://github.com/` (plus the CDN hosts GitHub redirects asset downloads to), HTTPS only | Not AniDB: no flood spacing and no cooldown. Anonymous: sends your IP address and `User-Agent: Animatic/VERSION`, no credentials or library data. Bounded sizes and timeouts. Used only for update checks and downloads you start, plus the optional startup check |
 
 Animatic enforces AniDB's request spacing for the whole program, not per run: UDP packets are
@@ -25,32 +27,82 @@ keep the same spacing. A long queue therefore
 takes a long time; that is not a hang. AniDB also asks clients not to repeat requests: the
 title list is requested at most once per 24 hours, an anime at most once per 24 hours and a file
 at most once per 7 days (see [Request limits](AniDB-Synchronization.md#request-limits)). The
-HTTP client is built with the HTTP library's defaults and Animatic sets no proxy of its own; the
+HTTP client uses its default settings and Animatic sets no proxy of its own; the
 UDP API cannot use an HTTP proxy.
 
 | Message | Cause and action |
 |---|---|
-| `network error: cannot resolve <server>: …` | DNS failure or a wrong server name in the account settings |
+| `network error: cannot resolve <server>: …` | DNS failure, no internet connection, or a wrong `anidb.udp_server` value in the settings file |
 | `network error: no IPv4 address for <server>` | The name resolves to IPv6 only. The UDP client needs an IPv4 address |
 | `network error: cannot bind UDP port N: …; the port is set by anidb.local_port …` | Another program already uses the local UDP port. Close it, or change `anidb.local_port` in the settings file (a free port above 1024; see the [Settings reference](Settings-Reference.md)). Animatic never picks another port by itself, because AniDB bans clients that show many different source ports. Nothing was sent and the commands stay queued; the next run is allowed after 60 s |
 | `no reply from AniDB (timeout)` | Outbound UDP to the server is blocked or lost. Allow outbound UDP to the server's port, and replies back to the local port (NAT and router behavior is outside Animatic) |
 | `HTTP error: HTTP status 5xx` | A server-side failure from the HTTP API; counted toward the command's retry budget |
-| `AniDB unavailable, retry in N min` | The server asked you to wait (or the HTTP API returned status 429, treated as a 30-minute wait) |
-| `no reply to the AniDB login (AUTH); the next try is allowed in …` | The login got no answer. Animatic waits longer after every further unanswered login: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 hours, and starts over after a successful login. The step survives restarts. Check the server name, the local port and your firewall |
+| `AniDB unavailable, retry in N min` | Animatic's own wait after AniDB answered 600, 601, 602 or 604, or after the HTTP API answered status 429 (treated as a 30-minute wait). The text shows the wait that is left |
+| `no reply to the AniDB login (AUTH); the next try is allowed in …` | The login got no answer. Animatic waits longer after every further unanswered login: 30 s, 2 min, 5 min, 10 min, 30 min, then 2 hours, and starts over after a successful login. The step survives restarts. Check your internet connection, `anidb.udp_server` and `anidb.local_port` in the settings file and your firewall |
 | `cannot save the AniDB request state, nothing was sent: …` | The database could not record the time of the request, so Animatic did not send it (disk full or database locked). Retried after 60 s |
-| `Automatic command queue run postponed (…); it starts when that is over` | Only with the automatic option on. The reason is Work offline, an AniDB cooldown, an unset user name or password, another task, an open import, settings review or restore, or unsaved changes. Nothing is wrong: the run starts by itself when the reason is gone, and nothing was sent meanwhile |
+| `Automatic command queue run postponed (<reason>); it starts when that is over` | Only with the automatic option on. The reason is one of `Work offline is on`, `the AniDB account is not set`, `an AniDB cooldown is active`, `another task is running`, `a library restore is in progress`, `an import is in progress`, `imported settings are waiting for review`, `the settings recovery notice is open` (the **Settings recovered** window is still open) or `some changes are not saved to the database yet`. Nothing is wrong: the run starts by itself when the reason is gone, and nothing was sent meanwhile. The Log also says `Automatic command queue run started` when it starts |
 | `AniDB session upkeep failed: …` | The keep-alive command or the `PING` that looks after a kept login got no answer or an error (shown after the usual cause text). The login is forgotten, the usual cooldown starts for network errors and bans, and the next run logs in again |
-| `Logged out of AniDB: the session was idle` / `… automatic queue runs are off` | Routine: the kept login ended after `idle_logout_minutes` without commands, or because you switched the automatic option off |
+| `Logged out of AniDB: the session was idle` / `… automatic queue runs are off` / `The AniDB session ran out while idle; the next run logs in again` | Routine: the kept login ended after `idle_logout_minutes` without commands, because you switched the automatic option off, or because AniDB ended it while idle. The keep-alive commands (`UPTIME`, `PING`) themselves write nothing to the Log |
 
 Transient network failures never lose queued work: the command stays in the queue and syncing
 pauses for 60 seconds (see [Cooldowns and bans](#cooldowns-and-bans)).
+
+## Why are my commands not sent?
+
+Work through this list from the top; the first line that applies is the cause.
+
+1. **Work offline is on** (**Work offline (keep commands queued)** in **Tools → Options… → AniDB account**). The right of the status bar shows **Offline** (yellow dot). Click it
+   to go **Online**, or untick **Work offline**. Nothing
+   is sent while it is on, and the Log says `Offline mode is enabled; commands remain queued`.
+2. **Nothing started the queue.** Queued commands wait until you choose **Tools → Run command
+   queue**, click **Run command queue** on the **Queue** page or press `Ctrl+Shift+S`, unless you switched on **Run
+   the command queue automatically** (off by default). MyList removals are never sent
+   automatically, even then.
+3. **A cooldown is active.** The status bar shows `AniDB sync paused until <time>: <reason>`
+   and **Run command queue** is disabled. See [Cooldowns and bans](#cooldowns-and-bans).
+4. **The account is not set.** `authentication: username and password required` appears and the
+   command is blocked. Enter them in **Tools → Options… → AniDB account**.
+5. **Commands are blocked.** The red `N blocked` in the sidebar and `N blocked command(s)` in
+   the status bar mean permanent failures; read **Last error** on the **Queue** page. See
+   [Queue states](#queue-states-blocked-deferred-and-unsaved).
+6. **Another task is running**, an import or the review of imported settings is open, a restore
+   is in progress or commands are not saved yet. An automatic run says `Automatic command queue
+   run postponed (…); it starts when that is over`; **Run command queue** is disabled while an
+   import is pending.
+7. **The queue is long.** Every packet keeps AniDB's spacing (2 s for the first five packets,
+   then 4 s), so many commands take minutes. That is not a hang; **Cancel** works between
+   commands.
+
+## AniDB reply codes at a glance
+
+What Animatic does with the replies it understands.
+"Cooldown" means all AniDB requests pause; see [Cooldowns and bans](#cooldowns-and-bans).
+
+| Code | AniDB's meaning | What Animatic does |
+|---|---|---|
+| 200, 201 | Login accepted (201: a newer AniDB client version exists) | Continues |
+| 500 | Login failed | Blocks the whole queue: `authentication: login failed: wrong username or password` |
+| 501, 506 | Session expired or invalid | Forgets the session, logs in again and retries once |
+| 502 | Access denied | Blocks the whole queue: `authentication: access denied` |
+| 503 | Client version outdated | Blocks the queue until Animatic is updated |
+| 504 | Client banned | Blocks the queue with no timed cooldown; update Animatic |
+| 505 | Illegal input or access denied | At login: `authentication: illegal input or access denied (is the client registered?)`; on a command: that command is blocked with `illegal input: …` |
+| 555 (and 510, which Animatic treats the same way) | Banned | Cooldown of 30 minutes; commands stay queued |
+| 598 | Unknown command | That command is blocked; the run continues |
+| 600, 601, 602 | Server error (600), out of service (601) or server busy (602) | Cooldown of 30 minutes |
+| 604 | Server timeout | Cooldown of 60 seconds |
+| 309, 394 | Encrypted session setup failed (API key not defined, no such user) | Blocks the whole queue: `authentication: API key not defined in your AniDB profile` or `authentication: no such user` |
+| Anything else unexpected | | The command is blocked as `unexpected reply <code>: <text>` |
+
+The 30-minute and 60-second pauses are Animatic's own conservative choices unless AniDB sent a
+duration; the project has no recorded observation of AniDB's real ban lengths.
 
 ## Credentials and client registration
 
 Animatic sends its own registered AniDB clients (`animatic` version 1 on UDP, `animatichttp`
 version 1 on HTTP), so there is nothing to register or enter: the account (**Tools → Options… →
 AniDB account**) needs only a user name and password, and optionally an API key. The client
-identifiers are built in, are not settings, and never change with an Animatic update; a
+identifiers are built in, are not settings, and change only when a release registers a new client version with AniDB (an ordinary version bump does not change them); a
 settings file that still holds the old client keys has them ignored (see the
 [Settings reference](Settings-Reference.md)). Client errors below mean AniDB refused that
 built-in registration. For the details see
@@ -58,26 +110,27 @@ built-in registration. For the details see
 
 The queue runs on its own only if you switch on **Run the command queue automatically**
 (off by default; see [Automatic runs](AniDB-Synchronization.md#automatic-runs-and-the-anidb-session)).
-It never sends MyList removals: the Queue page shows how many wait for you to click
-**Run command queue**. **Tools → Run command queue** and **Queue → Run command queue**
+It never sends MyList removals: the Queue page says `N MyList removals wait for you to click Run
+command queue.` **Tools → Run command queue** and the **Run command queue** button on the
+**Queue** page
 take a snapshot of the **current in-memory options** (saved or not) at the moment you click.
-With **Work offline** ticked they send nothing, log `Offline mode is enabled; commands remain
+With **Work offline (keep commands queued)** ticked they send nothing, log `Offline mode is enabled; commands remain
 queued`, and leave the queue alone; an automatic run is postponed instead.
 
 | Message (in the **Last error** column, the **Log** or the status bar) | Meaning | Effect | Action |
 |---|---|---|---|
-| `authentication: username and password required` | Missing user name or password | Fatal, as above | Enter them, then **Retry failed** |
-| `authentication: login failed: wrong username or password` | Login code 500 | Fatal, as above | Correct the credentials, then **Retry failed** |
-| `authentication: illegal input or access denied (is the client registered?)` | Login code 505 | Fatal, as above | Check the user name, password and API key; if they are right, AniDB may be refusing the built-in client, so update Animatic or report it |
-| `authentication: API key not defined in your AniDB profile` / `no such user` | Encrypted-session setup failed (codes 309, 394) | Fatal, as above | Fix or clear the API key; check the user name |
-| `authentication: access denied` | A later command was refused (code 502) | Fatal, as above | Check the account |
-| `client version outdated - update Animatic, or report this if it is already the latest version` | Code 503: AniDB refuses the client version Animatic's built-in registration sends | Fatal, as above | Update Animatic; if it is already the latest release, report it ([Reporting problems](Reporting-Problems.md)); then **Retry failed** |
-| `AniDB refuses Animatic's built-in client registration (reply 504): …` | Code 504: AniDB bans the built-in client name and version | Fatal, as above, **no timed cooldown** | Update Animatic (a release carries a newly registered client version); if it is already the latest release, report it; then **Retry failed** |
-| `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused Animatic's built-in HTTP client (`animatichttp`) | Only the HTTP commands (anime records) are blocked; UDP commands keep running | Update Animatic; if it is already the latest release, report it; then **Retry failed** |
+| `authentication: username and password required` | Missing user name or password | Blocks the whole queue (no timer) | Enter them, then **Retry failed** |
+| `authentication: login failed: wrong username or password` | Login code 500 | Blocks the whole queue (no timer) | Correct the credentials, then **Retry failed** |
+| `authentication: illegal input or access denied (is the client registered?)` | Login code 505 | Blocks the whole queue (no timer) | Check the user name, password and API key; if they are right, AniDB may be refusing the built-in client, so update Animatic or report it |
+| `authentication: API key not defined in your AniDB profile` / `no such user` | Encrypted-session setup failed (codes 309, 394) | Blocks the whole queue (no timer) | Fix or clear the API key; check the user name |
+| `authentication: access denied` | A later command was refused (code 502) | Blocks the whole queue (no timer) | Check the account |
+| `client version outdated - update Animatic, or report this if it is already the latest version` | Code 503: AniDB refuses the client version Animatic's built-in registration sends | Blocks the whole queue (no timer) | Update Animatic; if it is already the latest release, report it ([Reporting problems](Reporting-Problems.md)); then **Retry failed** |
+| `AniDB refuses Animatic's built-in client registration (reply 504): …` | Code 504: AniDB bans the built-in client name and version | Blocks the whole queue, **no timed cooldown** | Update Animatic (a release carries a newly registered client version); if it is already the latest release, report it; then **Retry failed** |
+| `authentication: HTTP API rejected the client registration (…)` | The HTTP API refused Animatic's built-in HTTP client (`animatichttp`) | Only the HTTP commands (anime records) are blocked; UDP commands keep running. The Log line ends `Check the HTTP client in Options.`, but Options has no HTTP client field: the client is built in | Update Animatic; if it is already the latest release, report it; then **Retry failed** |
 
 After a fatal credential or client error the status bar shows **N blocked commands** and the Log shows
 `Command blocked: N queued commands blocked: <message>`. Correct the cause, optionally **Save
-options**, then **Queue → Retry failed**, then **Run command queue**. A wrong password that you
+options**, then click **Retry failed** on the **Queue** page, then **Run command queue**. A wrong password that you
 keep retrying will keep failing; stop and fix it first.
 
 Credentials live in the system keystore, or in plain text in the settings file when Options says no
@@ -86,11 +139,13 @@ keystore is available. Do not paste them into bug reports; see
 
 ## Cooldowns and bans
 
-When AniDB refuses the client or the network fails, Animatic **stops the whole queue run** and
-stores a cooldown so that it holds across restarts and new jobs:
+When the network fails, the server is unavailable or AniDB bans you, Animatic **stops the whole queue run** and
+stores a cooldown so that it holds across restarts and new jobs. (A refused or outdated client is
+different: it blocks the queue until you update Animatic, with no timer; see
+[Credentials and client registration](#credentials-and-client-registration).)
 
-- It is stored in the database's `meta` table (key `sync_cooldown`: an expiry time and the
-  reason), so it belongs to **that database**. Another database or machine does not know about
+- It is stored in the library database (an expiry time and the reason), so it belongs to
+  **that database**. Another database or machine does not know about
   it; waiting still makes sense because the server-side condition remains.
 - While it is active, **Run command queue** (menu, Queue page and `Ctrl+Shift+S`) is disabled (hover for the
   text) and the status bar and **Queue** page show `AniDB sync paused until HH:MM:SS: <reason>`
@@ -118,15 +173,22 @@ Notes:
 - The ban text may include the server's wording. If you see `client banned by AniDB: …`, stop
   starting more runs and wait.
 - A run that finishes sends a logout. Cancel acts **between commands**: a command already in
-  flight can take up to its timeout (20 s for UDP, 60 s for HTTP) to end. Closing the window
+  flight can take up to about 45 s for UDP (a 20 s timeout, retried once, plus packet spacing)
+  or 60 s for HTTP to end. Closing the window
   does not wait for it.
 - Durations are Animatic's own conservative choices unless AniDB supplied one; the project
   has no recorded production AniDB observation to cite for AniDB's actual ban lengths.
 
 ## Queue states: blocked, deferred and unsaved
 
-The **Queue** page lists every saved command with its **Status** and **Last error**. There are
-three different situations, and they are handled differently.
+The **Queue** page lists every saved command with its **Status** and **Last error**. The sample
+library below has four pending commands and one blocked command, and Animatic is working offline.
+
+![The Queue page with five commands: two Identify, one Edit mylist entry and one Add to mylist pending, and one Add to mylist blocked with the last error illegal input: ILLEGAL INPUT OR ACCESS DENIED; the status bar shows 1 blocked command and Offline](images/queue.png)
+
+*The Queue page. The toolbar shows **Run command queue**, **Retry failed**, `5 pending commands` and the red `1 blocked`; **Clear queue…** is at the right.*
+
+There are three different situations, and they are handled differently.
 
 | State | Where you see it | Meaning | What to do |
 |---|---|---|---|
@@ -177,8 +239,8 @@ Two connections write to the database: the background worker and the interface. 
   `Saved N previously unsaved commands` when it succeeds. At most 1000 are held; beyond that
   you get `NOT queued: <command> (database busy and 1000 commands are already unsaved)`.
 - **Closing the window** makes one final attempt of up to 5 s. If the database is still busy,
-  the unsaved commands are lost, and the only record is a `log` message that nothing prints
-  (the application installs no logger). **Do not quit while the unsaved counter is non-zero.**
+  the unsaved commands are lost, and nothing records them anywhere (Animatic writes no log file).
+  **Do not quit while the unsaved counter is non-zero.**
 - Causes of long busy periods: a legacy import (each collection is one transaction), the
   titles merge, another program touching the files (backup tool, antivirus, sync client) or a
   second Animatic instance. Wait for the running job to finish or cancel it.
@@ -214,7 +276,7 @@ Two connections write to the database: the background worker and the interface. 
   count limits) and merged in a single transaction only when complete. Errors you may see
   include `titles dump larger than the N byte download limit`, `… decompressed limit`,
   `unexpected data after the compressed titles dump`, `invalid compressed body: …` and `title
-  longer than N bytes`. Format and size errors block the `TitlesDump` command; connectivity
+  longer than N bytes`. Format and size errors block the title-list download command; connectivity
   errors pause syncing instead (see [Cooldowns and bans](#cooldowns-and-bans)). After a block,
   use **Retry failed** or queue the download again from the Tools menu once the cause is gone
   **and** 24 hours have passed since the failed attempt (next point). A download is not
@@ -244,12 +306,12 @@ AniDB cooldown, and an AniDB cooldown never blocks it.
 
 | Symptom | Cause and action |
 |---|---|
-| No check happens at startup | By design when `updates.auto_check` is off, *Work offline* is on, or settings were recovered from a backup. **Help → Check for updates…** still works |
-| Help → Check for updates… is disabled or the platform is reported unsupported | Only Windows and Linux on x86_64 are supported. Download releases manually elsewhere (none are built) |
+| No check happens at startup | By design when **Check for updates at startup** is off, **Work offline** is on, or settings were recovered from a backup. **Help → Check for updates…** still works |
+| **Help → Check for updates…** is disabled or the platform is reported unsupported | Only Windows and Linux on x86_64 are supported. Download releases manually elsewhere (none are built) |
 | The check fails, or reports a rate limit | Unauthenticated GitHub API requests are limited per IP address, and a firewall, proxy or offline machine also fails. Nothing is retried automatically; try again later. A manual check always shows the error, a startup check writes it only to the **Log** |
 | The check reports "not found" or the release feed as unavailable | GitHub answers HTTP 404 when the release data is not visible to an anonymous client: the repository's releases are not publicly readable, or nothing is published. This is an error, never "up to date". Animatic has no token or sign-in setting, so until the releases are publicly readable, update manually ([Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md#install-a-release)). This guide does not state whether the repository is currently public |
-| "Animatic is up to date" although a newer tag exists on GitHub | Only published, non-draft releases with a valid CalVer tag that is strictly newer than the running version are offered. On the default **Stable** channel prereleases (release candidates, `-rc.N`) are not offered: switch **Options → Updates → Release channel** to **Beta** to be offered them. Other prerelease forms, drafts and older versions are never offered on either channel, and the platform archive and `SHA256SUMS` must be present and correctly named. If the newest eligible release is incomplete the check reports an error instead of offering an older one |
-| Download or verify fails (size, checksum or archive error) | Nothing was installed. The staged files are in a private temporary folder that is removed when the update is dropped or Animatic exits. Retry; if the checksum keeps failing, do not install and download manually from the [releases page](https://github.com/RetroHazard/animatic/releases) as described in [Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md#install-a-release), and report it |
+| "Animatic is up to date" although a newer tag exists on GitHub | Only published, non-draft releases with a valid CalVer tag that is strictly newer than the running version are offered. On the default **Stable** channel prereleases (release candidates, `-rc.N`) are not offered: switch **Tools → Options… → Updates → Release channel** to **Beta** to be offered them. Other prerelease forms, drafts and older versions are never offered on either channel, and the platform archive and `SHA256SUMS` must be present and correctly named. If the newest eligible release is incomplete the check reports an error instead of offering an older one |
+| Download or verify fails (size, SHA-256 or archive error) | Nothing was installed. The staged files are in a private temporary folder that is removed when the update is dropped or Animatic exits. Retry; if the SHA-256 check keeps failing, do not install and download manually from the [releases page](https://github.com/RetroHazard/animatic/releases) as described in [Releases](https://github.com/RetroHazard/animatic/blob/main/docs/releases.md#install-a-release), and report it |
 | Install or Restart now is disabled | They are blocked while a job is running, an AOM import is in progress, imported settings are waiting to be applied, or some changes are not yet saved to the database; Restart is also blocked while settings recovered from a backup are unsaved (use **Save options**). The reason is shown in the window. Finish or cancel that work first |
 | Install fails with a permission or read-only error | The folder holding the executable must be writable by your account. There is no elevation. Update the copy the way it was installed (administrator copy, package manager) or move Animatic to a user-writable folder |
 | Install refuses because the executable does not match | The running file is not the one Animatic started from (moved, replaced or launched through an unusual path). Restart Animatic normally and try again |
@@ -264,3 +326,11 @@ AniDB cooldown, and an AniDB cooldown never blocks it.
 The check, download and install are bounded by byte limits and timeouts and run on their own
 thread, so a slow or stuck GitHub connection never freezes the window; use **Cancel** during
 a download, or close Animatic (which cancels it). Closing during the short install step waits for it.
+
+## See also
+
+- [AniDB synchronization](AniDB-Synchronization.md) for how the queue, request limits and automatic runs work.
+- [Updating Animatic](Updating-Animatic.md) for the update flow.
+- [Troubleshooting](Troubleshooting.md) for the symptom index and message index.
+- [FAQ](FAQ.md) for short answers, for example why commands are not sent.
+- [Reporting problems](Reporting-Problems.md) if a message here does not match what you see.
