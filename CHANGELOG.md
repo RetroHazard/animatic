@@ -26,6 +26,7 @@ the generated line for that pull request's squash commit.
   no longer count, only a folder rule you add does.
 - The notice shown when AniDB's HTTP API rejects Animatic's client registration no longer sends
   you to an HTTP client setting in Options (there is none); it says to update Animatic.
+- The **AVDump API key** field in Options → Players and tools is masked like the AniDB password.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 

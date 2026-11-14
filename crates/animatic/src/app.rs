@@ -5152,7 +5152,7 @@ impl AnimaticApp {
         );
         field(ui, "Executable", &mut self.settings.avdump.executable);
         field(ui, "Arguments", &mut self.settings.avdump.arguments);
-        field(ui, "AVDump API key", &mut self.settings.avdump.key);
+        secret_field(ui, "AVDump API key", &mut self.settings.avdump.key);
         style::section(ui, "Media properties");
         self.media_options_ui(ui);
     }
@@ -6568,6 +6568,19 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
         let label = field_label(ui, label);
         ui.add(egui::TextEdit::singleline(value).desired_width(FIELD_WIDTH))
             .labelled_by(label.id);
+    });
+}
+
+/// A [`field`] whose text is shown as dots, for a key or password.
+fn secret_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.horizontal(|ui| {
+        let label = field_label(ui, label);
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .password(true)
+                .desired_width(FIELD_WIDTH),
+        )
+        .labelled_by(label.id);
     });
 }
 
