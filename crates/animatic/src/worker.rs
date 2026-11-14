@@ -1842,7 +1842,8 @@ fn fail_command(
                 let n = db.queue_block_http(&error.message)?;
                 let _ = events.send(Event::Blocked {
                     description: format!(
-                        "{n} queued HTTP commands blocked: {}. Check the HTTP client in Options.",
+                        "{n} queued HTTP commands blocked: {}. Update Animatic, or report this if it is \
+                         already the latest version.",
                         error.message
                     ),
                 });

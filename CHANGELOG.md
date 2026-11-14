@@ -24,6 +24,8 @@ the generated line for that pull request's squash commit.
 - The Overview's Getting started step "Choose the folders Animatic watches and renames into"
   is no longer ticked on a fresh profile: the built-in default and `\\` network folder rules
   no longer count, only a folder rule you add does.
+- The notice shown when AniDB's HTTP API rejects Animatic's client registration no longer sends
+  you to an HTTP client setting in Options (there is none); it says to update Animatic.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 
