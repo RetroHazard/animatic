@@ -300,8 +300,8 @@ the generated line for that pull request's squash commit.
   line breaks, `&amp;`-style characters, apostrophes stored as backticks) instead of raw
   `[url=…]`, `[b]`, `[hr]` and `[ol]` tags, `<br />` and backticks. An `[img]` shows the
   picture's address; pictures are never downloaded.
-- The anime detail window opens at the top when it shows a different anime, instead of keeping
-  the previous anime's scroll position.
+- The anime detail window opens at the top when it shows a different anime (picked in a list or
+  through a Relations link), instead of keeping the previous anime's scroll position.
 - Typing in a managed folder's Name no longer closes that folder's section in Options.
 - The status bar's Online/Offline dot and the sidebar's Options gear are centred on their text.
 - About Animatic shows its three link buttons on one row, and the license window opens wide

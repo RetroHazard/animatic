@@ -558,6 +558,9 @@ pub struct AnimaticApp {
     /// Zoom factor the last tracked window geometry was measured with.
     window_zoom: f32,
     detail: Option<DetailCache>,
+    /// Bumped whenever the detail window shows a different anime, so its scroll area is a new
+    /// one that starts at the top (from the list, a relation link or a genre round trip alike).
+    detail_view: u64,
     covers: covers::CoverUi,
     mylist_overlay: HashMap<i64, MylistOverlay>,
     mylist_ui: mylist_editor::MylistUi,
@@ -699,6 +702,7 @@ impl AnimaticApp {
             views: TableViews::default(),
             window_zoom: 1.0,
             detail: None,
+            detail_view: 0,
             covers: covers::CoverUi::default(),
             mylist_overlay: HashMap::new(),
             mylist_ui: mylist_editor::MylistUi::default(),
@@ -4246,79 +4250,86 @@ impl AnimaticApp {
             .open(&mut open)
             .default_width(560.0)
             .max_height(ctx.content_rect().height() * 0.85)
-            .vscroll(true)
+            .vscroll(false)
             .show(ctx, |ui| {
                 if other_anime {
-                    ui.scroll_to_cursor(Some(Align::TOP));
+                    self.detail_view += 1;
                 }
-                ui.horizontal(|ui| {
-                    if ui.button("Open on AniDB").clicked() {
-                        let _ = open::that(format!("https://anidb.net/anime/{aid}"));
-                    }
-                    if ui
-                        .button("Refresh from AniDB")
-                        .on_hover_text("Queues a request that re-reads this anime from AniDB")
-                        .clicked()
-                    {
-                        refresh_requested = true;
-                    }
-                });
-                ui.add_space(4.0);
-                let Some(d) = &detail else {
-                    ui.label("No detail record is available.");
-                    return;
-                };
-                ui.horizontal_top(|ui| {
-                    self.covers.show(
-                        ui,
-                        &self.worker,
-                        &self.settings.anidb,
-                        aid,
-                        d.anime.picname.as_deref(),
-                    );
-                    ui.vertical(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(d.anime.type_name());
-                            ui.separator();
-                            ui.label(&d.anime.year);
-                            ui.separator();
-                            ui.label(style::plural(
-                                d.anime.episodes.max(0) as usize,
-                                "episode",
-                                "episodes",
-                            ));
-                            ui.separator();
-                            ui.label(RichText::new(format!("AniDB {aid}")).weak());
+                egui::ScrollArea::vertical()
+                    .id_salt(("anime_detail_scroll", self.detail_view))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if ui.button("Open on AniDB").clicked() {
+                                let _ = open::that(format!("https://anidb.net/anime/{aid}"));
+                            }
+                            if ui
+                                .button("Refresh from AniDB")
+                                .on_hover_text(
+                                    "Queues a request that re-reads this anime from AniDB",
+                                )
+                                .clicked()
+                            {
+                                refresh_requested = true;
+                            }
                         });
-                        if let Some(text) = &d.anime.description {
-                            ui.add_space(6.0);
-                            ui.label(anidb_markup::layout(ui, text));
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-                // Sections without entries stay listed (with their zero) but cannot open.
-                let section = |ui: &mut egui::Ui,
-                               name: &str,
-                               count: usize,
-                               open: bool,
-                               body: &mut dyn FnMut(&mut egui::Ui)| {
-                    let header = egui::CollapsingHeader::new(format!("{name} ({count})"))
-                        .id_salt(("anime_detail_section", name))
-                        .default_open(open);
-                    ui.add_enabled_ui(count > 0, |ui| {
-                        header.show(ui, |ui| body(ui));
-                    });
-                };
-                section(ui, "Episodes", d.episodes.len(), true, &mut |ui| {
-                    egui::Grid::new("anime_detail_episodes")
-                        .num_columns(3)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for e in &d.episodes {
-                                ui.monospace(e.epno_str());
-                                ui.label(&e.name);
-                                if ui
+                        ui.add_space(4.0);
+                        let Some(d) = &detail else {
+                            ui.label("No detail record is available.");
+                            return;
+                        };
+                        ui.horizontal_top(|ui| {
+                            self.covers.show(
+                                ui,
+                                &self.worker,
+                                &self.settings.anidb,
+                                aid,
+                                d.anime.picname.as_deref(),
+                            );
+                            ui.vertical(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(d.anime.type_name());
+                                    ui.separator();
+                                    ui.label(&d.anime.year);
+                                    ui.separator();
+                                    ui.label(style::plural(
+                                        d.anime.episodes.max(0) as usize,
+                                        "episode",
+                                        "episodes",
+                                    ));
+                                    ui.separator();
+                                    ui.label(RichText::new(format!("AniDB {aid}")).weak());
+                                });
+                                if let Some(text) = &d.anime.description {
+                                    ui.add_space(6.0);
+                                    ui.label(anidb_markup::layout(ui, text));
+                                }
+                            });
+                        });
+                        ui.add_space(8.0);
+                        // Sections without entries stay listed (with their zero) but cannot open.
+                        let section =
+                            |ui: &mut egui::Ui,
+                             name: &str,
+                             count: usize,
+                             open: bool,
+                             body: &mut dyn FnMut(&mut egui::Ui)| {
+                                let header =
+                                    egui::CollapsingHeader::new(format!("{name} ({count})"))
+                                        .id_salt(("anime_detail_section", name))
+                                        .default_open(open);
+                                ui.add_enabled_ui(count > 0, |ui| {
+                                    header.show(ui, |ui| body(ui));
+                                });
+                            };
+                        section(ui, "Episodes", d.episodes.len(), true, &mut |ui| {
+                            egui::Grid::new("anime_detail_episodes")
+                                .num_columns(3)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for e in &d.episodes {
+                                        ui.monospace(e.epno_str());
+                                        ui.label(&e.name);
+                                        if ui
                                     .small_button("Refresh")
                                     .on_hover_text(
                                         "Queues a request that re-reads this episode from AniDB",
@@ -4327,64 +4338,66 @@ impl AnimaticApp {
                                 {
                                     episode_refresh.push(e.eid);
                                 }
-                                ui.end_row();
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                        section(ui, "Titles", d.titles.len(), false, &mut |ui| {
+                            for t in &d.titles {
+                                ui.horizontal(|ui| {
+                                    ui.monospace(&t.lang);
+                                    ui.label(&t.name);
+                                });
                             }
                         });
-                });
-                section(ui, "Titles", d.titles.len(), false, &mut |ui| {
-                    for t in &d.titles {
-                        ui.horizontal(|ui| {
-                            ui.monospace(&t.lang);
-                            ui.label(&t.name);
-                        });
-                    }
-                });
-                section(ui, "Genres", d.genres.len(), false, &mut |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for (id, name) in &d.genres {
-                            let link = ui.link(name).on_hover_text(
-                                "Show the anime of this genre; Ctrl+click adds it to the \
+                        section(ui, "Genres", d.genres.len(), false, &mut |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                for (id, name) in &d.genres {
+                                    let link = ui.link(name).on_hover_text(
+                                        "Show the anime of this genre; Ctrl+click adds it to the \
                                  genres already chosen",
-                            );
-                            if link.clicked() {
-                                let add = ui.input(|i| i.modifiers.command || i.modifiers.shift);
-                                genre_clicked = Some((*id, add));
-                            }
-                        }
-                    });
-                });
-                let mut related = None;
-                section(ui, "Relations", d.relations.len(), false, &mut |ui| {
-                    for (related_aid, relation, name) in &d.relations {
-                        if ui
-                            .link(format!(
-                                "{} — {}",
-                                animatic_core::library::relation_name(*relation),
-                                name
-                            ))
-                            .clicked()
-                        {
-                            related = Some(*related_aid);
-                        }
-                    }
-                });
-                if related.is_some() {
-                    self.selected_aid = related;
-                }
-                section(ui, "Reviews", d.reviews.len(), false, &mut |ui| {
-                    for review in &d.reviews {
-                        ui.horizontal(|ui| {
-                            ui.strong(if review.uname.is_empty() {
-                                "Anonymous"
-                            } else {
-                                &review.uname
+                                    );
+                                    if link.clicked() {
+                                        let add =
+                                            ui.input(|i| i.modifiers.command || i.modifiers.shift);
+                                        genre_clicked = Some((*id, add));
+                                    }
+                                }
                             });
-                            ui.label(format::rating(review.rating));
                         });
-                        ui.label(anidb_markup::layout(ui, &review.body));
-                        ui.separator();
-                    }
-                });
+                        let mut related = None;
+                        section(ui, "Relations", d.relations.len(), false, &mut |ui| {
+                            for (related_aid, relation, name) in &d.relations {
+                                if ui
+                                    .link(format!(
+                                        "{} — {}",
+                                        animatic_core::library::relation_name(*relation),
+                                        name
+                                    ))
+                                    .clicked()
+                                {
+                                    related = Some(*related_aid);
+                                }
+                            }
+                        });
+                        if related.is_some() {
+                            self.selected_aid = related;
+                        }
+                        section(ui, "Reviews", d.reviews.len(), false, &mut |ui| {
+                            for review in &d.reviews {
+                                ui.horizontal(|ui| {
+                                    ui.strong(if review.uname.is_empty() {
+                                        "Anonymous"
+                                    } else {
+                                        &review.uname
+                                    });
+                                    ui.label(format::rating(review.rating));
+                                });
+                                ui.label(anidb_markup::layout(ui, &review.body));
+                                ui.separator();
+                            }
+                        });
+                    });
             });
         if dialog::escape_closes(ctx, shown.as_ref()) {
             open = false;
