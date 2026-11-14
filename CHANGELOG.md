@@ -11,6 +11,40 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+### Fixed
+
+- A long status message (for example an automatic rename's dry-run summary with full paths) is
+  truncated before the blocked-commands link, the cooldown notice and the Offline/Online button
+  of the status bar instead of being drawn underneath them, and the progress row's label is
+  truncated before Pause and Cancel; the full message shows on hover. (#23)
+- While a settings import or its review is pending, **Tools → Run command queue** now explains
+  that it is disabled (`An import is in progress`), like the button on the Queue page. (#23)
+- **Save options** keeps the Options window open when the settings file cannot be written, so
+  the edits stay in view to try again; the window closes only after a successful save. (#23)
+- The Overview's Getting started step "Choose the folders Animatic watches and renames into"
+  is no longer ticked on a fresh profile: the built-in default and `\\` network folder rules
+  no longer count, only a folder rule you add does. (#23)
+- The notice shown when AniDB's HTTP API rejects Animatic's client registration no longer sends
+  you to an HTTP client setting in Options (there is none); it says to update Animatic. (#23)
+- The **AVDump API key** field in Options → Players and tools is masked like the AniDB password. (#23)
+- Renaming a single hashed file (Hashed files → Rename…) now checks whether the new path is
+  already taken and blocks Confirm rename with the message the batch rename uses, instead of
+  failing with `destination already exists` after the click. (#23)
+- Pause no longer carries over to the next hashing run: pressing Pause and then Cancel (or
+  pausing a job that finished) used to leave the next run paused. (#23)
+- `Ctrl+F` on a page without a search box (Overview, Queue, Log) no longer makes the next page
+  that has one grab the focus later; on Advanced search it focuses the Title or AniDB ID field. (#23)
+- The session log is trimmed at 2000 lines whatever wrote the line; errors and notes were never
+  trimmed, so a long error-heavy session grew the log without bound. (#23)
+- Options → Hashing → **Restrict file extensions** keeps what you type while the box is
+  focused, so a comma after the last extension no longer vanishes before the next one is typed. (#23)
+- Closing Options with the sidebar **Options** button now refreshes the file-menu status line
+  the next time Options opens, like every other way of closing it. (#23)
+- The startup error dialog (Animatic started from Explorer) shows "Animatic could not start"
+  once instead of twice. (#23)
+- The bug report form's example status-bar text matches the application (`N blocked commands`,
+  `N commands not saved yet`). (#23)
+
 ### Documentation
 
 - The user guide (wiki) is overhauled and illustrated: a Quick start tutorial, a Managing MyList

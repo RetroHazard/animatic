@@ -10,7 +10,7 @@ options** and **Close** do, because the window works differently from most dialo
 Any of these opens it:
 
 - **Tools → Options…** or `Ctrl+,` (opens the window; it never closes it).
-- The **⚙ Options** entry at the bottom of the sidebar (a second click closes the window again).
+- The **⚙ Options** entry at the bottom of the sidebar (a second click closes the window again, exactly like **Close**).
 - The buttons of the Overview's **Getting started** card: **Open account options** opens the
   **AniDB account** category, **Open folder options** opens **Managed folders**.
 - The **Edit pattern in Options** button of the rename preview windows opens **Renaming**.
@@ -42,8 +42,8 @@ no Cancel and no "revert": closing the window does not undo anything.
 
 | Action | What it does |
 |---|---|
-| **Save options** | Writes `settings.json` (and, when a system keystore is available, stores the password, API key and AVDump key there), applies the theme, color scheme and UI scale again, searches for `ffprobe` again if its path changed, adds or removes the file-menu entry to match its checkbox, then closes the window. The Log page records `Settings saved`. If the write fails, the window still closes and the status bar and Log show `Could not save settings: …`; your edits stay in effect in memory, and the file-menu entry is still added or removed even though the file was not written. |
-| **Close**, the title-bar **✕**, `Esc` | Closes the window and keeps every edit in memory. Nothing is written yet and the file-menu entry is not changed. The edits are written when you quit Animatic normally, or by the next explicit save. `Esc` only works while the Options window is the front window, no text box has the focus and no drop-down list is open. |
+| **Save options** | Writes `settings.json` (and, when a system keystore is available, stores the password, API key and AVDump key there), applies the theme, color scheme and UI scale again, searches for `ffprobe` again if its path changed, adds or removes the file-menu entry to match its checkbox, then closes the window. The Log page records `Settings saved`. If the write fails, the status bar and Log show `Could not save settings: …` and the window **stays open**, so your edits stay in view to try again; they stay in effect in memory, and the theme, `ffprobe` search and file-menu entry are still applied even though the file was not written. |
+| **Close**, the title-bar **✕**, `Esc`, the sidebar **Options** entry | Closes the window and keeps every edit in memory. All of them close it the same way, so what the window showed (for example the file-menu status line) is read again the next time it opens. Nothing is written yet and the file-menu entry is not changed. The edits are written when you quit Animatic normally, or by the next explicit save. `Esc` only works while the Options window is the front window, no text box has the focus and no drop-down list is open. |
 | Quitting Animatic, using the status bar's **Online** / **Offline** button, or the Overview's **Hide** or **Go online** | Each of these writes the whole current settings, including edits you made in Options and did not save. A crash before any of these loses the edits. |
 
 If Animatic started from the backup copy of a damaged settings file, quitting and those buttons do
@@ -250,9 +250,9 @@ options is on.
 The extension list is a legacy AOM list that includes subtitles, archives and `txt`; it is not
 media-only. Edit it freely. How the list is matched is under
 [Hashing](Settings-Reference.md#hashing). The thread-priority setting AOM had is not offered: hashing
-always runs at the normal priority. The box rebuilds its text from the list as you type, so a comma
-typed at the very end of the list is dropped; to add an extension, paste a comma-separated list or
-type it in front of an existing entry followed by a comma.
+always runs at the normal priority. The box keeps exactly what you type while it has the focus, so a
+comma after the last extension stays until you type the next one; empty entries are dropped from the
+list, and the box shows the cleaned list again when you leave it.
 
 ## Renaming
 
@@ -304,7 +304,7 @@ Argument templates use `{path}` or `%file%` for the file; see
 | **Enable AVDump integration** | Enables the **AVDump** button on Hashed files. | off | `enabled` |
 | **Executable** | The AVDump command-line program to start. | empty | `executable` |
 | **Arguments** | Template; `{path}`, `{user}`, `{key}` and `{port}` are replaced. Animatic only starts the program and does not read its output. | `--Consumers=ED2K --Auth={user}:{key} --LPort={port} --PrintEd2kLink "{path}"` | `arguments` |
-| **AVDump API key** | The value of `{key}`. Separate from the AniDB API key. Not masked. | empty | `key` |
+| **AVDump API key** | The value of `{key}`. Separate from the AniDB API key. The box is masked like the password. | empty | `key` |
 
 ### Media properties
 
@@ -419,7 +419,7 @@ saved, backed up and recovered, and where the password and keys are kept, is in
   the backup was loaded **offline**; the original file was not touched. Review the values, then click
   **Save options** to replace it. See the [recovery matrix](Settings-Files.md#recovery-matrix) and
   [Troubleshooting](Troubleshooting.md).
-- **Save options said `Could not save settings: …`.** The window closed but your edits are still
+- **Save options said `Could not save settings: …`.** The window stays open and your edits are still
   active. Check the settings folder's permissions and free space and save again.
 - **A yellow keystore notice sits under the API key.** See
   [Credentials and the system keystore](Settings-Files.md#credentials-and-the-system-keystore).

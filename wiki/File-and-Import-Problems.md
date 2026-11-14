@@ -207,7 +207,7 @@ automatically (**Dry run (log only)** only logs), and its skipped files and coll
 | `The pattern produced an empty file name; nothing would be renamed. …` | Same cause; an empty target is an error, never a silent no-op |
 | `Renaming "<old>" to "<new>" would result in an invalid file name (<why>); rename skipped!` | A path component contains one of `<>:"\|?*` or a control character, is empty, is longer than 255 (UTF-16 units on Windows, UTF-8 bytes elsewhere), or is a reserved device name such as `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`. Trailing dots and spaces are trimmed first. The rules apply on every platform |
 | `The file already has the name the pattern produces` | Nothing to do |
-| `Rename failed: <file>: destination already exists: <path> (target …)` | A collision. A single-file preview does **not** check for an existing target; the check happens when you apply it (the batch preview does check, and marks such a line blocked). Change the pattern or move the other file |
+| `Rename failed: <file>: destination already exists: <path> (target …)` | A collision that appeared after the preview was made: the preview itself blocks an existing target with `A file or folder already exists at the target path`, so this only happens when the file shows up between the preview and the click. Change the pattern or move the other file |
 | `Rename failed: <file>: I/O error: <os error> (target …)` | The filesystem operation failed (see below) |
 | `Rename failed: <file>: database error: … (target …)` | The library could not be updated; see below |
 | `Rename failed: <file>: the file changed since it was hashed; hash it again before moving it …` | A move to another drive copies and verifies against the stored hash, so the file must still be the one that was hashed. Hash it again, then retry |
@@ -218,9 +218,10 @@ automatically (**Dry run (log only)** only logs), and its skipped files and coll
 
 Details:
 
-- **Collisions** are detected when you apply (and, in the batch preview, also when planning).
-  Two files that map to the same name succeed once and fail the second time; the batch preview
-  blocks the second line up front.
+- **Collisions** are detected when you preview: `A file or folder already exists at the target path`
+  blocks the single-file **Rename…** dialog (**Rename file** is disabled) and the batch preview. The
+  batch preview also blocks the second of two files that map to the same name up front. Only a
+  target that appears after the preview fails when you apply (`destination already exists`).
 - **Moves to another drive or filesystem** are copied, verified and swapped (see [Renaming
   files](Renaming-Files.md#what-applying-does)): the copy is made beside the destination as a
   hidden `.animatic-move-*.tmp` file, which is removed on any failure. It needs free space for a

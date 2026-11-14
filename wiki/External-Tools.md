@@ -67,7 +67,7 @@ There are no other tokens for players. If a player's template contains neither t
 | **Enable AVDump integration** | Off by default. The **AVDump** button on **Hashed files** is grayed out until this is on and a file is selected (hover text: `Turn on AVDump in Options, Players and tools`). |
 | **Executable** | The path of the AVDump program. |
 | **Arguments** | The argument template. |
-| **AVDump API key** | Your AniDB UDP API key for AVDump (the old "AVDump password"). It is kept in the system keystore where one is available, like the other credentials. The box shows the key as plain text while you edit it. |
+| **AVDump API key** | Your AniDB UDP API key for AVDump (the old "AVDump password"). It is kept in the system keystore where one is available, like the other credentials. The box is masked like the AniDB password, so the key is shown as dots while you edit it. |
 
 The default arguments are:
 

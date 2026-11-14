@@ -155,7 +155,7 @@ creates no files.
 On Windows Animatic is a GUI program (it opens no console window), and a startup failure is reported
 as `Error: <message>` on standard error when a terminal started it; started from Explorer or a
 shortcut there is no terminal, so the same message is shown in an error dialog titled "Animatic"
-("Animatic could not start:" followed by the cause). Run it from a terminal to keep the text.
+("Animatic could not start" once, then the cause). Run it from a terminal to keep the text.
 
 | Message | Cause and action |
 |---|---|
@@ -230,7 +230,7 @@ code. `<…>` marks a value that differs each time. The Log page looks like this
 | Log | `AniDB sync is paused for another <time> (<reason>)` | A run was started during a cooldown and sent nothing |
 | Log | `Cannot read the sync cooldown: <error>` | The database could not be read; the run stopped before sending anything (it fails closed) |
 | Log | `Offline mode is enabled; commands remain queued` | **Work offline** is on. [Credentials](Network-and-Sync-Problems.md#credentials-and-client-registration) |
-| Log | `Command blocked: <N> queued commands blocked: <message>` (after a refused login or client), `Command blocked: <command> blocked: <message>` (one command), `Command blocked: <command> blocked after 5 failed attempts`, `Command blocked: <N> queued HTTP commands blocked: <message>. Check the HTTP client in Options.` | A permanent failure, each preceded by an `ERROR` line `<command>: <message>`. The last form's hint is misleading: Options has no HTTP client field. [Queue states](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved) |
+| Log | `Command blocked: <N> queued commands blocked: <message>` (after a refused login or client), `Command blocked: <command> blocked: <message>` (one command), `Command blocked: <command> blocked after 5 failed attempts`, `Command blocked: <N> queued HTTP commands blocked: <message>. Update Animatic, or report this if it is already the latest version.` (the HTTP API refused Animatic's client registration) | A permanent failure, each preceded by an `ERROR` line `<command>: <message>`. [Queue states](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved) |
 | Status bar | `N blocked command(s)` (red link) and `blocked commands (refreshing)` | Open the **Queue** page |
 | Log | `Database busy: queued command is NOT saved yet, retrying` | [Database busy](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands) |
 | Status bar | `N commands not saved yet` | Do not quit until it disappears |

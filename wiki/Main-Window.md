@@ -76,9 +76,9 @@ The button is absent in every other state, including "up to date".
 
 The left side of the status bar shows one of three things:
 
-- **A running job:** a progress bar with percentage, the label `<what> (<current>/<total>)`, a **Pause**/**Resume** button and a **Cancel** button.
-- **A message:** the last status text, for example `Ready`, `Hashed …` or `Library backed up to …`. The text is truncated when the window is narrow.
-- **An error:** shown in red as `⚠ message`. It stays until the next message (a finished job does not replace it with `Ready`). Hover it for `Open the log` and click it to open the [Log](Library-Pages.md#log). Errors include blocked commands (`⚠ Command blocked: …`), a cooldown (`⚠ AniDB sync paused until …`) and a run attempted while **Work offline** is on (`⚠ Offline mode is enabled; commands remain queued`).
+- **A running job:** a progress bar with percentage, the label `<what> (<current>/<total>)`, a **Pause**/**Resume** button and a **Cancel** button. A long label is truncated with `…` so that **Pause** and **Cancel** stay visible.
+- **A message:** the last status text, for example `Ready`, `Hashed …` or `Library backed up to …`. A long message (for example an automatic rename's dry-run summary with full paths) is truncated with `…` before the indicators on the right instead of being drawn underneath them; hover it to read the whole text.
+- **An error:** shown in red as `⚠ message`. It stays until the next message (a finished job does not replace it with `Ready`). Hover it for the whole message (a long one is truncated with `…`) followed by `Open the log`, and click it to open the [Log](Library-Pages.md#log). Errors include blocked commands (`⚠ Command blocked: …`), a cooldown (`⚠ AniDB sync paused until …`) and a run attempted while **Work offline** is on (`⚠ Offline mode is enabled; commands remain queued`).
 
 Every message also goes to the Log, so nothing is lost when the status line changes.
 
@@ -95,7 +95,7 @@ Right side, from the edge inwards:
 
 Jobs run one at a time, in the order you started them. **Pause** is shown for every job, but only the jobs marked below react to it. While a job is paused the button reads **Resume**.
 
-The pause switch is one setting for the whole program and is not cleared when a job ends. If you pause a job that ignores it, or pause and then cancel, the next hashing run or scan can start paused. Press **Resume** in the status bar while it runs.
+A job starts unpaused: **Pause** belongs to the job it was pressed for, so pausing and then cancelling (or pausing a job that ignores it, or that finishes while paused) never leaves the next hashing run or scan paused.
 
 | Job (status label) | Started by | Pause | Cancel |
 |---|---|---|---|
@@ -133,7 +133,7 @@ See [Log](Library-Pages.md#log). Messages carry `HH:MM:SS`; errors add `ERROR`.
 
 ## Searching and tables
 
-One search string is shared by every page that has a search box. The box is at the top right of **MyList**, **Anime**, **Hashed files**, **Groups** and **Genres** (hint `Search…`), with a **✕** button (hover `Clear the search`) that clears it while it holds text, and `Ctrl+F` focuses it. **Overview**, **Queue** and **Log** have no search box; **Advanced search** has its own query field (hint `Title or AniDB ID`) bound to the same string, which `Ctrl+F` does not focus. Typing on one page filters the others when you switch to them.
+One search string is shared by every page that has a search box. The box is at the top right of **MyList**, **Anime**, **Hashed files**, **Groups** and **Genres** (hint `Search…`), with a **✕** button (hover `Clear the search`) that clears it while it holds text, and `Ctrl+F` focuses it. **Overview**, **Queue** and **Log** have no search box, and `Ctrl+F` does nothing there; it is not remembered for the next page. **Advanced search** has its own query field (hint `Title or AniDB ID`) bound to the same string, which `Ctrl+F` focuses. Typing on one page filters the others when you switch to them.
 
 The next picture shows the Anime page after typing `kiri` in the search box.
 
@@ -267,7 +267,7 @@ The Tools menu starts with **Options…**, then the AniDB items (from Run comman
 | Item | Behavior |
 |---|---|
 | **Options…** (`Ctrl+,`; the menu spells it `Ctrl+Comma`) | Opens [Options](Options-Window.md). |
-| **Run command queue** (`Ctrl+Shift+S`) | Starts the [synchronization](AniDB-Synchronization.md#synchronization) job. Disabled during a settings review or an active cooldown (hover shows the cooldown text). |
+| **Run command queue** (`Ctrl+Shift+S`) | Starts the [synchronization](AniDB-Synchronization.md#synchronization) job. Disabled during a settings review (hover: `An import is in progress`) or an active cooldown (hover shows the cooldown text). |
 | **Download anime titles** | Queues the title-list download (nothing is sent yet; hover: `Adds a command to the queue; nothing is sent to AniDB until the command queue runs.`). The list is requested at most once per 24 hours: inside that window after the last attempt (even a failed one) nothing is queued and the log says when the next download is allowed. |
 | **Fetch MyList statistics** | Queues a MyList-statistics request. When run, the figures are stored with the time they arrived and shown on the [Overview](Library-Pages.md#overview) under **Your AniDB account**, apart from the local figures; the log also gets a line (`N anime, N episodes, N files in mylist`). |
 | **Full update…** | Works out in the background what a [full update](AniDB-Synchronization.md#synchronization) would queue (the title list, a file refresh and an anime refresh for each identified hashed local file, minus what AniDB's limits do not allow yet and what the queue holds already) and asks for confirmation, showing the counts, how many were left out and when the title list is next allowed. **Queue** adds them (the same as `--full-update`); nothing is sent until you run the queue. Disabled during a settings review and while a preview is open. |
@@ -316,7 +316,7 @@ There is no menu item for downloading images (a [cover](Library-Pages.md#cover) 
 | Keys | Does |
 |---|---|
 | `Ctrl+O` | Add files (same as **File → Add files…**) |
-| `Ctrl+F` | Focus the search field of the current page. It does nothing on Overview, Advanced search, Queue and Log; the request is remembered, so the next MyList, Anime, Hashed files, Groups or Genres page you open takes the focus. |
+| `Ctrl+F` | Focus the search field of the current page: the search box of MyList, Anime, Hashed files, Groups and Genres, or the **Title or AniDB ID** field of Advanced search. It does nothing on Overview, Queue and Log, and the request is not remembered for the next page you open. |
 | `Ctrl+,` (shown as `Ctrl+Comma`) | Open Options |
 | `F5` | Reload the library (**File → Reload**) |
 | `Ctrl+Shift+S` | Run the command queue (when **Tools → Run command queue** is enabled) |

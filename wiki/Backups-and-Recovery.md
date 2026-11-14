@@ -302,7 +302,8 @@ Applying reviewed AOM settings counts as an explicit save and also releases the 
 - a folder or file occupies `settings.json.tmp` (a directory in that place makes every save
   fail until you remove it).
 
-Remove the obstacle and use **Save options** again; the exit save does not report errors, so
+Remove the obstacle and use **Save options** again (the Options window stays open after a failed save, so
+your edits are still there); the exit save does not report errors, so
 use **Save options** when you need to be sure. A `settings.json.tmp` or
 `settings.json.bak.tmp` left by a crash or power loss is transient: with Animatic closed and a
 valid `settings.json` in place, delete them. Do not rename a leftover temporary file into

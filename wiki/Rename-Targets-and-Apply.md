@@ -126,7 +126,8 @@ What each outcome looks like in the application:
 |---|---|---|
 | Target, no errors or warnings | `New path` | Enabled |
 | Target but warnings | `Path the pattern would produce (rename blocked)` plus the warnings | Disabled |
-| Errors (any) | The errors in red; no target path is shown | Disabled |
+| Any other error | The errors in red; no target path is shown | Disabled |
+| Target, but a file or folder already exists there | `Path the pattern would produce (rename blocked)` plus the red error `A file or folder already exists at the target path` | Disabled |
 | Already named | `The file already has the name the pattern produces; nothing to rename.` | Disabled |
 
 With errors or warnings the dialog offers **Edit pattern in Options**. When **Rename…** is used the log also records `Rename not possible: <first error>` or `Rename blocked: the renaming pattern reported warnings`. Before the dialog opens, the selected row must still exist and be identified by AniDB (`The selected file is not identified by AniDB`, `The selected file is no longer in the list`); otherwise nothing is shown.
@@ -135,7 +136,7 @@ The **Rename…** dialog always uses the pattern text currently held in memory b
 
 On confirmation the application submits a **rename job** to the background worker with the planned path (see [The three stages](Rename-Language.md#the-three-stages)); the window stays usable meanwhile. For each file the job moves the file: on success it logs `Renamed <old> to <new>` (with ` (copied to the other volume and verified)` after a cross-volume move) and refreshes the library list; on failure it logs `Rename failed: <old>: <reason> (target <new>)` and the file and its library path are unchanged. The job ends with `Rename finished: N renamed, M not renamed`.
 
-The single-file preview does **not** check whether the new path already exists; if it does, the preview still shows **Rename file** and the failure `destination already exists: <path>` comes when you apply. The batch preview and automatic rename check it beforehand.
+The single-file preview also checks whether the new path already exists (a file, a folder or a symbolic link): if it does, the dialog shows the error `A file or folder already exists at the target path`, **Rename file** is disabled and **Rename…** logs `Rename not possible: A file or folder already exists at the target path`. The batch preview and automatic rename make the same check. The apply-time failure `destination already exists: <path>` remains for a target that appears between the preview and the click.
 
 ### How a file is moved
 
@@ -154,7 +155,7 @@ Messages of a refused or failed move, as shown after `Not renamed:` in a batch a
 |---|---|
 | `the file is no longer in the library` | The local file record was removed meanwhile. |
 | `the library now records this file at <path>, not <path>` | The file's recorded path changed since the plan. |
-| `destination already exists: <path>` | The target exists (or appeared while moving). |
+| `destination already exists: <path>` | The target exists, or appeared after the preview was made or while moving. |
 | `the library has no stored hash for this file, so a copy to another volume cannot be verified` | A cross-volume move needs the stored hash. |
 | `the file changed since it was hashed; hash it again before moving it` | The file's size differs from the hashed size. |
 | `the copy has a different size than the original (the file may have changed while it was copied); nothing was moved` | The file changed during the copy. |

@@ -48,7 +48,7 @@ offline** turned on, so the status bar shows **Offline**; a real first start sho
 If startup fails (for example unreadable settings or an unknown option) the process reports the
 cause on standard error as `Error: <message>` and exits with status 1; no main window appears.
 Started without a terminal (Explorer, a shortcut), the same message is shown in an error dialog
-titled "Animatic" instead (`Animatic could not start:` followed by the message). Typical messages:
+titled "Animatic". It starts with `Animatic could not start` once, followed by the cause. Typical messages:
 
 | Message | Meaning |
 |---|---|

@@ -54,6 +54,9 @@ const DEFERRED_LIMIT: usize = 1000;
 /// Final attempt to save unsaved commands when the window closes.
 const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const LOADING_STATUS: &str = "Loading library…";
+/// Why a command that needs the database to be quiet is disabled while a settings import or
+/// its review is open.
+const IMPORTING: &str = "An import is in progress";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -100,6 +103,13 @@ impl Page {
             Page::Queue => "Queue",
             Page::Log => "Log",
         }
+    }
+
+    /// Whether `Ctrl+F` has a search field to focus here: the searchable list pages and the
+    /// title field of the advanced search. The other pages have none, so the shortcut must not
+    /// be remembered for the next page that has one.
+    fn has_search_field(self) -> bool {
+        !matches!(self, Page::Dashboard | Page::Queue | Page::Log)
     }
 
     /// Pages in sidebar order (`Ctrl+1` … `Ctrl+9`).
@@ -588,6 +598,8 @@ pub struct AnimaticApp {
     /// Genres page, a genre in the anime detail window, or the page's own genre picker).
     genre_filter: BTreeSet<i64>,
     settings_open: bool,
+    /// The text of the file extensions box in Options while it is being edited.
+    extensions_edit: Option<String>,
     about_open: bool,
     /// The license text window opened from About.
     license_open: bool,
@@ -740,6 +752,7 @@ impl AnimaticApp {
             tray: None,
             selected_player: None,
             settings_open: false,
+            extensions_edit: None,
             about_open: false,
             license_open: false,
             notices_open: false,
@@ -892,6 +905,12 @@ impl AnimaticApp {
         !self.import_pending && self.active_cooldown().is_none()
     }
 
+    /// The hover text of a disabled **Run command queue** (menu and Queue page): the cooldown
+    /// when one is active, otherwise the running import.
+    fn queue_run_disabled_hint(cooling: Option<&str>) -> &str {
+        cooling.unwrap_or(IMPORTING)
+    }
+
     fn cooldown_text(until: i64, reason: &str) -> String {
         let when = chrono::DateTime::from_timestamp(until, 0)
             .map(|t| {
@@ -1007,34 +1026,21 @@ impl AnimaticApp {
     /// Adds to the log page without replacing the status line (background results nobody
     /// waits for).
     fn note(&mut self, text: impl Into<String>) {
-        self.logs.push(format!(
-            "{}  {}",
-            chrono::Local::now().format("%H:%M:%S"),
-            text.into()
-        ));
+        push_log_line(&mut self.logs, &text.into(), "");
     }
 
     fn log(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
         self.status_error = false;
-        self.logs.push(format!(
-            "{}  {text}",
-            chrono::Local::now().format("%H:%M:%S")
-        ));
-        if self.logs.len() > 2_000 {
-            self.logs.drain(..500);
-        }
+        push_log_line(&mut self.logs, &text, "");
     }
 
     fn error(&mut self, text: impl Into<String>) {
         let text = text.into();
         self.status = text.clone();
         self.status_error = true;
-        self.logs.push(format!(
-            "{}  ERROR  {text}",
-            chrono::Local::now().format("%H:%M:%S")
-        ));
+        push_log_line(&mut self.logs, &text, "ERROR  ");
     }
 
     fn process_update_events(&mut self, ctx: &egui::Context) {
@@ -2404,14 +2410,19 @@ impl AnimaticApp {
         Ok(())
     }
 
-    fn save_settings(&mut self) {
+    /// Writes the settings file; whether it was written (a failure is reported to the user).
+    fn save_settings(&mut self) -> bool {
         match self.write_settings() {
             Ok(()) => {
                 self.settings_guard.user_saved = true;
                 self.settings_notice = None;
                 self.log("Settings saved");
+                true
             }
-            Err(e) => self.error(format!("Could not save settings: {e}")),
+            Err(e) => {
+                self.error(format!("Could not save settings: {e}"));
+                false
+            }
         }
     }
 
@@ -2480,7 +2491,6 @@ impl AnimaticApp {
     }
 
     fn top_bar(&mut self, root: &mut egui::Ui) {
-        const IMPORTING: &str = "An import is in progress";
         const QUEUED_ONLY: &str = "Adds a command to the queue; nothing is sent to AniDB until \
                                    the command queue runs.";
         let ctx = root.ctx().clone();
@@ -2597,7 +2607,7 @@ impl AnimaticApp {
                             self.queue_run_allowed(),
                             menu_entry(&ctx, "Run command queue", &shortcuts::RUN_QUEUE),
                         )
-                        .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
+                        .on_disabled_hover_text(Self::queue_run_disabled_hint(cooling.as_deref()));
                     if run.clicked() {
                         self.run_command_queue();
                         ui.close();
@@ -2770,7 +2780,7 @@ impl AnimaticApp {
         if pressed(&shortcuts::ADD_FILES) && !self.import_pending {
             self.submit_files();
         }
-        if pressed(&shortcuts::SEARCH) {
+        if pressed(&shortcuts::SEARCH) && self.page.has_search_field() {
             self.focus_search = true;
         }
         if pressed(&shortcuts::OPTIONS) {
@@ -2836,7 +2846,11 @@ impl AnimaticApp {
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
                         .clicked()
                     {
-                        self.settings_open = !self.settings_open;
+                        if self.settings_open {
+                            self.close_options();
+                        } else {
+                            self.settings_open = true;
+                        }
                     }
                     // One count per row so neither wraps in the narrow sidebar. The layout
                     // grows upwards: Options is the bottom row, the counts sit above it with the
@@ -3084,12 +3098,7 @@ impl AnimaticApp {
     /// First-launch checklist: account, folders, and the optional AOM import.
     fn getting_started(&mut self, ui: &mut egui::Ui) {
         let account = !self.settings.anidb.username.trim().is_empty();
-        let folders = self
-            .settings
-            .file_managers
-            .managers
-            .iter()
-            .any(|m| !m.path.trim().is_empty());
+        let folders = has_user_folder(&self.settings.file_managers.managers);
         let visuals = ui.visuals().clone();
         egui::Frame::new()
             .fill(visuals.faint_bg_color)
@@ -3338,10 +3347,13 @@ impl AnimaticApp {
     fn search_page(&mut self, ui: &mut egui::Ui) {
         self.page_header(ui, None, false);
         ui.horizontal_wrapped(|ui| {
-            ui.add_sized(
+            let title = ui.add_sized(
                 [260.0, 28.0],
                 egui::TextEdit::singleline(&mut self.query).hint_text("Title or AniDB ID"),
             );
+            if std::mem::take(&mut self.focus_search) {
+                title.request_focus();
+            }
             ui.label("Year");
             ui.add_sized(
                 [80.0, 28.0],
@@ -4195,7 +4207,7 @@ impl AnimaticApp {
                     egui::Button::new("Run command queue"),
                 )
                 .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::RUN_QUEUE))
-                .on_disabled_hover_text(cooling.as_deref().unwrap_or("An import is in progress"));
+                .on_disabled_hover_text(Self::queue_run_disabled_hint(cooling.as_deref()));
             if run.clicked() {
                 sync = true;
             }
@@ -4697,18 +4709,28 @@ impl AnimaticApp {
                 });
             });
         if save {
-            self.save_settings();
+            // The window stays open when the file could not be written, so the edits remain
+            // in view to try again; the error is in the status bar and the log.
+            let saved = self.save_settings();
             self.apply_visuals(ctx);
             self.media_settings_saved();
-            self.settings_open = false;
+            if saved {
+                self.close_options();
+            }
             self.apply_shell_integration(exe.as_deref());
         }
         if !open || close || dialog::escape_closes(ctx, shown.as_ref()) {
-            self.settings_open = false;
+            self.close_options();
         }
-        if !self.settings_open {
-            self.shell.options_closed();
-        }
+    }
+
+    /// Closes Options. Every way of closing it (Close, the title bar, Escape, a successful
+    /// save, the sidebar toggle) comes here, so what Options showed is read again on the next
+    /// opening.
+    fn close_options(&mut self) {
+        self.settings_open = false;
+        self.shell.options_closed();
+        self.extensions_edit = None;
     }
 
     fn options_account(&mut self, ui: &mut egui::Ui) {
@@ -4913,16 +4935,22 @@ impl AnimaticApp {
             &mut self.settings.hashing.use_extensions,
             "Restrict file extensions",
         );
-        let mut ext = self.settings.hashing.extensions.join(",");
-        if ui
-            .add(egui::TextEdit::multiline(&mut ext).desired_rows(3))
-            .changed()
-        {
+        // The box keeps what the user typed while it has focus: rebuilding it from the list
+        // every frame would drop a comma typed after the last entry (an empty entry) at once.
+        let mut ext = self
+            .extensions_edit
+            .take()
+            .unwrap_or_else(|| self.settings.hashing.extensions.join(","));
+        let response = ui.add(egui::TextEdit::multiline(&mut ext).desired_rows(3));
+        if response.changed() {
             self.settings.hashing.extensions = ext
                 .split(',')
                 .map(|x| x.trim().to_string())
                 .filter(|x| !x.is_empty())
                 .collect();
+        }
+        if response.has_focus() {
+            self.extensions_edit = Some(ext);
         }
     }
 
@@ -5140,7 +5168,7 @@ impl AnimaticApp {
         );
         field(ui, "Executable", &mut self.settings.avdump.executable);
         field(ui, "Arguments", &mut self.settings.avdump.arguments);
-        field(ui, "AVDump API key", &mut self.settings.avdump.key);
+        secret_field(ui, "AVDump API key", &mut self.settings.avdump.key);
         style::section(ui, "Media properties");
         self.media_options_ui(ui);
     }
@@ -5626,44 +5654,6 @@ impl AnimaticApp {
         egui::Panel::bottom("status").frame(frame).show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.set_min_height(24.0);
-                if self.activity.busy {
-                    ui.add(
-                        egui::ProgressBar::new(self.activity.fraction)
-                            .desired_width(180.0)
-                            .show_percentage(),
-                    );
-                    ui.label(format!(
-                        "{} ({}/{})",
-                        self.activity.label, self.activity.current, self.activity.total
-                    ));
-                    if ui
-                        .small_button(if self.worker.pause.load(Ordering::Relaxed) {
-                            "Resume"
-                        } else {
-                            "Pause"
-                        })
-                        .clicked()
-                    {
-                        let old = self.worker.pause.load(Ordering::Relaxed);
-                        self.worker.pause.store(!old, Ordering::Relaxed);
-                    }
-                    if ui.small_button("Cancel").clicked() {
-                        self.worker.cancel.store(true, Ordering::Relaxed);
-                    }
-                } else if self.status_error {
-                    // An error is marked by a sign as well as its colour and leads to the log.
-                    let text = RichText::new(format!("⚠ {}", self.status))
-                        .color(style::error(ui.visuals()));
-                    if ui
-                        .add(egui::Label::new(text).truncate().sense(Sense::click()))
-                        .on_hover_text("Open the log")
-                        .clicked()
-                    {
-                        self.page = Page::Log;
-                    }
-                } else {
-                    ui.add(egui::Label::new(&self.status).truncate());
-                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let offline = self.settings.anidb.offline;
                     let (text, color, hint) = if offline {
@@ -5729,9 +5719,83 @@ impl AnimaticApp {
                             ),
                         );
                     }
+                    // The message takes the room the indicators leave, so it is truncated
+                    // before them instead of being drawn underneath.
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        self.status_message(ui);
+                    });
                 });
             });
         });
+    }
+
+    /// The left of the status bar: the progress row while a task runs, else the status
+    /// message. It is truncated to the width it is given (the full text shows on hover).
+    fn status_message(&mut self, ui: &mut egui::Ui) {
+        if self.activity.busy {
+            ui.add(
+                egui::ProgressBar::new(self.activity.fraction)
+                    .desired_width(180.0)
+                    .show_percentage(),
+            );
+            // Pause and Cancel keep their width (measured on the previous frame); the label
+            // is truncated to what is left of the row before them.
+            let controls = egui::Id::unique("status_controls_width");
+            let reserved = ui
+                .data(|data| data.get_temp::<f32>(controls))
+                .unwrap_or(0.0);
+            let room = (ui.available_width() - reserved).max(0.0);
+            ui.scope(|ui| {
+                ui.set_max_width(room);
+                ui.add(
+                    egui::Label::new(format!(
+                        "{} ({}/{})",
+                        self.activity.label, self.activity.current, self.activity.total
+                    ))
+                    .truncate(),
+                );
+            });
+            let start = ui.cursor().left();
+            if ui
+                .small_button(if self.worker.pause.load(Ordering::Relaxed) {
+                    "Resume"
+                } else {
+                    "Pause"
+                })
+                .clicked()
+            {
+                let old = self.worker.pause.load(Ordering::Relaxed);
+                self.worker.pause.store(!old, Ordering::Relaxed);
+            }
+            if ui.small_button("Cancel").clicked() {
+                self.worker.cancel.store(true, Ordering::Relaxed);
+            }
+            let width = ui.cursor().left() - start;
+            if (width - reserved).abs() > 0.5 {
+                ui.data_mut(|data| data.insert_temp(controls, width));
+                ui.request_repaint();
+            }
+        } else if self.status_error {
+            // An error is marked by a sign as well as its colour and leads to the log. The
+            // hover text carries the whole message, which may be truncated here.
+            let hint = format!("{}\n\nOpen the log", self.status);
+            let text =
+                RichText::new(format!("⚠ {}", self.status)).color(style::error(ui.visuals()));
+            if ui
+                .add(
+                    egui::Label::new(text)
+                        .truncate()
+                        .sense(Sense::click())
+                        .show_tooltip_when_elided(false),
+                )
+                .on_hover_text(hint)
+                .clicked()
+            {
+                self.page = Page::Log;
+            }
+        } else {
+            ui.add(egui::Label::new(&self.status).truncate());
+        }
     }
 }
 
@@ -6354,6 +6418,14 @@ mod shortcuts {
     ];
 }
 
+/// Whether the user has added a folder rule with a path. The built-in rules (the default rule
+/// and the `\\` network rule) are always present and do not count as a choice.
+fn has_user_folder(managers: &[animatic_core::settings::FileManager]) -> bool {
+    managers
+        .iter()
+        .any(|m| m.can_edit_path && !m.default && !m.path.trim().is_empty())
+}
+
 /// `Shortcut: Ctrl+,` for a hover text.
 fn shortcut_hint(ctx: &egui::Context, shortcut: &egui::KeyboardShortcut) -> String {
     format!("Shortcut: {}", ctx.format_shortcut(shortcut))
@@ -6366,6 +6438,22 @@ fn menu_entry<'a>(
     shortcut: &egui::KeyboardShortcut,
 ) -> egui::Button<'a> {
     egui::Button::new(text).shortcut_text(ctx.format_shortcut(shortcut))
+}
+
+/// Most lines the session log keeps; past it the oldest [`LOG_TRIM`] lines are dropped.
+const LOG_LIMIT: usize = 2_000;
+const LOG_TRIM: usize = 500;
+
+/// Append a timestamped line to the session log (`prefix` marks its kind, such as `ERROR  `)
+/// and trim the log. Every way of writing to the log goes through here.
+fn push_log_line(logs: &mut Vec<String>, text: &str, prefix: &str) {
+    logs.push(format!(
+        "{}  {prefix}{text}",
+        chrono::Local::now().format("%H:%M:%S")
+    ));
+    if logs.len() > LOG_LIMIT {
+        logs.drain(..LOG_TRIM);
+    }
 }
 
 /// Categories of the Options window, in the order of its list.
@@ -6515,6 +6603,19 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String) {
     });
 }
 
+/// A [`field`] whose text is shown as dots, for a key or password.
+fn secret_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.horizontal(|ui| {
+        let label = field_label(ui, label);
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .password(true)
+                .desired_width(FIELD_WIDTH),
+        )
+        .labelled_by(label.id);
+    });
+}
+
 /// One line of the batch rename preview: status, the file and its planned target or problem.
 /// The tooltip carries the full paths and every diagnostic.
 fn batch_rename_line(
@@ -6640,6 +6741,36 @@ mod tests {
             )
             .unwrap();
         LibraryProjection::load(&db).unwrap()
+    }
+
+    #[test]
+    fn the_session_log_is_trimmed_whatever_kind_of_line_fills_it() {
+        let mut logs = Vec::new();
+        for i in 0..=LOG_LIMIT {
+            push_log_line(&mut logs, &format!("line {i}"), "ERROR  ");
+        }
+        assert_eq!(logs.len(), LOG_LIMIT + 1 - LOG_TRIM);
+        assert!(logs[0].ends_with("ERROR  line 500"), "{}", logs[0]);
+    }
+
+    #[test]
+    fn only_a_folder_the_user_added_completes_the_folder_step() {
+        use animatic_core::settings::{FileManager, FileManagerSettings};
+        let mut managers = FileManagerSettings::default().managers;
+        assert!(
+            !has_user_folder(&managers),
+            "a fresh profile has only the built-in rules"
+        );
+        managers.push(FileManager {
+            path: "  ".into(),
+            ..FileManager::default()
+        });
+        assert!(!has_user_folder(&managers), "a blank path is not a choice");
+        managers.push(FileManager {
+            path: "/animatic-test/library".into(),
+            ..FileManager::default()
+        });
+        assert!(has_user_folder(&managers));
     }
 
     #[test]

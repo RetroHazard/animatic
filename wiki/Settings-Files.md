@@ -63,7 +63,7 @@ templates or credentials on load or save.
 
 | Event | Writes `settings.json`? |
 |---|---|
-| **Save options** in the Options window | Yes; also applies theme and scale and closes Options |
+| **Save options** in the Options window | Yes; also applies theme and scale and closes Options. If the write fails, Options stays open |
 | Applying reviewed AOM settings | Yes, immediately (see [AOM import](#aom-settings-import)) |
 | The status bar's **Online** / **Offline** button, the Overview's **Go online** button | Yes, unless the [recovery guard](#recovery-matrix) holds. The whole current settings are written, including Options edits you have not saved |
 | **Hide** on the Overview's **Getting started** card | Yes, unless the recovery guard holds |
@@ -128,8 +128,8 @@ whose root is not an object (`[]`, `null`, `42`, `"text"`, `true` are all reject
 count as an empty-defaults file and never replace a backup).
 
 A **startup error** is printed to the terminal when you started Animatic from one; started from a
-shortcut or Explorer on Windows it appears in a message box titled `Animatic`, beginning
-`Animatic could not start:`. The text names the database and settings paths and the problem class
+shortcut or Explorer on Windows it appears in a message box titled `Animatic`, beginning with
+`Animatic could not start` (shown once). The text names the database and settings paths and the problem class
 (for example `invalid JSON syntax at line 12 column 3`), never a value from the file.
 
 #### What a backup recovery looks like

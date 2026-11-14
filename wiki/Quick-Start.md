@@ -111,7 +111,8 @@ Choose now and change your mind later at any time.
 1. Click **Open account options** in the Getting started box (or choose **Tools → Options…**,
    `Ctrl+,`).
 2. Under **Synchronization**, tick **Work offline (keep commands queued)**.
-3. Click **Save options**. This writes the settings and closes the Options window; reopen it from
+3. Click **Save options**. This writes the settings and closes the Options window (if the file cannot be
+   written, the window stays open and the status bar says `Could not save settings: …`); reopen it from
    **Options** at the bottom of the left panel whenever you need it.
 
 Expected result: the status bar button now reads **Offline** (amber). While it is on, **Run command
@@ -348,8 +349,9 @@ library, so you can rename while working offline.
    `S:\Anime\[Hanabi] Kami no Tsuki Radio - 01 [3E56B578].mkv`.*
 
 3. Check the new path. Problems (an invalid name, missing anime or episode data) appear in the window
-   and block **Rename file**. If a file already exists at the new path, **Rename file** is not blocked
-   here but fails with `destination already exists` and moves nothing; rename it or choose another
+   and block **Rename file**. If a file or folder already exists at the new path, the window says
+   `A file or folder already exists at the target path`, labels the path `(rename blocked)` and
+   disables **Rename file**; rename the other file or choose another
    **Rename destination**. If the window says the anime title or the episode number "has not been
    fetched yet" or "is not known yet", open the **Anime** page, click that anime's title and click
    **Refresh from AniDB** in its detail window (for a missing episode number use the **Refresh** button
