@@ -97,7 +97,8 @@ first run.
 
 The archive's `docs/` folder holds the user guide, the same pages as the
 [wiki](https://github.com/RetroHazard/animatic/wiki) at the release commit. Links between those
-pages work offline. Their links to developer documentation, source files and other GitHub pages
+pages work offline. The guide's screenshots (`wiki/images/*.png`) are published with the wiki
+only, so the offline pages show their alt text instead. Their links to developer documentation, source files and other GitHub pages
 are absolute GitHub URLs and need a network; the developer documentation in the repository's
 `docs/` folder, `AGENTS.md` and the Rust API documentation (`cargo doc` output) are not included,
 so the bundled `README.md`'s relative links into `docs/` resolve only in a source checkout.
@@ -508,6 +509,7 @@ animatic-v2026.11.0-windows-x86_64/
   README.md
   CHANGELOG.md
   docs/*.md               the user guide: every tracked wiki/*.md page except _Sidebar.md and _Footer.md
+                          (no screenshots: the updater accepts only flat docs/*.md entries)
 ```
 
 Entry order, timestamps and ownership metadata are normalized where the formats allow, so the

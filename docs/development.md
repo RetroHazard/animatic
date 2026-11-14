@@ -585,14 +585,46 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
 changes `wiki/**`, `scripts/ci.py` or the workflow itself, and on a manual run; it builds
 nothing. It clones the wiki repository with the workflow token (`contents: write`), replaces
 every page with the output of `python scripts/ci.py wiki --out DIR` (relative `Page.md` links
-become the wiki's `Page` links, everything else is copied byte for byte), and pushes one commit
-only when a page changed. The pull request that changed the pages was already validated by
-`ci.py docs` in the `quality` job.
+become the wiki's `Page` links, everything else, including the screenshots in `images/`, is
+copied byte for byte), and pushes one commit only when a page changed. The pull request that
+changed the pages was already validated by `ci.py docs` in the `quality` job.
 
 Pages edited in the wiki's web editor are overwritten by the next publish. Restrict wiki
 editing to collaborators in the repository settings and make every change through a pull
 request. The wiki repository itself must exist before the first publish: GitHub creates it only
 when the first page is saved in the web interface.
+
+### Wiki screenshots
+
+The pictures in `wiki/images/*.png` are generated, never edited by hand.
+[`scripts/wiki-screenshots.ps1`](../scripts/wiki-screenshots.ps1) (Windows only, PowerShell
+5.1 or 7) builds the release executable and the
+[`docs-sample-library`](../crates/animatic-core/examples/docs-sample-library.rs) example, which
+writes an invented library (anime, groups, files, hashes, MyList entries, queued commands,
+account figures and placeholder media files, plus a `--fresh` first-launch profile). The script
+maps that temporary folder to a spare drive letter with `subst` so the pictures show paths like
+`S:\Anime\…`, starts Animatic on it with `ANIMATIC_DB`/`ANIMATIC_SETTINGS`, and drives the
+window through Windows UI Automation (egui exposes its widgets through AccessKit), saving each
+picture at the window's logical size (1280 × 800 for whole-window pictures).
+
+```powershell
+.\scripts\wiki-screenshots.ps1                      # every picture
+.\scripts\wiki-screenshots.ps1 -Only 'options-*'    # some of them
+.\scripts\wiki-screenshots.ps1 -SkipBuild           # reuse target\release
+```
+
+- The sample settings work offline and turn the startup update check off, and the app's `PATH`
+  is reduced to the Windows folders, so nothing contacts AniDB or GitHub and no local `ffprobe`
+  appears. Covers are drawn by the script and placed in the sample's cover cache.
+- It moves the mouse and types for about two minutes; leave the machine alone while it runs.
+  The drive mapping, the temporary folder and the process are removed afterwards.
+- Review the result with `git diff --stat wiki/images` and look at every changed picture before
+  committing. A label change in the UI makes the script stop with `UI element not found`; update
+  the label in the script's tour.
+- `ci.py docs` accepts only `wiki/images/<lowercase name>.png` and fails on a picture no page
+  shows. Release archives carry only the Markdown pages (the updater accepts nothing else under
+  `docs/`), so an archive shows the pictures' alt text; write every instruction so it works
+  without its picture.
 
 ### Third-party license gate
 
