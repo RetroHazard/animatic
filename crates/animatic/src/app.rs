@@ -29,6 +29,7 @@ use animatic_core::update::{InstallationTarget, Platform, ReleaseInfo, VerifiedU
 use crossbeam_channel::{Receiver, TryRecvError};
 use eframe::egui::{self, Align, Color32, Layout, RichText, Sense};
 
+mod anidb_markup;
 mod auto_rename;
 mod covers;
 mod dialog;
@@ -38,7 +39,6 @@ mod mylist_editor;
 mod mylist_export;
 mod player_actions;
 mod refresh;
-mod review_markup;
 mod shell_menu;
 mod tray_ui;
 
@@ -4155,7 +4155,7 @@ impl AnimaticApp {
                         });
                         if let Some(text) = &d.anime.description {
                             ui.add_space(6.0);
-                            ui.label(text);
+                            ui.label(anidb_markup::layout(ui, text));
                         }
                     });
                 });
@@ -4239,7 +4239,7 @@ impl AnimaticApp {
                             });
                             ui.label(format::rating(review.rating));
                         });
-                        ui.label(review_markup::layout(ui, &review.body));
+                        ui.label(anidb_markup::layout(ui, &review.body));
                         ui.separator();
                     }
                 });

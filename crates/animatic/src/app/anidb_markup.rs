@@ -1,6 +1,8 @@
-//! Review bodies (imported from AOM) are AniDB's stored text: BBCode style tags (`[b]`, `[i]`,
-//! `[u]`, `[s]`, `[url]`), HTML line breaks (`<br />`) and HTML character references. They are
-//! shown as styled text; anything not recognised stays literal, so no text is ever dropped.
+//! AniDB's stored text (anime descriptions and review bodies, from the HTTP API or an AOM
+//! import): BBCode style tags (`[b]`, `[i]`, `[u]`, `[s]`, `[url]`), the HTTP API's link form
+//! `http://anidb.net/ch123 [Name]`, HTML line breaks (`<br />`), HTML character references and
+//! the backtick AniDB stores for an apostrophe. They are shown as styled text; anything not
+//! recognised stays literal, so no text is ever dropped.
 
 use eframe::egui::{self, Color32, Stroke, text::LayoutJob};
 
@@ -75,6 +77,25 @@ fn parse(body: &str) -> Vec<Span> {
                 text.push(ch);
                 len
             }),
+            '`' => {
+                text.push('\'');
+                Some(1)
+            }
+            'h' => bare_link(rest).map(|(len, label)| {
+                if !text.is_empty() {
+                    spans.push(Span {
+                        text: std::mem::take(&mut text),
+                        style,
+                    });
+                }
+                let mut linked = style;
+                linked.link = linked.link.saturating_add(1);
+                spans.push(Span {
+                    text: label.to_owned(),
+                    style: linked,
+                });
+                len
+            }),
             '\r' => Some(1),
             _ => None,
         };
@@ -90,6 +111,23 @@ fn parse(body: &str) -> Vec<Span> {
         spans.push(Span { text, style });
     }
     spans
+}
+
+/// The HTTP API's link form at the start of `s`: a URL, one space and its label in brackets
+/// (`http://anidb.net/ch123 [Name]`); its byte length and the label.
+fn bare_link(s: &str) -> Option<(usize, &str)> {
+    if !(s.starts_with("http://") || s.starts_with("https://")) {
+        return None;
+    }
+    let url_end = s
+        .bytes()
+        .take(MAX_TAG)
+        .position(|b| b.is_ascii_whitespace() || b == b'[')?;
+    let rest = s[url_end..].strip_prefix(" [")?;
+    let label_len = rest.bytes().take(MAX_TAG).position(|b| b == b']')?;
+    let label = &rest[..label_len];
+    (!label.trim().is_empty() && !label.contains('['))
+        .then_some((url_end + 2 + label_len + 1, label))
 }
 
 /// A recognised tag at the start of `s`: its byte length, kind and whether it opens.
@@ -229,6 +267,30 @@ mod tests {
             plain("one.<br /><br />two<BR>three<br/>&amp; &lt;b&gt; it&#39;s &#x2019;\r\n"),
             "one.\n\ntwo\nthree\n& <b> it's \u{2019}\n"
         );
+    }
+
+    #[test]
+    fn descriptions_show_api_links_and_backtick_apostrophes() {
+        assert_eq!(
+            parse(
+                "By http://anidb.net/cr991 [Tanaka Yoshiki]`s novels; [url=http://anidb.net/ch1]Yang[/url]."
+            ),
+            vec![
+                styled("By ", |_| {}),
+                styled("Tanaka Yoshiki", |s| s.link = 1),
+                styled("'s novels; ", |_| {}),
+                styled("Yang", |s| s.link = 1),
+                styled(".", |_| {}),
+            ]
+        );
+        // A URL without the bracketed label, or a label that never closes, stays as written.
+        for body in [
+            "see http://anidb.net/a1 for more",
+            "http://x [no end",
+            "http://x [] y",
+        ] {
+            assert_eq!(plain(body), body);
+        }
     }
 
     #[test]
