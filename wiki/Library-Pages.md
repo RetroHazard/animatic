@@ -75,7 +75,7 @@ The **Getting started** box is shown on a new profile (while the settings key `f
 It is a checklist with two steps, each ticked (✓) or open (○). Both buttons open the [Options window](Options-Window.md) at the matching category:
 
 - **Enter your AniDB account, or keep working offline for now**: button **Open account options**; done once a user name is entered.
-- **Choose the folders Animatic watches and renames into**: button **Open folder options**; done once a folder rule has a path.
+- **Choose the folders Animatic watches and renames into**: button **Open folder options**; done once a folder rule that you added has a path (the built-in **Default** and `\\` network rules do not count, so a fresh profile shows ○).
 
 Below the checklist, "Coming from AniDB O'Matic (AOM)?" offers the databank import. It keeps anime, MyList entries, hashes and file paths. Choose the AOM folder or its kowai folder (the picker does not list the `.data` files inside). The box has a folder field (hint `AOM folder`), **Browse…** and **Import**. This is the same as [**File → Import → AOM databank…**](Migrating-from-AOM.md#migrate-an-aom-databank), except that you may paste a folder path. Both are disabled during a settings review.
 
@@ -377,7 +377,7 @@ In-memory activity log for this session (subtitle: *this session's activity*), n
 
 - **Clear** empties it (hover: `Empty the log; nothing else changes`); it is disabled while the log is empty.
 - Each line starts with the time `HH:MM:SS`; lines with `ERROR` are red. Most lines also appear in the [status bar](Main-Window.md#status-bar-progress-and-the-log) while they are the newest message.
-- It is not written to disk and resets on exit. Ordinary lines trim it: the oldest 500 are dropped each time it grows past 2000 (a long run of error lines can grow it past that until the next ordinary line).
+- It is not written to disk and resets on exit. Whatever wrote a line (ordinary lines, errors, notes), the oldest 500 are dropped each time it grows past 2000.
 - It records starts, hash results (`Hashed <path> (local #N, <ed2k>)`), sync outcomes, blocked commands, cooldowns, imports, exports and every error. Hash output reveals file paths and hashes, so mind what you paste when asking for support (see [Reporting problems](Reporting-Problems.md)).
 - **Empty state:** `No activity yet` with the line `Hashing, renaming, AniDB requests and errors are listed here as they happen.`
 

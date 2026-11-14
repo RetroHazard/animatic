@@ -14,7 +14,7 @@ settings file before then ([Avoiding the startup update check](Data-Locations.md
 
 *The Overview after the first start of the sample library. The picture was taken with the sample's
 **Work offline** turned on, so the status bar shows **Offline**; a real first start shows a green
-**Online** button (see below). The second step shows `✓` because the sample has folder rules.*
+**Online** button (see below). The second step shows `✓` because the sample has folder rules of its own.*
 
 ### What happens at the first start
 
@@ -44,12 +44,12 @@ button that opens the matching category of the [Options window](Options-Window.m
 | Step | Button | Opens | Shows `✓` when |
 |---|---|---|---|
 | **Enter your AniDB account, or keep working offline for now** | **Open account options** | **Options → AniDB account** | A **Username** is entered (an empty or blank name leaves `○`). Choosing to work offline does *not* tick it. |
-| **Choose the folders Animatic watches and renames into** | **Open folder options** | **Options → Managed folders** | Any folder rule has a non-empty **Path**. |
+| **Choose the folders Animatic watches and renames into** | **Open folder options** | **Options → Managed folders** | A folder rule that you added has a non-empty **Path**. The built-in **Default** and `\\` network rules do not count. |
 | **Coming from AniDB O'Matic (AOM)?** | **Browse…** and **Import** (the **AOM folder** field) | Picks the AOM folder or its `kowai` folder and imports the databank | Not a checklist step: see [Migrating from AOM](Migrating-from-AOM.md#migrate-an-aom-databank). |
 
-- The second step can already show `✓` on a brand-new profile: the built-in network rule
-  `\\ (Default network path)` has a non-empty path and counts. The mark therefore does not prove that you
-  have chosen a folder; do it anyway ([Quick start, step 4](Quick-Start.md#4-add-your-managed-folders)).
+- The second step shows `○` on a brand-new profile: the built-in **Default** rule and the `\\ (Default network path)`
+  rule are always present and do not count. It turns to `✓` only when you add a folder rule of your own and
+  give it a path ([Quick start, step 4](Quick-Start.md#4-add-your-managed-folders)).
 - **Hide** removes the box and sets `first_launch` to false. Hiding writes the settings file
   immediately (a first save), unless the settings were recovered from a backup (then the change
   stays in memory until you save in Options). A normal exit also saves the settings. The box does

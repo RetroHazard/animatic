@@ -218,12 +218,12 @@ Each item below follows from the implementation.
 | Preview (yellow) | `The pattern reported warnings, so its result cannot be trusted. Renaming stays disabled until they are fixed:` followed by `• PARSERUN: …` lines | Wrong argument count, `Double` as text, bad `set` name | Fix each listed call ([argument counts](Rename-Functions-and-Objects.md#wrong-argument-counts)) |
 | Preview | `No file entry for file <fid>!`, `Can't autorename file, Episode <eid> is missing for File <fid>!`, `Can't autorename file, Anime <aid> is missing for File <fid>!` | Library rows missing | Identify the file; fetch the anime/episode |
 | Batch rename | `The file is not identified by AniDB` | The file has no `fid` | Identify it first |
-| Batch rename | `A file or folder already exists at the target path` | The target is taken on disk | Change the pattern or move the other file |
+| **Rename…**, Validate on selected file, batch rename | `A file or folder already exists at the target path` | The target is taken on disk | Change the pattern or move the other file |
 | Batch rename | `<current path of the earlier file> would get the same name; only the first of the two can be renamed` | Two selected files get one name | Make the names differ |
 | Validate on selected file | `Select a file identified by AniDB on the Hashed files page, then validate again.` | No file is selected | Click an identified file on **Hashed files** |
 | Validate on selected file, **Rename…** | `The selected file is not identified by AniDB` | The selected row has no `fid` | Identify it first |
 | **Rename…**, Validate on selected file | `The selected file is no longer in the list` | A new search hid the selected row | Clear the search |
-| Apply (log, `Not renamed:`) | `destination already exists: <path>` and the other move messages ([list](Rename-Targets-and-Apply.md#how-a-file-is-moved)) | Apply found an existing destination or a problem with the move | Change the pattern or move the other file |
+| Apply (log, `Not renamed:`) | `destination already exists: <path>` and the other move messages ([list](Rename-Targets-and-Apply.md#how-a-file-is-moved)) | Apply found a destination that appeared after the preview, or a problem with the move | Change the pattern or move the other file |
 
 ## Self-test patterns
 

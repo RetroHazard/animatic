@@ -28,13 +28,14 @@ The sample library has six files in `S:\Downloads` that still carry download nam
    The window shows **Current path**, the **New path** and, in red or yellow, every problem found.
 4. Check the new path, then click **Rename file**. The window closes and the rename runs on the background worker (the status bar shows progress and **Cancel**). The result appears in the **Log**: `Renamed <old> to <new>`.
 
-**Rename file** is enabled only when there is a new path **and** there are no errors **and** no warnings. The window does **not** check whether a file already exists at the new path: if one does, **Rename file** is still offered and the rename fails when you click it (`destination already exists`, nothing is replaced). A batch rename and automatic rename do check beforehand. What the window can show:
+**Rename file** is enabled only when there is a new path **and** there are no errors **and** no warnings. The window also checks whether a file or folder already exists at the new path: if one does, it shows the error `A file or folder already exists at the target path` and **Rename file** is disabled, so nothing is ever replaced. (If the target appears after you opened the window, the rename still fails when you click it with `destination already exists` and moves nothing.) A batch rename and automatic rename check the same. What the window can show:
 
 | Situation | Window text | **Rename file** |
 |---|---|---|
 | A valid new path | **New path** | Enabled |
 | A path was produced but the pattern gave warnings | **Path the pattern would produce (rename blocked)** and the warnings in yellow | Disabled |
 | An error (empty pattern, syntax error, missing metadata, unusable name, …) | The error in red, no new path | Disabled |
+| A path was produced but a file or folder already exists there | **Path the pattern would produce (rename blocked)** and the red error `A file or folder already exists at the target path` | Disabled |
 | The file already has the name the pattern produces | `The file already has the name the pattern produces; nothing to rename.` | Disabled |
 
 When the window shows errors or warnings it also offers **Edit pattern in Options**: it closes the window and opens **Tools → Options… → Renaming**. `Esc` or the window's close button leaves everything unchanged.
@@ -126,7 +127,7 @@ Choose **Custom pattern**. The editor starts from the convention that was select
 
 **Validate on selected file** is a dry run on the file selected on **Hashed files**. Select a file there first; otherwise Animatic says `Select a file identified by AniDB on the Hashed files page, then validate again.` For a file AniDB has not identified it says `The selected file is not identified by AniDB`.
 
-It runs the same planning as **Rename…**, without touching any file, with the text currently in the editor (saved or not). It shows `Result for the selected file:` with the evaluated name, red errors, yellow warnings and, when the plan could be applied or the file already has that name, `The pattern is valid for this file.` Editing the text clears the previous validation result.
+It runs the same planning as **Rename…**, without touching any file, with the text currently in the editor (saved or not). It shows `Result for the selected file:` with the evaluated name, red errors (including `A file or folder already exists at the target path`), yellow warnings and, when the plan could be applied or the file already has that name, `The pattern is valid for this file.` Editing the text clears the previous validation result.
 
 Nothing is stored until **Save options**, but Options changes are active right away, so **Rename…** and automatic rename use what is in the editor now. The step-by-step check is in [Verify a pattern](Rename-Patterns.md#verify-a-pattern).
 
@@ -166,8 +167,8 @@ Path separators in the result create or use subfolders; missing parent folders a
 
 Animatic never replaces a file and never invents another name (no `(1)` suffix):
 
-- A manual single rename whose target exists fails when applied: `Rename failed: <file>: destination already exists: <path> (target <path>)`.
-- A batch rename and automatic rename check this earlier and show the file as blocked or skipped.
+- A manual single rename whose target exists is blocked in the preview: `A file or folder already exists at the target path`, and **Rename file** is disabled. Only a target that appears between the preview and the click fails when applied: `Rename failed: <file>: destination already exists: <path> (target <path>)`.
+- A batch rename and automatic rename check this as well and show the file as blocked or skipped.
 - Two files that would receive the same name in one batch or automatic pass: the first keeps it, the others are blocked.
 - A file another program creates at the target after the check is not replaced either; the move fails and is reported.
 
@@ -234,7 +235,7 @@ Moves are reported like manual ones (`Renamed <old> to <new>`, `Rename failed: �
 | `The selected file is not identified by AniDB` | The file has no `fid`. Identify it first ([Hashing and identification](Hashing-and-Identification.md)). |
 | Built-in convention needs the title or episode number | The stored record has no anime title or no episode number. Refresh from AniDB and let the [command queue](AniDB-Synchronization.md) run. |
 | The name contains `False` | A misspelled name in a custom pattern; see [Pitfalls](Rename-Patterns.md#pitfalls). |
-| `Rename failed: … destination already exists` | The target exists. Change the pattern or move the other file. |
+| `Rename failed: … destination already exists` | The target appeared after the preview was made. Change the pattern or move the other file. |
 | Many lines `Blocked` in a batch | Hover a line for the reasons; fix the pattern with **Edit pattern in Options**. |
 | A cross-drive rename is slow | It copies and re-reads the whole file to verify it. Let it finish or press **Cancel**; nothing is lost. |
 | `the file changed since it was hashed; hash it again before moving it` | The file differs from the hashed one. Rehash it ([Hashing and identification](Hashing-and-Identification.md)), then rename. |

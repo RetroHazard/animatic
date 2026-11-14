@@ -68,7 +68,7 @@ the last section.
    numbers and session text with `<id>`; any user name, password or API key with
    placeholders.
 2. Keep exact message wording (for example `AniDB sync paused until <time>: <reason>`), the
-   status-bar indicators (**Offline**, **N blocked command(s)**, **N commands not saved yet**),
+   status-bar indicators (**Offline**, **N blocked commands**, **N commands not saved yet**),
    and what you clicked. Those usually identify the problem without any personal data.
 3. Never post settings files or databases. If a settings detail matters, describe the field
    and value type (for example "`anidb.offline` is true"), not the file.

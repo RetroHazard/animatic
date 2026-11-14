@@ -88,8 +88,8 @@ Any of these starts the same job:
 - **Run command queue** in the tray menu, and the button on the [Overview](Library-Pages.md#needs-attention)
   next to `N commands wait to be sent to AniDB` (it reads **Go online** while you work offline).
 
-The buttons are disabled during a settings import or review and while a cooldown is active (the
-hover text then shows the cooldown). A manual run waits for the job in front of it (hashing, a scan, …)
+The buttons are disabled during a settings import or review (the hover text says `An import is in
+progress`) and while a cooldown is active (the hover text then shows the cooldown). A manual run waits for the job in front of it (hashing, a scan, …)
 to finish: Animatic runs one job at a time. While a run is going, the status bar shows the
 command being sent, and **Cancel** stops the run after the command in flight (**Pause** has no
 effect on it).
