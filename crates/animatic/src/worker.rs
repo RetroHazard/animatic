@@ -709,7 +709,10 @@ fn run(
         };
         // A cancel request applies to the job that is running when it is made. It is only
         // cleared here, when the next job starts, so a following `submit` cannot swallow it.
+        // The same goes for Pause: it belongs to the job it was pressed for, and a job that
+        // finished (or was cancelled) while paused must not leave the next one paused.
         cancel.store(false, Ordering::Relaxed);
+        pause.store(false, Ordering::Relaxed);
         match job {
             Job::Stop
             | Job::LoadLibrary { .. }
@@ -2971,6 +2974,18 @@ mod tests {
         wait_for(&worker, |e| matches!(e, Event::Finished));
         assert!(!worker.cancel.load(Ordering::Relaxed));
         assert_eq!(db.open().queue_len().unwrap(), 1, "titles dump queued");
+    }
+
+    #[test]
+    fn a_pause_does_not_carry_over_to_the_next_job() {
+        let db = TempDb::new();
+        drop(db.open());
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.pause.store(true, Ordering::Relaxed);
+        worker.submit(Job::QueueFullUpdate);
+        wait_for(&worker, |e| matches!(e, Event::Finished));
+        assert!(!worker.pause.load(Ordering::Relaxed));
     }
 
     #[test]

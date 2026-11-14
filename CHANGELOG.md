@@ -30,6 +30,8 @@ the generated line for that pull request's squash commit.
 - Renaming a single hashed file (Hashed files → Rename…) now checks whether the new path is
   already taken and blocks Confirm rename with the message the batch rename uses, instead of
   failing with `destination already exists` after the click.
+- Pause no longer carries over to the next hashing run: pressing Pause and then Cancel (or
+  pausing a job that finished) used to leave the next run paused.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 
