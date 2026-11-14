@@ -54,6 +54,9 @@ const DEFERRED_LIMIT: usize = 1000;
 /// Final attempt to save unsaved commands when the window closes.
 const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const LOADING_STATUS: &str = "Loading library…";
+/// Why a command that needs the database to be quiet is disabled while a settings import or
+/// its review is open.
+const IMPORTING: &str = "An import is in progress";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
@@ -890,6 +893,12 @@ impl AnimaticApp {
     /// tray menu all use this one rule.
     fn queue_run_allowed(&self) -> bool {
         !self.import_pending && self.active_cooldown().is_none()
+    }
+
+    /// The hover text of a disabled **Run command queue** (menu and Queue page): the cooldown
+    /// when one is active, otherwise the running import.
+    fn queue_run_disabled_hint(cooling: Option<&str>) -> &str {
+        cooling.unwrap_or(IMPORTING)
     }
 
     fn cooldown_text(until: i64, reason: &str) -> String {
@@ -2480,7 +2489,6 @@ impl AnimaticApp {
     }
 
     fn top_bar(&mut self, root: &mut egui::Ui) {
-        const IMPORTING: &str = "An import is in progress";
         const QUEUED_ONLY: &str = "Adds a command to the queue; nothing is sent to AniDB until \
                                    the command queue runs.";
         let ctx = root.ctx().clone();
@@ -2597,7 +2605,7 @@ impl AnimaticApp {
                             self.queue_run_allowed(),
                             menu_entry(&ctx, "Run command queue", &shortcuts::RUN_QUEUE),
                         )
-                        .on_disabled_hover_text(cooling.as_deref().unwrap_or_default());
+                        .on_disabled_hover_text(Self::queue_run_disabled_hint(cooling.as_deref()));
                     if run.clicked() {
                         self.run_command_queue();
                         ui.close();
@@ -4195,7 +4203,7 @@ impl AnimaticApp {
                     egui::Button::new("Run command queue"),
                 )
                 .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::RUN_QUEUE))
-                .on_disabled_hover_text(cooling.as_deref().unwrap_or("An import is in progress"));
+                .on_disabled_hover_text(Self::queue_run_disabled_hint(cooling.as_deref()));
             if run.clicked() {
                 sync = true;
             }
@@ -5626,44 +5634,6 @@ impl AnimaticApp {
         egui::Panel::bottom("status").frame(frame).show(root, |ui| {
             ui.horizontal(|ui| {
                 ui.set_min_height(24.0);
-                if self.activity.busy {
-                    ui.add(
-                        egui::ProgressBar::new(self.activity.fraction)
-                            .desired_width(180.0)
-                            .show_percentage(),
-                    );
-                    ui.label(format!(
-                        "{} ({}/{})",
-                        self.activity.label, self.activity.current, self.activity.total
-                    ));
-                    if ui
-                        .small_button(if self.worker.pause.load(Ordering::Relaxed) {
-                            "Resume"
-                        } else {
-                            "Pause"
-                        })
-                        .clicked()
-                    {
-                        let old = self.worker.pause.load(Ordering::Relaxed);
-                        self.worker.pause.store(!old, Ordering::Relaxed);
-                    }
-                    if ui.small_button("Cancel").clicked() {
-                        self.worker.cancel.store(true, Ordering::Relaxed);
-                    }
-                } else if self.status_error {
-                    // An error is marked by a sign as well as its colour and leads to the log.
-                    let text = RichText::new(format!("⚠ {}", self.status))
-                        .color(style::error(ui.visuals()));
-                    if ui
-                        .add(egui::Label::new(text).truncate().sense(Sense::click()))
-                        .on_hover_text("Open the log")
-                        .clicked()
-                    {
-                        self.page = Page::Log;
-                    }
-                } else {
-                    ui.add(egui::Label::new(&self.status).truncate());
-                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let offline = self.settings.anidb.offline;
                     let (text, color, hint) = if offline {
@@ -5729,9 +5699,83 @@ impl AnimaticApp {
                             ),
                         );
                     }
+                    // The message takes the room the indicators leave, so it is truncated
+                    // before them instead of being drawn underneath.
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        self.status_message(ui);
+                    });
                 });
             });
         });
+    }
+
+    /// The left of the status bar: the progress row while a task runs, else the status
+    /// message. It is truncated to the width it is given (the full text shows on hover).
+    fn status_message(&mut self, ui: &mut egui::Ui) {
+        if self.activity.busy {
+            ui.add(
+                egui::ProgressBar::new(self.activity.fraction)
+                    .desired_width(180.0)
+                    .show_percentage(),
+            );
+            // Pause and Cancel keep their width (measured on the previous frame); the label
+            // is truncated to what is left of the row before them.
+            let controls = egui::Id::unique("status_controls_width");
+            let reserved = ui
+                .data(|data| data.get_temp::<f32>(controls))
+                .unwrap_or(0.0);
+            let room = (ui.available_width() - reserved).max(0.0);
+            ui.scope(|ui| {
+                ui.set_max_width(room);
+                ui.add(
+                    egui::Label::new(format!(
+                        "{} ({}/{})",
+                        self.activity.label, self.activity.current, self.activity.total
+                    ))
+                    .truncate(),
+                );
+            });
+            let start = ui.cursor().left();
+            if ui
+                .small_button(if self.worker.pause.load(Ordering::Relaxed) {
+                    "Resume"
+                } else {
+                    "Pause"
+                })
+                .clicked()
+            {
+                let old = self.worker.pause.load(Ordering::Relaxed);
+                self.worker.pause.store(!old, Ordering::Relaxed);
+            }
+            if ui.small_button("Cancel").clicked() {
+                self.worker.cancel.store(true, Ordering::Relaxed);
+            }
+            let width = ui.cursor().left() - start;
+            if (width - reserved).abs() > 0.5 {
+                ui.data_mut(|data| data.insert_temp(controls, width));
+                ui.request_repaint();
+            }
+        } else if self.status_error {
+            // An error is marked by a sign as well as its colour and leads to the log. The
+            // hover text carries the whole message, which may be truncated here.
+            let hint = format!("{}\n\nOpen the log", self.status);
+            let text =
+                RichText::new(format!("⚠ {}", self.status)).color(style::error(ui.visuals()));
+            if ui
+                .add(
+                    egui::Label::new(text)
+                        .truncate()
+                        .sense(Sense::click())
+                        .show_tooltip_when_elided(false),
+                )
+                .on_hover_text(hint)
+                .clicked()
+            {
+                self.page = Page::Log;
+            }
+        } else {
+            ui.add(egui::Label::new(&self.status).truncate());
+        }
     }
 }
 

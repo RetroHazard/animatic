@@ -11,6 +11,15 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+### Fixed
+
+- A long status message (for example an automatic rename's dry-run summary with full paths) is
+  truncated before the blocked-commands link, the cooldown notice and the Offline/Online button
+  of the status bar instead of being drawn underneath them, and the progress row's label is
+  truncated before Pause and Cancel; the full message shows on hover.
+- While a settings import or its review is pending, **Tools → Run command queue** now explains
+  that it is disabled (`An import is in progress`), like the button on the Queue page.
+
 ## 2026.11.0-rc.1 - 2026-11-14
 
 ### Added
