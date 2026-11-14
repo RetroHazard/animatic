@@ -3,11 +3,12 @@ name: CI
 # The `branches` filters below are only an optimization: GitHub starts this workflow for
 # every pull request of a native stack (`main` <- #1 <- #2 …) as if it targeted the
 # stack's base, so a mid-stack pull request arrives with a merge context whose `base_ref`
-# says main. GitHub also evaluates the main ruleset (and its required `Required checks`)
-# against every pull request of such a stack. The `scope` job therefore asks the REST API
-# for the pull request's actual base and its stack: it runs the checks when either is main
-# and defers everything otherwise (a pull request on another branch that is not part of a
-# stack on main).
+# says main, and GitHub evaluates the main ruleset (its required `Required checks`) against
+# every pull request of the stack. The `scope` job therefore asks the REST API for the pull
+# request's actual base and its stack. Only the top pull request of a stack on main runs
+# the checks, because it contains every layer; the others report a passing
+# `Required checks` that names the top as their cover, so a stack costs one full run per
+# push. Everything else whose base is not main (and that is in no stack on main) defers.
 # A push to any other branch never starts this workflow. Nothing here publishes
 # anything. Release workflows call it explicitly.
 #
@@ -66,12 +67,14 @@ concurrency:
 
 jobs:
   # Branch filters and merge-context guards do not tell a stacked pull request from one on
-  # main. Read the actual target and the stack base from the API instead of relying on the
-  # synthetic merge context. A main target, or membership of a native stack whose base is
-  # main (GitHub requires `Required checks` on each of them), runs checks; every other base
-  # is deferred. Deferred PRs run no planner, Quality, Rust, notices, or merge-gate job. A
-  # failed lookup leaves `mode` empty and fails the merge gate closed. Non-PR events proceed
-  # normally. Metadata-only edits skip this job. No checkout or secrets are printed.
+  # main. Read the actual target and the stack from the API instead of relying on the
+  # synthetic merge context. Modes: `run` for a pull request on main outside a stack and for
+  # the top pull request of a stack on main; `covered` for the lower pull requests of such a
+  # stack (the top one's run checks their changes too); `defer` for every other base. Covered
+  # and deferred PRs run no planner, Quality, Rust or notices job. A failed lookup leaves
+  # `mode` empty and fails the merge gate closed; a stack without a readable position runs
+  # the checks. Non-PR events proceed normally. Metadata-only edits skip this job. No
+  # checkout or secrets are printed.
   scope:
     name: Resolve pull request scope
     if: ${{ github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.base.ref.from != '' }}
@@ -99,16 +102,26 @@ jobs:
           pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
           base="$(jq -r '.base.ref // empty' <<<"$pr")"
           stack="$(jq -r '.stack.base.ref // empty' <<<"$pr")"
+          position="$(jq -r '.stack.position // empty' <<<"$pr")"
+          size="$(jq -r '.stack.size // empty' <<<"$pr")"
+          stack_number="$(jq -r '.stack.number // empty' <<<"$pr")"
           if [ -z "$base" ]; then
             echo "::error::the pull request API returned no base branch"
             exit 1
           fi
-          if [ "$base" = main ] || [ "$stack" = main ]; then
+          if [ "$stack" = main ] && [[ "$position" =~ ^[0-9]+$ && "$size" =~ ^[0-9]+$ ]] \
+            && [ "$position" -lt "$size" ]; then
+            echo "mode=covered" >> "$GITHUB_OUTPUT"
+            {
+              printf '### Covered by the top of the stack\n\n'
+              printf 'Pull request %s of %s in stack #%s on main. The full checks run on the top pull request of the stack, which contains this change; this run checks nothing itself.\n' "$position" "$size" "$stack_number"
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$base" = main ] || [ "$stack" = main ]; then
             echo "mode=run" >> "$GITHUB_OUTPUT"
-            if [ "$base" != main ]; then
+            if [ -n "$stack" ]; then
               {
-                printf '### Stacked pull request\n\n'
-                printf 'The base branch is %s, in a stack on main: checked like a pull request on main.\n' "$base"
+                printf '### Top of the stack\n\n'
+                printf 'Pull request %s of %s in stack #%s on main: the full checks run here and cover the pull requests below it.\n' "${position:-?}" "${size:-?}" "$stack_number"
               } >> "$GITHUB_STEP_SUMMARY"
             fi
           else
@@ -439,15 +452,18 @@ jobs:
 
   # The single stable status to require on main. It fails closed: a job may only be
   # skipped when the plan did not select it, and a failed or cancelled scope, plan or
-  # quality job fails it (a failed scope leaves its mode empty, which is not `defer`, so
-  # the gate still runs and reports the failure). Three cases never report "Required checks":
-  # a metadata-only pull request edit reports "PR metadata (no code checks)" and a pull
-  # request whose actual base (looked up by the scope job) is not main reports
-  # "Stacked PR (deferred)"; both only write a summary and pass, under a name that is never
-  # required, so they cannot mask a failure reported for the same commit. The job runs in
-  # those cases instead of being skipped because GitHub does not evaluate the name of a
-  # skipped job and would list the raw expression. A main push reports "Main cache refresh",
-  # because it normally runs no Rust checks.
+  # quality job fails it (a failed scope leaves its mode empty, which is neither `defer`
+  # nor `covered`, so the gate still runs and reports the failure). Two cases never report
+  # "Required checks": a metadata-only pull request edit reports "PR metadata (no code
+  # checks)" and a pull request whose actual base (looked up by the scope job) is not main
+  # and that is in no stack on main reports "Stacked PR (deferred)"; both only write a
+  # summary and pass, under a name that is never required, so they cannot mask a failure
+  # reported for the same commit. A lower pull request of a stack on main (`covered`) does
+  # report a passing "Required checks" without running checks: GitHub requires it on every
+  # pull request of the stack, and the top pull request's run checks the same changes. The
+  # job runs in these cases instead of being skipped because GitHub does not evaluate the
+  # name of a skipped job and would list the raw expression. A main push reports "Main
+  # cache refresh", because it normally runs no Rust checks.
   required:
     name: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'PR metadata (no code checks)' || (needs.scope.outputs.mode == 'defer' && 'Stacked PR (deferred)' || (github.event_name == 'push' && 'Main cache refresh' || 'Required checks')) }}
     if: ${{ always() }}
@@ -455,16 +471,16 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     env:
-      CI_NO_GATE: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'metadata' || (needs.scope.outputs.mode == 'defer' && 'defer' || '') }}
+      CI_NO_GATE: ${{ (github.event_name == 'pull_request' && github.event.action == 'edited' && github.event.changes.base.ref.from == '') && 'metadata' || ((needs.scope.outputs.mode == 'defer' || needs.scope.outputs.mode == 'covered') && needs.scope.outputs.mode || '') }}
     steps:
       - name: Report a run without code checks
         if: env.CI_NO_GATE != ''
         run: |
-          if [ "$CI_NO_GATE" = metadata ]; then
-            reason='Only the pull request title or description changed; no code checks ran.'
-          else
-            reason='The pull request does not target main; code checks are deferred until it does.'
-          fi
+          case "$CI_NO_GATE" in
+            metadata) reason='Only the pull request title or description changed; no code checks ran.' ;;
+            covered) reason='A lower pull request of a stack on main: the full checks run on the top pull request of the stack, which contains this change.' ;;
+            *) reason='The pull request does not target main; code checks are deferred until it does.' ;;
+          esac
           echo "$reason"
           printf '### No code checks\n\n%s\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
       - if: env.CI_NO_GATE == ''
