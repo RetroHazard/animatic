@@ -16,11 +16,11 @@ the generated line for that pull request's squash commit.
 - The user guide (wiki) is overhauled and illustrated: a Quick start tutorial, a Managing MyList
   task guide, a FAQ and a Glossary are new, and every page is checked against the application
   and gains step-by-step procedures and screenshots. The screenshots show an invented sample
-  library and are published with the wiki only; release archives keep the text pages.
+  library and are published with the wiki only; release archives keep the text pages. (#22)
 - Maintainers regenerate the screenshots with `scripts/wiki-screenshots.ps1` (Windows), which
   drives the release build through UI Automation on the invented library written by the new
   `docs-sample-library` example; `scripts/ci.py docs` validates `wiki/images` and the wiki
-  publisher copies it.
+  publisher copies it. (#22)
 
 ## 2026.11.0-rc.1 - 2026-11-14
 
