@@ -186,6 +186,11 @@ the generated line for that pull request's squash commit.
   common mistakes, each with its result for a sample file and a **Copy** button. Only the
   pattern text is stored, so existing settings and saved custom patterns are unchanged; choosing
   a convention over a custom pattern can be undone with **Restore my custom pattern**.
+- Rename patterns run within limits: 100,000 evaluation steps, 600 nested expressions or 200
+  nested function calls, texts up to 128 KiB, and about 1,000 levels of nesting when compiled. A
+  pattern that loops or recurses without end, or builds an enormous text, now fails with an
+  error instead of freezing Animatic or crashing it with a stack overflow, which also matters
+  because the custom pattern example is computed as you type.
 
 ### Changed
 

@@ -235,15 +235,32 @@ const E_NAME: &str = "TRuleEvaluator.GetExpression7: tkSymbol: Property or metho
 const E_CALL_PAREN: &str = "TRuleEvaluator.GetExpression7: tkSymbol: Missing right parentesis!";
 const E_RIGHT: &str = "TRuleEvaluator.GetExpression7: Right part of expression missing!";
 const E_SYNTAX: &str = "TRuleManager.Compile: Syntax error!";
+const E_DEEP: &str = "The pattern is nested too deeply (too many parentheses inside each other \
+                      or too many lines).";
+
+/// Deepest recursion of the parser; keeps a pathological pattern (thousands of nested
+/// parentheses) from overflowing the thread's stack. A level is one operator or parenthesis.
+const MAX_PARSE_DEPTH: u32 = 1000;
 
 struct Parser {
     lx: Lexer,
+    depth: u32,
 }
 
 type PResult = Result<Node, &'static str>;
 
 impl Parser {
     fn binary(&mut self, level: u8) -> PResult {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(E_DEEP);
+        }
+        self.depth += 1;
+        let result = self.binary_level(level);
+        self.depth -= 1;
+        result
+    }
+
+    fn binary_level(&mut self, level: u8) -> PResult {
         if level == 7 {
             return self.primary();
         }
@@ -284,7 +301,19 @@ impl Parser {
         self.binary(1)
     }
 
+    /// A primary expression; counted like [`Parser::binary`] because `+`, `-` and `not`
+    /// prefixes recurse here.
     fn primary(&mut self) -> PResult {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(E_DEEP);
+        }
+        self.depth += 1;
+        let result = self.primary_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn primary_inner(&mut self) -> PResult {
         match self.lx.next() {
             Tok::Number(n) => Ok(Node::Literal(Value::Double(n))),
             Tok::Str(s) => Ok(Node::Literal(Value::WStr(s))),
@@ -367,6 +396,7 @@ pub fn compile(text: &str) -> Result<Option<Node>, CompileError> {
     }
     let mut p = Parser {
         lx: Lexer::new(text),
+        depth: 0,
     };
     let result = p.expr().and_then(|n| {
         if p.lx.next() == Tok::Eof {

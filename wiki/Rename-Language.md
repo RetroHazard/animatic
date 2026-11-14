@@ -376,8 +376,12 @@ x
   concatenate, and numbers are added.
 - A function must be defined on an **earlier line** than its first call. Calling an undefined
   function yields `False`, silently.
-- There is no recursion-depth or iteration limit in the evaluator. Do not write a function
-  that calls itself or a `for` with an enormous range.
+- Every run has limits: 100,000 evaluation steps per run, 600 expressions or 200 function calls nested inside each
+  other, texts of at most 128 KiB, and about 1,000 levels of parentheses or lines when the
+  pattern is compiled.
+  A function that calls itself without end or a `for` with an enormous range stops with a
+  hard error (`The renaming pattern failed to run: …`) instead of freezing or crashing
+  Animatic. Ordinary patterns, including several hundred lines, stay far below them.
 
 ## Differences from AOM and limits
 
@@ -393,6 +397,9 @@ Deliberate differences stated in the source and project rules:
   and device names including `¹ ² ³`), with a length unit that depends on the build platform.
 - The built-in conventions need fetched title and episode data; a pending-title stand-in is
   never used to name a file with them.
+- Evaluation is bounded (see [User functions](#user-functions)): AOM had no limit, so a
+  pattern that loops or recurses without end, or builds an enormous text, fails here instead of
+  hanging.
 - Renaming is manual and confirmed, except for a managed folder you explicitly set to **On**
   (opt-in per folder, off by default, never implicit; collisions are skipped, never overwritten).
 
@@ -403,7 +410,6 @@ Limits:
   available through the Rust API only.
 - No collision handling beyond the non-atomic "destination already exists" check (which can lose
   a race and overwrite a file created in between), and no folder clean-up.
-- The evaluator has no execution budget (loops, recursion).
 - Production AniDB behavior and Linux runtime were not exercised while documenting.
 
 ## Source map

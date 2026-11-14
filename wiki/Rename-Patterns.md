@@ -151,8 +151,9 @@ Each item below follows from the implementation.
 18. **`H` media properties are mostly empty** for files Animatic hashed itself.
 19. **`getanime` rebinding is ignored**; the first binding of a name wins.
 20. **`for` bodies must produce strings**, and unset accumulator variables read as `False`.
-21. **No iteration or recursion limit.** A runaway loop or self-calling function is not stopped
-    by the evaluator.
+21. **Runaway patterns stop with an error.** A loop over an enormous range, a function that
+    calls itself without end, or a text that keeps growing ends the run with a hard error once
+    it reaches the [evaluation limits](Rename-Language.md#user-functions); nothing is renamed.
 
 ## Diagnostics reference
 

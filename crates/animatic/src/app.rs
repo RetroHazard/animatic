@@ -1923,7 +1923,7 @@ impl AnimaticApp {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Example:")
                     .on_hover_text("A fictitious episode 6, release version 2, by a group");
-                ui.monospace(&sample.result);
+                ui.monospace(shortened(&sample.result, 300));
             });
         }
         let mut restore = false;
@@ -5052,6 +5052,15 @@ fn field_hint(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
 }
 
 /// Warnings and errors of a rename plan; warnings block applying it just like errors do.
+/// `text` cut to `max` characters with an ellipsis, so a runaway pattern result stays cheap
+/// to lay out every frame.
+fn shortened(text: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &text[..at]).into(),
+        None => text.into(),
+    }
+}
+
 fn show_plan(ui: &mut egui::Ui, plan: &Plan) {
     for error in &plan.errors {
         ui.colored_label(Color32::LIGHT_RED, error);
