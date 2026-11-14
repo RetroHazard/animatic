@@ -1,9 +1,13 @@
 name: CI
 
-# The `branches` filters below are only an optimization: GitHub has been observed running
-# this workflow for a pull request whose real target is a stacked branch, with a
-# synthetic merge context whose `base_ref` says main. The `scope` job therefore asks the
-# REST API for the pull request's actual base and defers everything unless it is main.
+# The `branches` filters below are only an optimization: GitHub starts this workflow for
+# every pull request of a native stack (`main` <- #1 <- #2 …) as if it targeted the
+# stack's base, so a mid-stack pull request arrives with a merge context whose `base_ref`
+# says main. GitHub also evaluates the main ruleset (and its required `Required checks`)
+# against every pull request of such a stack. The `scope` job therefore asks the REST API
+# for the pull request's actual base and its stack: it runs the checks when either is main
+# and defers everything otherwise (a pull request on another branch that is not part of a
+# stack on main).
 # A push to any other branch never starts this workflow. Nothing here publishes
 # anything. Release workflows call it explicitly.
 #
@@ -61,11 +65,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Branch filters and merge-context guards did not prevent observed stacked-PR
-  # integration runs. Read the actual target from the API instead of relying on the
-  # synthetic merge context. A main target runs checks; every other base is deferred.
-  # Deferred PRs run no planner, Quality, Rust, notices, or merge-gate job. A failed
-  # lookup leaves `mode` empty and fails the merge gate closed. Non-PR events proceed
+  # Branch filters and merge-context guards do not tell a stacked pull request from one on
+  # main. Read the actual target and the stack base from the API instead of relying on the
+  # synthetic merge context. A main target, or membership of a native stack whose base is
+  # main (GitHub requires `Required checks` on each of them), runs checks; every other base
+  # is deferred. Deferred PRs run no planner, Quality, Rust, notices, or merge-gate job. A
+  # failed lookup leaves `mode` empty and fails the merge gate closed. Non-PR events proceed
   # normally. Metadata-only edits skip this job. No checkout or secrets are printed.
   scope:
     name: Resolve pull request scope
@@ -91,18 +96,26 @@ jobs:
             echo "mode=run" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          base="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.base.ref // empty')"
+          pr="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")"
+          base="$(jq -r '.base.ref // empty' <<<"$pr")"
+          stack="$(jq -r '.stack.base.ref // empty' <<<"$pr")"
           if [ -z "$base" ]; then
             echo "::error::the pull request API returned no base branch"
             exit 1
           fi
-          if [ "$base" = main ]; then
+          if [ "$base" = main ] || [ "$stack" = main ]; then
             echo "mode=run" >> "$GITHUB_OUTPUT"
+            if [ "$base" != main ]; then
+              {
+                printf '### Stacked pull request\n\n'
+                printf 'The base branch is %s, in a stack on main: checked like a pull request on main.\n' "$base"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "mode=defer" >> "$GITHUB_OUTPUT"
             {
               printf '### Stacked pull request deferred\n\n'
-              printf 'The actual base branch is %s, not main. Code checks are deferred until the pull request targets main.\n' "$base"
+              printf 'The actual base branch is %s, not main, and the pull request is not in a stack on main. Code checks are deferred until it targets main.\n' "$base"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
