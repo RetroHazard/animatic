@@ -8,9 +8,9 @@ and tables, and the menus. The individual pages are described in [Library pages]
   Hashed files, Groups, Genres, Queue, Log. Under a small **LIBRARY** heading are MyList, Anime,
   Advanced search, Hashed files, Groups and Genres; under **ACTIVITY** are Queue and Log;
   Overview stands on top. The Queue entry shows a badge with the number of pending commands, or a
-  red `N blocked`. At the bottom are the **⚙ Options** entry (it opens and closes
-  [Options](Options-Window.md)) and two small lines, `N anime` and `N MyList entries` (counts of the
-  loaded snapshot). Every page's title equals its sidebar label.
+  red `N blocked`. At the bottom are two small lines, `N anime` and `N MyList entries` (counts of the
+  loaded snapshot), and below them the **⚙ Options** entry (it opens and closes
+  [Options](Options-Window.md)). Every page's title equals its sidebar label.
 - **Page** (center): the selected page. Table pages are virtualized: only the visible rows
   are drawn, so very large libraries stay responsive.
 - **Status bar** (bottom): current activity or last message, connection state and warnings.

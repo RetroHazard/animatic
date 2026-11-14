@@ -2762,8 +2762,15 @@ impl AnimaticApp {
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                    if nav_item(ui, self.settings_open, "⚙ Options", None)
+                        .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
+                        .clicked()
+                    {
+                        self.settings_open = !self.settings_open;
+                    }
                     // One count per row so neither wraps in the narrow sidebar. The layout
-                    // grows upwards: the MyList line is added first so it sits under the anime.
+                    // grows upwards: Options is the bottom row, the counts sit above it with the
+                    // MyList line added first so it ends up under the anime line.
                     for text in [
                         style::plural(
                             self.projection.mylist.len(),
@@ -2773,12 +2780,6 @@ impl AnimaticApp {
                         style::plural(self.projection.anime.len(), "anime", "anime"),
                     ] {
                         ui.label(RichText::new(text).small().weak());
-                    }
-                    if nav_item(ui, self.settings_open, "⚙ Options", None)
-                        .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
-                        .clicked()
-                    {
-                        self.settings_open = !self.settings_open;
                     }
                 });
             });
