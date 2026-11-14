@@ -21,6 +21,9 @@ the generated line for that pull request's squash commit.
   that it is disabled (`An import is in progress`), like the button on the Queue page.
 - **Save options** keeps the Options window open when the settings file cannot be written, so
   the edits stay in view to try again; the window closes only after a successful save.
+- The Overview's Getting started step "Choose the folders Animatic watches and renames into"
+  is no longer ticked on a fresh profile: the built-in default and `\\` network folder rules
+  no longer count, only a folder rule you add does.
 
 ## 2026.11.0-rc.1 - 2026-11-14
 

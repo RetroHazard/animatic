@@ -3097,12 +3097,7 @@ impl AnimaticApp {
     /// First-launch checklist: account, folders, and the optional AOM import.
     fn getting_started(&mut self, ui: &mut egui::Ui) {
         let account = !self.settings.anidb.username.trim().is_empty();
-        let folders = self
-            .settings
-            .file_managers
-            .managers
-            .iter()
-            .any(|m| !m.path.trim().is_empty());
+        let folders = has_user_folder(&self.settings.file_managers.managers);
         let visuals = ui.visuals().clone();
         egui::Frame::new()
             .fill(visuals.faint_bg_color)
@@ -6407,6 +6402,14 @@ mod shortcuts {
     ];
 }
 
+/// Whether the user has added a folder rule with a path. The built-in rules (the default rule
+/// and the `\\` network rule) are always present and do not count as a choice.
+fn has_user_folder(managers: &[animatic_core::settings::FileManager]) -> bool {
+    managers
+        .iter()
+        .any(|m| m.can_edit_path && !m.default && !m.path.trim().is_empty())
+}
+
 /// `Shortcut: Ctrl+,` for a hover text.
 fn shortcut_hint(ctx: &egui::Context, shortcut: &egui::KeyboardShortcut) -> String {
     format!("Shortcut: {}", ctx.format_shortcut(shortcut))
@@ -6693,6 +6696,26 @@ mod tests {
             )
             .unwrap();
         LibraryProjection::load(&db).unwrap()
+    }
+
+    #[test]
+    fn only_a_folder_the_user_added_completes_the_folder_step() {
+        use animatic_core::settings::{FileManager, FileManagerSettings};
+        let mut managers = FileManagerSettings::default().managers;
+        assert!(
+            !has_user_folder(&managers),
+            "a fresh profile has only the built-in rules"
+        );
+        managers.push(FileManager {
+            path: "  ".into(),
+            ..FileManager::default()
+        });
+        assert!(!has_user_folder(&managers), "a blank path is not a choice");
+        managers.push(FileManager {
+            path: "/animatic-test/library".into(),
+            ..FileManager::default()
+        });
+        assert!(has_user_folder(&managers));
     }
 
     #[test]
