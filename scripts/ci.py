@@ -29,12 +29,14 @@ into this repository's ``main`` branch (``blob``/``tree``) or its wiki, which ar
 like relative links against the checkout. Targets must be tracked paths of the source
 checkout (release archives are not considered). ``wiki/`` holds the user guide: flat
 Markdown pages whose names the release archive and updater accept, plus ``_Sidebar.md``
-and ``_Footer.md``. A wiki page may link relatively only to other wiki pages, because the
-published wiki and the archive's ``docs/`` carry nothing else.
+and ``_Footer.md``, and the PNG screenshots the pages show under ``wiki/images/``. A wiki
+page may link relatively only to other wiki pages and those screenshots, because the
+published wiki and the archive's ``docs/`` carry nothing else (archives carry no
+screenshots); a screenshot no wiki page uses, or one that is not a PNG file, is reported.
 
 ``wiki`` writes the tracked ``wiki/`` pages into ``--out`` (which must be empty apart
 from ``.git``) for publishing to the GitHub wiki: relative ``Page.md`` links become the
-wiki's ``Page`` links; everything else is copied byte for byte.
+wiki's ``Page`` links; everything else, including ``images/``, is copied byte for byte.
 
 ``notices`` renders the third-party notices from the JSON that ``cargo about generate
 --format json`` writes and compares them with the committed root ``NOTICES``, failing
@@ -73,6 +75,10 @@ REPOSITORY_URL = "https://github.com/RetroHazard/animatic"
 WIKI_DIR = "wiki"
 # Rendered by GitHub as wiki chrome; never packaged into release archives.
 WIKI_SPECIAL_PAGES = frozenset({"_Sidebar.md", "_Footer.md"})
+# Screenshots shown by the wiki pages: published with the wiki, never packaged (the updater
+# accepts only flat docs/*.md entries, so release archives show the images' alt text).
+WIKI_IMAGES_DIR = "images"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 # job id -> selection flag env name (None: must always succeed). Order = report order.
 GATE_JOBS = (
@@ -147,6 +153,8 @@ def classify_path(path: str) -> tuple[bool, bool]:
         return RUST
     if suffix in MARKDOWN_SUFFIXES:
         return NEITHER
+    if top == WIKI_DIR and suffix in DOC_ASSET_SUFFIXES:
+        return NEITHER  # wiki screenshots: published to the wiki only, never packaged
     if top == "docs":
         return NEITHER if suffix in DOC_ASSET_SUFFIXES else BOTH
     if top == "scripts":
@@ -281,15 +289,25 @@ def is_packaged_wiki_page(name: str) -> bool:
     )
 
 
+def is_wiki_image(name: str) -> bool:
+    """A wiki-relative name of a screenshot, ``images/<name>.png`` with a safe flat name."""
+    return (
+        len(name) <= 100
+        and ".." not in name
+        and re.fullmatch(rf"{WIKI_IMAGES_DIR}/[a-z0-9][a-z0-9._-]*\.png", name) is not None
+    )
+
+
 def wiki_page_problem(path: str) -> str | None:
     """Why a tracked path under ``wiki/`` is not allowed there, or ``None``."""
     name = path[len(WIKI_DIR) + 1 :]
-    if name in WIKI_SPECIAL_PAGES or is_packaged_wiki_page(name):
+    if name in WIKI_SPECIAL_PAGES or is_packaged_wiki_page(name) or is_wiki_image(name):
         return None
     return (
         f"'{path}' is not a wiki page: {WIKI_DIR}/ holds only flat Markdown pages named with letters, "
         "digits, '.', '-' and '_' (first character a letter or digit), plus "
         + " and ".join(sorted(WIKI_SPECIAL_PAGES))
+        + f", and PNG screenshots named {WIKI_DIR}/{WIKI_IMAGES_DIR}/<lowercase letters, digits, '.', '-', '_'>.png"
     )
 
 
@@ -610,9 +628,7 @@ def _check_link(
             resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
         if resolved == ".." or resolved.startswith("../"):
             return f"link '{dest}' escapes the repository"
-        if posixpath.dirname(source) == WIKI_DIR and (
-            posixpath.dirname(resolved) != WIKI_DIR or not resolved.lower().endswith(MARKDOWN_SUFFIXES)
-        ):
+        if posixpath.dirname(source) == WIKI_DIR and not _is_wiki_target(resolved):
             return (
                 f"wiki page link '{dest}' leaves the wiki pages; the published wiki and release archives "
                 f"carry nothing else, so link repository files as {REPOSITORY_URL}/blob/main/<path>"
@@ -626,6 +642,26 @@ def _check_link(
     return _check_target(resolved, fragment, dest, tracked, directories, docs)
 
 
+def _is_wiki_target(resolved: str) -> bool:
+    """A path a wiki page may link relatively: another wiki page or a wiki screenshot."""
+    if resolved.startswith(WIKI_DIR + "/") and is_wiki_image(resolved[len(WIKI_DIR) + 1 :]):
+        return True
+    return posixpath.dirname(resolved) == WIKI_DIR and resolved.lower().endswith(MARKDOWN_SUFFIXES)
+
+
+def _relative_target(source: str, dest: str) -> str | None:
+    """The repository path a relative link of ``source`` points at, ``None`` for URLs and fragments."""
+    dest = html.unescape(_ESCAPED.sub(r"\1", dest.strip()))
+    if not dest or _SCHEME.match(dest) or dest.startswith("//"):
+        return None
+    path = unquote(dest.partition("#")[0].partition("?")[0])
+    if not path:
+        return None
+    if path.startswith("/"):
+        return posixpath.normpath(path.lstrip("/"))
+    return posixpath.normpath(posixpath.join(posixpath.dirname(source), path))
+
+
 def check_markdown(documents: Mapping[str, str], tracked: Iterable[str]) -> DocsReport:
     """Validate ``documents`` (repo-relative POSIX path -> Markdown text) against ``tracked`` paths."""
     tracked_set = set(tracked)
@@ -636,6 +672,7 @@ def check_markdown(documents: Mapping[str, str], tracked: Iterable[str]) -> Docs
         problem = wiki_page_problem(path)
         if problem:
             report.errors.append(f"{path}: {problem}")
+    shown: set[str] = set()
     for path in sorted(parsed):
         doc = parsed[path]
         report.errors.extend(f"{path}:{message}" for message in doc.errors)
@@ -648,6 +685,11 @@ def check_markdown(documents: Mapping[str, str], tracked: Iterable[str]) -> Docs
             problem = _check_link(path, dest, tracked_set, directories, parsed)
             if problem:
                 report.errors.append(f"{path}:{line}: {problem}")
+            elif posixpath.dirname(path) == WIKI_DIR and (target := _relative_target(path, dest)):
+                shown.add(target)
+    for path in sorted(tracked_set):
+        if path.startswith(WIKI_DIR + "/") and is_wiki_image(path[len(WIKI_DIR) + 1 :]) and path not in shown:
+            report.errors.append(f"{path}: screenshot is not used by any wiki page; remove it or show it")
     return report
 
 
@@ -664,9 +706,13 @@ def run_docs(args: argparse.Namespace) -> int:
     documents: dict[str, str] = {}
     errors: list[str] = []
     for path in tracked:
+        file = root / path
+        if path.startswith(WIKI_DIR + "/") and is_wiki_image(path[len(WIKI_DIR) + 1 :]):
+            if file.is_file() and file.read_bytes()[:8] != PNG_SIGNATURE:
+                errors.append(f"{path}:1: not a PNG file")
+            continue
         if not path.lower().endswith(MARKDOWN_SUFFIXES):
             continue
-        file = root / path
         if not file.is_file():
             continue
         try:
@@ -724,8 +770,11 @@ def wiki_links(text: str, pages: Collection[str]) -> str:
     return "".join(out)
 
 
-def export_wiki(root: Path, out: Path) -> list[str]:
-    """Write the tracked wiki pages into ``out`` with wiki-style links; returns the page names."""
+def export_wiki(root: Path, out: Path) -> tuple[list[str], list[str]]:
+    """Write the tracked wiki pages into ``out`` with wiki-style links and copy the screenshots.
+
+    Returns ``(page names, screenshot paths relative to the wiki)``.
+    """
     tracked = sorted(p for p in git(root, "ls-files", "-z", "--", WIKI_DIR).split("\0") if p)
     if not tracked:
         raise CiError(f"no tracked {WIKI_DIR}/ pages to export")
@@ -734,23 +783,29 @@ def export_wiki(root: Path, out: Path) -> list[str]:
         raise CiError("; ".join(problems))
     if out.exists() and (not out.is_dir() or any(entry.name != ".git" for entry in out.iterdir())):
         raise CiError(f"--out {out} must be a missing or empty directory (a .git directory is allowed)")
-    names = [posixpath.basename(path) for path in tracked]
+    images = [path[len(WIKI_DIR) + 1 :] for path in tracked if is_wiki_image(path[len(WIKI_DIR) + 1 :])]
+    pages = [path for path in tracked if path[len(WIKI_DIR) + 1 :] not in images]
+    names = [posixpath.basename(path) for path in pages]
     out.mkdir(parents=True, exist_ok=True)
-    for path, name in zip(tracked, names):
+    for path in tracked:
         source = root / path
         if source.is_symlink() or not source.is_file():
             raise CiError(f"{path} must be a regular file")
+    for path, name in zip(pages, names):
         try:
-            text = source.read_bytes().decode("utf-8")
+            text = (root / path).read_bytes().decode("utf-8")
         except UnicodeDecodeError as exc:
             raise CiError(f"{path} is not valid UTF-8 ({exc.reason})") from None
         (out / name).write_bytes(wiki_links(text, names).encode("utf-8"))
-    return names
+    for image in images:
+        (out / image).parent.mkdir(parents=True, exist_ok=True)
+        (out / image).write_bytes((root / WIKI_DIR / image).read_bytes())
+    return names, images
 
 
 def run_wiki(args: argparse.Namespace) -> int:
-    names = export_wiki(args.root.resolve(), args.out)
-    print(f"wiki: exported {len(names)} page(s) to {args.out}")
+    names, images = export_wiki(args.root.resolve(), args.out)
+    print(f"wiki: exported {len(names)} page(s) and {len(images)} screenshot(s) to {args.out}")
     return 0
 
 
