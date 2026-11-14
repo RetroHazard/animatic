@@ -598,6 +598,8 @@ pub struct AnimaticApp {
     /// Genres page, a genre in the anime detail window, or the page's own genre picker).
     genre_filter: BTreeSet<i64>,
     settings_open: bool,
+    /// The text of the file extensions box in Options while it is being edited.
+    extensions_edit: Option<String>,
     about_open: bool,
     /// The license text window opened from About.
     license_open: bool,
@@ -750,6 +752,7 @@ impl AnimaticApp {
             tray: None,
             selected_player: None,
             settings_open: false,
+            extensions_edit: None,
             about_open: false,
             license_open: false,
             notices_open: false,
@@ -4922,16 +4925,22 @@ impl AnimaticApp {
             &mut self.settings.hashing.use_extensions,
             "Restrict file extensions",
         );
-        let mut ext = self.settings.hashing.extensions.join(",");
-        if ui
-            .add(egui::TextEdit::multiline(&mut ext).desired_rows(3))
-            .changed()
-        {
+        // The box keeps what the user typed while it has focus: rebuilding it from the list
+        // every frame would drop a comma typed after the last entry (an empty entry) at once.
+        let mut ext = self
+            .extensions_edit
+            .take()
+            .unwrap_or_else(|| self.settings.hashing.extensions.join(","));
+        let response = ui.add(egui::TextEdit::multiline(&mut ext).desired_rows(3));
+        if response.changed() {
             self.settings.hashing.extensions = ext
                 .split(',')
                 .map(|x| x.trim().to_string())
                 .filter(|x| !x.is_empty())
                 .collect();
+        }
+        if response.has_focus() {
+            self.extensions_edit = Some(ext);
         }
     }
 
