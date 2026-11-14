@@ -1,12 +1,24 @@
 name: Prepare release
 
+# One reviewed path for both release streams. `stream` picks stable (YYYY.M.PATCH) or beta
+# (YYYY.M.PATCH-rc.N, published as a GitHub prerelease); scripts/release.py computes the next
+# version of that stream unless `version` overrides it, bumps the versions, writes the
+# changelog section (a stable one folds in the betas since the previous stable), pushes
+# release/vVERSION and opens a `release`-labelled pull request once ci.yml passed on it.
+# Merging that pull request makes Auto release dispatch Release; the stream follows from the
+# version, so nothing downstream needs a separate path.
 on:
   workflow_dispatch:
     inputs:
+      stream:
+        description: Release stream
+        type: choice
+        options: [beta, stable]
+        default: beta
       version:
-        description: 'CalVer YYYY.M.PATCH in the current UTC month, optionally -rc.N (no v prefix)'
-        required: true
+        description: 'Optional explicit version (current UTC month, no v prefix; -rc.N for beta). Empty computes the next version of the stream'
         type: string
+        default: ''
       dry_run:
         description: Preview changes only; do not push a branch or open a PR
         type: boolean
@@ -26,6 +38,7 @@ jobs:
       contents: write
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.prepare.outputs.version }}
     steps:
       - name: Require the main branch
         env:
@@ -38,22 +51,32 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+      # Only for `cargo metadata --locked`, which proves the rewritten lock still resolves.
+      # The release tooling's own tests already ran on main in the quality job.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - name: Exercise release tooling
-        run: python -m unittest discover -s scripts -p test_release.py -v
       - name: Prepare versions and changelog
+        id: prepare
         env:
+          STREAM: ${{ inputs.stream }}
           VERSION: ${{ inputs.version }}
         run: |
-          python scripts/release.py prepare --version "$VERSION"
-          python scripts/release.py validate --tag "v$VERSION"
-          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/release-metadata.json"
-          python scripts/release.py notes --version "$VERSION" --output "$RUNNER_TEMP/release-notes.md"
-          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+          args=(--stream "$STREAM")
+          if [ -n "$VERSION" ]; then args+=(--version "$VERSION"); fi
+          python scripts/release.py prepare "${args[@]}"
+          version="$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          python scripts/release.py validate --tag "v$version"
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+          python scripts/release.py notes --version "$version" --output "$RUNNER_TEMP/release-notes.md"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "## v$version ($STREAM)"
+            echo
+            cat "$RUNNER_TEMP/release-notes.md"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload reviewable preparation preview
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-preview-v${{ inputs.version }}
+          name: release-preview-v${{ steps.prepare.outputs.version }}
           path: |
             CHANGELOG.md
             Cargo.toml
@@ -65,7 +88,7 @@ jobs:
         id: commit
         if: ${{ !inputs.dry_run }}
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.prepare.outputs.version }}
         run: |
           branch="release/v$VERSION"
           git switch -c "$branch"
@@ -96,17 +119,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ inputs.version }}
+          STREAM: ${{ inputs.stream }}
+          VERSION: ${{ needs.prepare.outputs.version }}
           CHECKED_SHA: ${{ needs.prepare.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          if [ "$STREAM" = beta ]; then
+            published="a GitHub prerelease (beta stream). Installed copies do not offer betas as updates; testers download them from the release page"
+          else
+            published="the latest GitHub Release (stable stream). Installed copies offer it as an update as soon as it is published"
+          fi
           printf '%s\n' \
-            "Prepared version v$VERSION and its changelog. Review the generated notes for accuracy and privacy before merging." \
+            "Prepared $STREAM version v$VERSION and its changelog. Review the generated notes for accuracy and privacy before merging." \
             '' \
             "Windows and Linux checks passed for commit $CHECKED_SHA: $RUN_URL" \
             '' \
             'This bot-created PR does not trigger a pull_request run. To attach the stable "Required checks" status to the PR head, manually dispatch CI on this release branch (the checks above already passed for the same commit).' \
             '' \
-            "Merging this pull request publishes Animatic v$VERSION: the \`release\` label makes Auto release dispatch Release, which validates the merge commit, builds the archives, creates tag v$VERSION at that commit and publishes the GitHub Release. Installed copies offer a stable release as an update as soon as it is published. Remove the label before merging to merge without releasing." \
+            "Merging this pull request publishes Animatic v$VERSION as $published. The \`release\` label makes Auto release dispatch Release, which validates the merge commit, builds the archives, creates tag v$VERSION at that commit and publishes. Remove the label before merging to merge without releasing." \
             > "$RUNNER_TEMP/release-pr.md"
-          gh pr create --base main --head "release/v$VERSION" --title "chore(release): v$VERSION" --label release --body-file "$RUNNER_TEMP/release-pr.md"
+          gh pr create --base main --head "release/v$VERSION" --title "chore(release): v$VERSION ($STREAM)" --label release --body-file "$RUNNER_TEMP/release-pr.md"

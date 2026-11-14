@@ -59,6 +59,10 @@ Verify the checksum before unpacking; the Windows PowerShell and Linux `sha256su
 are in [Releases](docs/releases.md#install-a-release). Linux runtime behavior has not been
 exercised by the project, and the Linux build is made on Ubuntu 22.04.
 
+Releases come in two streams: **stable** (`YYYY.M.PATCH`) and **beta** (`YYYY.M.PATCH-rc.N`),
+which GitHub lists as a prerelease. Only stable releases are offered by the in-app updater;
+download a beta manually from its release page.
+
 ### Update an installed release
 
 On Windows and Linux x86_64, Animatic can update **its own executable** from the latest stable

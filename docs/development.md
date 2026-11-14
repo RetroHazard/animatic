@@ -753,15 +753,20 @@ workflows and the [`scripts/release.py`](../scripts/release.py) tool. The full c
 maintainer procedure, required GitHub settings, archive layout and installation/verification
 instructions are in [Releases](releases.md). In short:
 
-- A maintainer runs **Release prepare** (dry run first) to bump the version in lockstep,
-  update the changelog and open a `release`-labelled pull request from `release/vVERSION`.
+- A maintainer runs **Prepare release** (dry run first), choosing the `stream`: `stable`
+  (`YYYY.M.PATCH`) or `beta` (`YYYY.M.PATCH-rc.N`). The version is computed unless the optional
+  `version` is given. The workflow bumps the version in lockstep, updates the changelog (a stable
+  folds in the betas since the previous stable) and opens a `release`-labelled pull request
+  `chore(release): vVERSION (stream)` from `release/vVERSION`.
 - Merging that pull request into `main` makes **Auto release** dispatch **Release** with the
   merge commit; **Release** validates it, builds clean packaged archives on that commit, then
-  creates the tag `vVERSION` at it and **publishes** the GitHub Release with a Windows ZIP, a
+  creates the tag `vVERSION` at it and **publishes** the GitHub Release (a stable as the latest
+  release, a beta as a prerelease) with a Windows ZIP, a
   Linux tar.gz and `SHA256SUMS`. Nobody pushes release tags by hand; a dry **Release** run can
   rehearse the release branch before merging.
 - Archives are unsigned. There are no installers, packages or attestations. The app can update
-  *itself* from a published release (the in-app updater; see
+  *itself* from a published stable release (betas are never offered; testers download them from
+  the release page; see
   [Releases](releases.md#in-app-updates)), so the archive names, the single root folder
   and the `SHA256SUMS` format are a compatibility contract with `update.rs`. A release run is
   not evidence of Linux desktop behavior or production AniDB validation.

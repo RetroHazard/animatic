@@ -229,14 +229,15 @@ class GitCase(TempDirCase):
     def commit(self, subject: str) -> None:
         git(self.root, "commit", "-q", "--allow-empty", "-m", subject)
 
-    def prepare(self, version: str, today: dt.date = NOV) -> release.PrepareResult:
-        return release.prepare(self.root, version, today=today)
+    def prepare(self, version: str | None, today: dt.date = NOV, stream: str | None = None) -> release.PrepareResult:
+        return release.prepare(self.root, version, stream=stream, today=today)
 
-    def release(self, version: str, today: dt.date = NOV) -> None:
-        self.prepare(version, today)
+    def release(self, version: str | None, today: dt.date = NOV, stream: str | None = None) -> str:
+        result = self.prepare(version, today, stream)
         git(self.root, "add", "-A")
-        git(self.root, "commit", "-q", "-m", f"chore(release): {version}")
-        git(self.root, "tag", f"v{version}")
+        git(self.root, "commit", "-q", "-m", f"chore(release): {result.version}")
+        git(self.root, "tag", f"v{result.version}")
+        return result.version
 
     def changelog(self) -> str:
         return (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
@@ -275,6 +276,27 @@ class VersionTests(unittest.TestCase):
     def test_only_calver_tags_are_release_tags(self) -> None:
         tags = release.release_tags(["v2026.11.0", "v2026.12.1-rc.1", "v1.0.0", "v2026.11", "v2026.11.0+x", "nightly"])
         self.assertEqual(sorted(tags), ["v2026.11.0", "v2026.12.1-rc.1"])
+
+
+class NextVersionTests(unittest.TestCase):
+    def test_next_version_per_stream(self) -> None:
+        v = release.parse_version
+        cases = [
+            # latest, released, stream, today, expected
+            ("2026.11.0", False, "stable", NOV, "2026.11.0"),
+            ("2026.11.0", False, "beta", NOV, "2026.11.0-rc.1"),
+            ("2026.10.3", False, "beta", NOV, "2026.11.0-rc.1"),
+            ("2026.11.0", True, "stable", NOV, "2026.11.1"),
+            ("2026.11.0", True, "beta", NOV, "2026.11.1-rc.1"),
+            ("2026.11.1-rc.4", True, "beta", NOV, "2026.11.1-rc.5"),
+            ("2026.11.1-rc.4", True, "stable", NOV, "2026.11.1"),
+            ("2026.11.1-rc.4", True, "beta", DEC, "2026.12.0-rc.1"),
+            ("2026.11.1-rc.4", True, "stable", DEC, "2026.12.0"),
+            ("2026.11.7", True, "stable", DEC, "2026.12.0"),
+        ]
+        for latest, released, stream, today, expected in cases:
+            with self.subTest(latest=latest, stream=stream, today=str(today)):
+                self.assertEqual(release.next_version(v(latest), released, stream, today).text, expected)
 
 
 class PrepareTests(GitCase):
@@ -412,14 +434,59 @@ class PrepareTests(GitCase):
         self.release("2026.12.0-rc.1", dt.date(2026, 12, 1))
         ws = tomllib.loads((self.root / "Cargo.toml").read_text(encoding="utf-8"))
         self.assertEqual(ws["workspace"]["package"]["version"], "2026.12.0-rc.1")
+        self.commit("fix: second candidate")
+        self.release("2026.12.0-rc.2", dt.date(2026, 12, 2))
         self.commit("fix: final polish")
         self.release("2026.12.0", DEC)
         text = self.changelog()
-        self.assertIn("final polish", section(text, "2026.12.0"))
-        self.assertNotIn("candidate work", section(text, "2026.12.0"))
+        stable = section(text, "2026.12.0")
+        # the stable release covers everything since the previous stable one, betas included
+        self.assertIn("Includes the changes of the beta releases 2026.12.0-rc.1, 2026.12.0-rc.2.", stable)
+        for wanted in ("final polish", "candidate work", "second candidate"):
+            self.assertEqual(stable.count(wanted), 1, wanted)
+        self.assertEqual(len(re.findall(r"(?m)^### Fixed$", stable)), 1)  # headings merged
+        # each beta keeps its own incremental section
         self.assertIn("candidate work", section(text, "2026.12.0-rc.1"))
+        self.assertNotIn("candidate work", section(text, "2026.12.0-rc.2"))
+        self.assertNotIn("Includes the changes", section(text, V0))
         self.commit("fix: later")
-        self.assertRejected("2026.12.0-rc.2", DEC, "2026.12.0")
+        self.assertRejected("2026.12.0-rc.3", DEC, "2026.12.0")
+
+    def test_streams_compute_the_next_version(self) -> None:
+        self.commit("feat: first")
+        self.assertEqual(self.release(None, NOV, "beta"), "2026.11.0-rc.1")  # first release: workspace version
+        self.commit("fix: two")
+        self.assertEqual(self.release(None, NOV, "beta"), "2026.11.0-rc.2")
+        self.assertEqual(self.release(None, NOV, "stable"), "2026.11.0")  # promotion without new commits
+        self.commit("fix: three")
+        self.assertEqual(self.release(None, NOV, "beta"), "2026.11.1-rc.1")
+        self.commit("fix: four")
+        # a beta left pending at the month's end: the new month starts at .0
+        self.assertEqual(self.release(None, DEC, "beta"), "2026.12.0-rc.1")
+        self.commit("fix: five")
+        self.assertEqual(self.release(None, DEC, "stable"), "2026.12.0")
+        self.commit("fix: six")
+        self.assertEqual(self.release(None, DEC, "stable"), "2026.12.1")
+        stable = section(self.changelog(), "2026.12.0")
+        self.assertIn("2026.11.1-rc.1, 2026.12.0-rc.1", stable)  # every beta since the last stable
+        self.assertIn("three", stable)
+
+    def test_stream_and_version_must_agree_and_betas_are_rc(self) -> None:
+        self.release(V0, NOV)
+        self.commit("feat: pending work")
+        before = snapshot(self.root)
+        for version, stream, hint in (
+            ("2026.11.1", "beta", "is a stable version, not beta"),
+            ("2026.11.1-rc.1", "stable", "is a beta version, not stable"),
+            ("2026.11.1-beta.1", None, "only prerelease form is -rc.N"),
+            ("2026.11.1-rc.0", None, "only prerelease form is -rc.N"),
+        ):
+            with self.subTest(version=version, stream=stream):
+                with self.assertRaises(release.ReleaseError) as ctx:
+                    self.prepare(version, NOV, stream)
+                self.assertIn(hint, str(ctx.exception))
+        self.assertEqual(snapshot(self.root), before)
+        self.assertEqual(run_cli(self.root, "prepare")[0], 1)  # neither --stream nor --version
 
     def test_versions_must_rise_within_a_month(self) -> None:
         self.release(V0, NOV)

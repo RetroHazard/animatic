@@ -10,6 +10,10 @@ it is strictly newer than the running version, so an equal version or a downgrad
 offered. A release that lacks the expected archive or `SHA256SUMS` asset for your platform is not
 offered.
 
+**Betas are not updates.** A beta (`YYYY.M.PATCH-rc.N`) is published as a GitHub prerelease and
+is never offered in the app; download it from its release page and install it manually. The
+stable release that follows it is offered like any other.
+
 **The steps** (each needs a click; the **Software updates** window shows the installed version
 and the current step):
 

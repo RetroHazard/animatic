@@ -7,6 +7,9 @@ name: Release
 # creates the tag vVERSION at the commit and publishes the GitHub Release. Tags are never
 # pushed by hand, and a tag push does not start this workflow. A manual run from main can
 # rehearse (dry run) or retry a failed publication of a commit that has no release yet.
+# The stream follows from the version: YYYY.M.PATCH is stable (published as the latest
+# release), YYYY.M.PATCH-rc.N is beta (published as a prerelease, never "latest"); any other
+# prerelease form fails validation. Both streams share every job below.
 on:
   workflow_dispatch:
     inputs:
@@ -36,7 +39,7 @@ jobs:
       sha: ${{ steps.metadata.outputs.sha }}
       tag: ${{ steps.metadata.outputs.tag }}
       version: ${{ steps.metadata.outputs.version }}
-      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      stream: ${{ steps.metadata.outputs.stream }}
     steps:
       - name: Require reviewed workflow code
         env:
@@ -80,17 +83,14 @@ jobs:
             echo "::error::a GitHub Release for $tag already exists; it is never overwritten"
             exit 1
           fi
+          stream="$(python scripts/release.py stream --version "$version")"
           {
             echo "sha=$sha"
             echo "tag=$tag"
             echo "version=$version"
-            if [[ "$version" == *-* ]]; then
-              echo 'prerelease=true'
-            else
-              echo 'prerelease=false'
-            fi
+            echo "stream=$stream"
           } >> "$GITHUB_OUTPUT"
-          echo "Releasing $tag from $sha (dry run: $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Releasing $tag ($stream stream) from $sha (dry run: $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: validate
@@ -157,7 +157,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          STREAM: ${{ needs.validate.outputs.stream }}
           EXPECTED_SHA: ${{ needs.validate.outputs.sha }}
         run: |
           # Refuse a tag that appeared, pointing elsewhere, between validation and now.
@@ -169,6 +169,13 @@ jobs:
               exit 1
             fi
           fi
-          flags=()
-          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
-          gh release create "$RELEASE_TAG" dist/* --target "$EXPECTED_SHA" --title "Animatic $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
+          # A beta is a prerelease and never becomes "latest"; a stable release always does,
+          # which is what the in-app updater and the release page's default download follow.
+          title="Animatic $RELEASE_TAG"
+          if [ "$STREAM" = beta ]; then
+            flags=(--prerelease --latest=false)
+            title="$title (beta)"
+          else
+            flags=(--latest)
+          fi
+          gh release create "$RELEASE_TAG" dist/* --target "$EXPECTED_SHA" --title "$title" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"
