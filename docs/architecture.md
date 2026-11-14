@@ -612,9 +612,9 @@ Rules the code relies on:
   `--database FILE` (absolute) and nothing else (never media files or `--full-update`), inherits the
   environment, and gets `ANIMATIC_SETTINGS` as the absolute path in use when it was set. A failed spawn is reported as an error telling the
   user to start Animatic manually; there is no retry.
-- **Scope of an install.** Only the executable is replaced; versioned license files are added next
+- **Scope of an install.** Only the executable is replaced; versioned license and notices files are added next
   to it. Profiles, database, settings, backups, queue and media are untouched, and the canonical
-  `LICENSE`, `THIRD-PARTY-NOTICES.html`, README, changelog and docs of the original archive remain.
+  `LICENSE`, `NOTICES`, README, changelog and docs of the original archive remain.
 - **No AniDB coupling.** The update path uses no AniDB client, spacing or cooldown, and its failures
   never enter the command queue. Only the startup check consults AniDB *settings* (offline,
   recovery) to decide whether to contact GitHub automatically.
@@ -798,7 +798,7 @@ then builds, lints and tests the workspace with `--locked` on
 `ubuntu-22.04` and `windows-latest`. `scripts/release.py` (Python 3.11+, standard library only)
 keeps the workspace version, the internal dependency pins, `Cargo.lock`'s local crate entries
 and `CHANGELOG.md` consistent, extracts release notes, builds the Windows ZIP and Linux tar.gz
-archives from an explicit binary plus the licence, a generated `THIRD-PARTY-NOTICES.html` (`cargo-about`), README, changelog and the `wiki/` user guide (as `docs/*.md`), and writes
+archives from an explicit binary plus the licence, the committed `NOTICES` (generated with `cargo-about`), README, changelog and the `wiki/` user guide (as `docs/*.md`), and writes
 `SHA256SUMS`. `release-prepare.yml`, `auto-release.yml` and `release.yml` orchestrate it:
 preparation opens a reviewed, `release`-labelled pull request, and merging it makes Release tag
 the merge commit `vVERSION` and publish the GitHub Release. `wiki.yml` mirrors `wiki/` to the
@@ -880,5 +880,5 @@ implemented. Line numbers are for this tree and may drift; search for the functi
 | MyList export request and import | `crates/animatic-anidb/src/commands.rs`: `mylist_export`, `mylist_export_cancel`; `crates/animatic-core/src/sync.rs`: `Command::{MylistExport, MylistExportCancel}`, `execute`; `limits.rs`: `RequestKind::MylistExport`; `crates/animatic-core/src/mylist_export/`: `read_export`, `xml::read_document`, `Db::import_mylist_export`; `worker.rs`: `Job::ImportMylistExport`; `crates/animatic/src/app/mylist_export.rs`: `mylist_export_window`, `import_mylist_export` |
 | Updates | `crates/animatic-core/src/update.rs`: `UpdateClient`, `ReleaseInfo`, `VerifiedUpdate`; `worker.rs`: `Updater`, `UpdateJob`, `UpdateEvent`; `app.rs`: the Software updates window (`update_window`), `update_blocker`, `restart_now`; `main.rs`: executable capture and restart after `run_native` |
 | Single instance, file-menu entry | `crates/animatic-core/src/instance.rs`: `start`, `Primary`, `Incoming`; `shell_integration.rs`: `ShellIntegration`, `Status`; `crates/animatic/src/app/shell_menu.rs`; `app.rs`: `process_handoff`, `apply_shell_integration`; `main.rs`: `instance::start` |
-| About window and license | `crates/animatic/src/app.rs`: `about_window` (developer credit from the package authors; **Source code**, **Documentation** and **AniDB website** buttons on one row; **Third-party notices** opens the versioned or bundled `THIRD-PARTY-NOTICES.html` found next to the executable) and `license_window` (`include_str!` of the root `LICENSE`, kept LF by `.gitattributes`; default width measured from the longest line plus the window frame and scroll bar, so the text does not wrap at its opening size) |
+| About window and license | `crates/animatic/src/app.rs`: `about_window` (developer credit from the package authors; **Source code**, **Documentation** and **AniDB website** buttons on one row; **Third-party notices** opens the notices window, always available) and `license_window`/`notices_window` (`include_str!` of the root `LICENSE` and `NOTICES`, kept LF by `.gitattributes`; default width measured from the longest line plus the window frame and scroll bar, so the text does not wrap at its opening size) |
 | Anime detail reviews | `crates/animatic/src/app/review_markup.rs`: `layout` (styled `LayoutJob` for a review body) over the private `parse`; `app.rs`: `anime_detail_window` (Reviews section); review rows come only from the AOM import (`legacy/import.rs`) |

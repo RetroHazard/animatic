@@ -31,6 +31,5 @@ animatic-statistics.*
 
 # Release tooling output and Python bytecode
 /dist/
-/THIRD-PARTY-NOTICES.html
 __pycache__/
 *.py[cod]

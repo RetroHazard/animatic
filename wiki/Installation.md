@@ -39,7 +39,7 @@ Each GitHub Release lists three assets (if the project has published one):
 
 | Asset | Content | Platform |
 |---|---|---|
-| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and this user guide as `docs/*.md` | Windows |
+| `animatic-vVERSION-windows-x86_64.zip` | `animatic.exe` plus `LICENSE`, `NOTICES`, `README.md`, `CHANGELOG.md` and this user guide as `docs/*.md` | Windows |
 | `animatic-vVERSION-linux-x86_64.tar.gz` | `animatic` (executable) plus the same license and documentation files | Linux |
 | `SHA256SUMS` | SHA-256 of both archives | both |
 
@@ -52,9 +52,9 @@ point to GitHub, and the Rust API documentation is not included.
 
 Once running, an installed release can replace its own executable with a newer published
 release through **Help → Check for updates…** (Windows and Linux x86_64, writable folder
-required, no elevation). The bundled `LICENSE`, `THIRD-PARTY-NOTICES.html`, README, changelog
+required, no elevation). The bundled `LICENSE`, `NOTICES`, README, changelog
 and guides stay at the version you unpacked; the new version's licenses are added as
-`LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` beside the executable. Details and
+`LICENSE-vVERSION` and `NOTICES-vVERSION` beside the executable. Details and
 limits: [Updating Animatic](Updating-Animatic.md). A checkout built from source can run
 the updater, but it only replaces the compiled binary, never the source; use `git pull` and
 rebuild, and update package-manager installations with that manager.

@@ -10,7 +10,7 @@ Commands (``--root`` is a global option and goes BEFORE the subcommand):
     python scripts/release.py prepare --version YYYY.M.PATCH
     python scripts/release.py validate [--tag vYYYY.M.PATCH]
     python scripts/release.py notes --version YYYY.M.PATCH --output PATH
-    python scripts/release.py package --platform windows|linux --binary PATH --notices PATH --output DIR
+    python scripts/release.py package --platform windows|linux --binary PATH --output DIR
     python scripts/release.py checksums --directory DIR
 
 ``prepare`` bumps the workspace version, every explicit internal dependency
@@ -51,7 +51,7 @@ PLATFORMS = {
     "linux": (".tar.gz", "animatic"),
 }
 # Fixed top-level files that ship in every archive; the user guide is added under docs/.
-PACKAGED_FILES = ("LICENSE", "README.md", CHANGELOG_NAME)
+PACKAGED_FILES = ("LICENSE", "NOTICES", "README.md", CHANGELOG_NAME)
 # The user guide's source (published as the GitHub wiki) and its directory in the archive.
 GUIDE_DIR = "wiki"
 ARCHIVE_DOCS_DIR = "docs"
@@ -971,6 +971,8 @@ def package_files(root: Path) -> list[tuple[str, str]]:
         if not (root / name).exists():
             raise ReleaseError(f"{name} is missing")
         _require_regular(root, name)
+    if (root / "NOTICES").stat().st_size == 0:
+        raise ReleaseError("NOTICES is empty")
     return [*((name, name) for name in PACKAGED_FILES), *doc_files(root)]
 
 
@@ -999,10 +1001,7 @@ def _add_to_tar(tf: tarfile.TarFile, arcname: str, source: Path | None, mode: in
         tf.addfile(info, src)
 
 
-NOTICES_NAME = "THIRD-PARTY-NOTICES.html"
-
-
-def build_package(root: Path, platform: str, binary: Path, notices: Path, output: Path) -> Path:
+def build_package(root: Path, platform: str, binary: Path, output: Path) -> Path:
     if platform not in PLATFORMS:
         raise ReleaseError(f"unsupported platform {platform!r}; expected one of {', '.join(PLATFORMS)}")
     state = check_repository(root)
@@ -1014,14 +1013,6 @@ def build_package(root: Path, platform: str, binary: Path, notices: Path, output
         raise ReleaseError(f"binary {binary} must be a file, not a directory")
     if binary.stat().st_size == 0:
         raise ReleaseError(f"binary {binary} is empty")
-    if notices.is_symlink():
-        raise ReleaseError(f"notices file {notices} must be a regular file, not a symbolic link")
-    if not notices.exists():
-        raise ReleaseError(f"notices file {notices} does not exist")
-    if not notices.is_file():
-        raise ReleaseError(f"notices file {notices} must be a regular file")
-    if notices.stat().st_size == 0:
-        raise ReleaseError(f"notices file {notices} is empty")
     if output.exists() and not output.is_dir():
         raise ReleaseError(f"output {output} exists and is not a directory")
 
@@ -1030,7 +1021,6 @@ def build_package(root: Path, platform: str, binary: Path, notices: Path, output
     binary_name = PLATFORMS[platform][1]
     entries: list[tuple[str, Path, int]] = [(binary_name, binary, 0o755)]
     entries += [(name, root / name, 0o644) for name in PACKAGED_FILES]
-    entries.append((NOTICES_NAME, notices, 0o644))
     entries += [(archive, root / source, 0o644) for archive, source in files if archive not in PACKAGED_FILES]
 
     output.mkdir(parents=True, exist_ok=True)
@@ -1133,7 +1123,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("package", help="build a release archive")
     p.add_argument("--platform", required=True, choices=sorted(PLATFORMS))
     p.add_argument("--binary", required=True, type=Path)
-    p.add_argument("--notices", required=True, type=Path, help="generated third-party license notices (HTML)")
     p.add_argument("--output", required=True, type=Path, help="output directory")
 
     p = sub.add_parser("checksums", help="write SHA256SUMS for the release archives")
@@ -1163,7 +1152,7 @@ def run(args: argparse.Namespace) -> None:
         args.output.write_bytes(text.encode("utf-8"))
         print(f"Wrote release notes for {args.version} to {args.output}")
     elif args.command == "package":
-        print(build_package(root, args.platform, args.binary, args.notices, args.output))
+        print(build_package(root, args.platform, args.binary, args.output))
     elif args.command == "checksums":
         path = write_checksums(root, args.directory)
         print(path.read_text(encoding="ascii"), end="")

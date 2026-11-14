@@ -470,24 +470,6 @@ fn pick_aom_databank_folder() -> Option<PathBuf> {
         .pick_folder()
 }
 
-/// The license document shipped next to the executable for this exact version
-/// (`LICENSE-v2026.11.0`, left by an update) if there is one, else the canonical file of the
-/// manual package.
-fn bundled_document(dir: &Path, stem: &str, extension: &str, version: &str) -> Option<PathBuf> {
-    let suffix = if extension.is_empty() {
-        String::new()
-    } else {
-        format!(".{extension}")
-    };
-    [
-        format!("{stem}-v{version}{suffix}"),
-        format!("{stem}{suffix}"),
-    ]
-    .into_iter()
-    .map(|name| dir.join(name))
-    .find(|path| path.is_file())
-}
-
 /// A planned rename of one file, shown for confirmation.
 struct RenamePreview {
     id: i64,
@@ -568,6 +550,8 @@ pub struct AnimaticApp {
     about_open: bool,
     /// The license text window opened from About.
     license_open: bool,
+    /// The third-party notices window opened from About.
+    notices_open: bool,
     /// Ctrl+F asked for the page's search field to take the keyboard focus.
     focus_search: bool,
     /// The status line holds an error that stays until the next message replaces it.
@@ -712,6 +696,7 @@ impl AnimaticApp {
             settings_open: false,
             about_open: false,
             license_open: false,
+            notices_open: false,
             focus_search: false,
             status_error: false,
             options_page: OptionsPage::Account,
@@ -2165,27 +2150,14 @@ impl AnimaticApp {
                     if ui.button("View license").clicked() {
                         self.license_open = true;
                     }
-                    let notices = self
-                        .executable_path()
-                        .and_then(Path::parent)
-                        .and_then(|dir| {
-                            bundled_document(
-                                dir,
-                                "THIRD-PARTY-NOTICES",
-                                "html",
-                                env!("CARGO_PKG_VERSION"),
-                            )
-                        });
                     if ui
-                        .add_enabled(notices.is_some(), egui::Button::new("Third-party notices"))
-                        .on_hover_text("Opens in your web browser")
-                        .on_disabled_hover_text(
-                            "No THIRD-PARTY-NOTICES.html file found next to the program",
+                        .button("Third-party notices")
+                        .on_hover_text(
+                            "Licenses of the open-source components built into this version",
                         )
                         .clicked()
-                        && let Some(path) = notices
                     {
-                        let _ = open::that(path);
+                        self.notices_open = true;
                     }
                 });
             });
@@ -2228,6 +2200,54 @@ impl AnimaticApp {
             });
         if !open || dialog::escape_closes(ctx, shown.as_ref()) {
             self.license_open = false;
+        }
+    }
+
+    /// The third-party notices (the root `NOTICES` file) built into this version. The text is
+    /// long, so only the visible lines are laid out, without wrapping.
+    fn notices_window(&mut self, ctx: &egui::Context) {
+        static LINES: std::sync::LazyLock<Vec<&'static str>> =
+            std::sync::LazyLock::new(|| include_str!("../../../NOTICES").lines().collect());
+        if !self.notices_open {
+            return;
+        }
+        // Room for the notices' 100-column prose; longer lines scroll sideways.
+        let style = ctx.global_style();
+        let font = egui::TextStyle::Monospace.resolve(&style);
+        let text_width = ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap("M".repeat(100), font, Color32::PLACEHOLDER)
+                .size()
+                .x
+        });
+        let width = text_width
+            + egui::Frame::window(&style).total_margin().sum().x
+            + style.spacing.scroll.allocated_width()
+            + 8.0;
+        let mut open = true;
+        let shown = dialog::window(ctx, "Third-party notices")
+            .open(&mut open)
+            .default_width(width.min(ctx.content_rect().width() * 0.9))
+            .default_height(ctx.content_rect().height() * 0.7)
+            .show(ctx, |ui| {
+                let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                egui::ScrollArea::both().auto_shrink(false).show_rows(
+                    ui,
+                    row_height,
+                    LINES.len(),
+                    |ui, rows| {
+                        for line in &LINES[rows] {
+                            ui.add(
+                                egui::Label::new(RichText::new(*line).monospace())
+                                    .extend()
+                                    .selectable(true),
+                            );
+                        }
+                    },
+                );
+            });
+        if !open || dialog::escape_closes(ctx, shown.as_ref()) {
+            self.notices_open = false;
         }
     }
 
@@ -5670,6 +5690,7 @@ impl eframe::App for AnimaticApp {
         self.media_install_window(&ctx);
         self.about_window(&ctx);
         self.license_window(&ctx);
+        self.notices_window(&ctx);
         // Worker events are only seen while frames run, so poll while anything is in flight.
         // A job the scheduler thread started (autostart, scheduled scan) has no UI action that
         // triggers a frame, so the worker's own pending count keeps the polling going too.
@@ -6280,32 +6301,5 @@ mod tests {
         settings.anidb.offline = false;
         settings.updates.auto_check = false;
         assert!(!startup_check_allowed(&settings, false));
-    }
-
-    #[test]
-    fn license_documents_prefer_the_copy_for_this_version() {
-        let dir = std::env::temp_dir().join(format!("animatic-docs-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let version = "2099.1.0";
-        assert_eq!(bundled_document(&dir, "LICENSE", "", version), None);
-
-        std::fs::write(dir.join("LICENSE"), "canonical").unwrap();
-        std::fs::write(dir.join("LICENSE-v2098.1.0"), "other version").unwrap();
-        assert_eq!(
-            bundled_document(&dir, "LICENSE", "", version),
-            Some(dir.join("LICENSE"))
-        );
-
-        std::fs::write(dir.join("LICENSE-v2099.1.0"), "this version").unwrap();
-        std::fs::write(dir.join("THIRD-PARTY-NOTICES-v2099.1.0.html"), "n").unwrap();
-        assert_eq!(
-            bundled_document(&dir, "LICENSE", "", version),
-            Some(dir.join("LICENSE-v2099.1.0"))
-        );
-        assert_eq!(
-            bundled_document(&dir, "THIRD-PARTY-NOTICES", "html", version),
-            Some(dir.join("THIRD-PARTY-NOTICES-v2099.1.0.html"))
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

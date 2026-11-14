@@ -50,20 +50,20 @@ it explicitly.
 [`self-replace`](https://crates.io/crates/self-replace) crate, which performs the operating-system
 specific swap (on Windows the running executable is renamed aside and removed after it exits).
 Before that swap Animatic writes the new release's license files **next to the executable** as
-`LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` (for example
+`LICENSE-vVERSION` and `NOTICES-vVERSION` (for example
 `LICENSE-v2026.12.0`). An existing different file of that name, or a symlink, is never
 overwritten; an identical file is fine. Everything else is left alone:
 
-- The bundled `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and `docs/`
+- The bundled `LICENSE`, `NOTICES`, `README.md`, `CHANGELOG.md` and `docs/`
   stay at the **old** version. They change only if you replace them from a newly downloaded
   archive yourself. The documentation you are reading may therefore describe an older version
   than the executable.
 - Your database, settings, backups, profiles, queue, media and any files you have hashed are
   never touched; an update replaces the program only.
-- The new version's licenses are the versioned files next to the executable. After the next
+- The new version's licenses are also the versioned files next to the executable. After the next
   start, **About Animatic → View license** shows the license built into the version you run, and
-  **Third-party notices** opens `THIRD-PARTY-NOTICES-vVERSION.html` for that version, falling back
-  to the older bundled copy only when that file does not exist.
+  **Third-party notices** shows the `NOTICES` text built into that version; the versioned files are
+  only copies for you.
 - Installing also creates an empty `.animatic-update.lock` file next to the executable. The
   operating system holds an advisory lock on it only while an install runs, so two Animatic
   processes cannot install at once; the file is harmless, may remain afterwards and can be

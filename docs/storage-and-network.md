@@ -940,7 +940,7 @@ deadlines of 60 s for one metadata page, 60 s for `SHA256SUMS` and 30 minutes fo
 exactly one line for the expected archive. The archive's SHA-256 is computed while streaming and must
 equal it; when GitHub's asset `digest` (`sha256:...`) is listed it must agree as well. Only then is the
 archive opened. It must have the single expected root folder (the archive stem); the executable
-(`animatic[.exe]`; on Linux it must carry an executable mode), `LICENSE` and `THIRD-PARTY-NOTICES.html` are
+(`animatic[.exe]`; on Linux it must carry an executable mode), `LICENSE` and `NOTICES` are
 extracted into a private temporary directory owned by the returned `VerifiedUpdate`; `README.md`,
 `CHANGELOG.md` and `docs/*.md` entries are only admitted by name, type and declared size: their content
 is never read, extracted or CRC-checked (the archive-level SHA-256 is the only integrity check); any other entry,
@@ -962,7 +962,7 @@ it. An install then runs in this order, and stops at the first failure:
    Re-validate the identity under the lock. An unwritable folder is `UpdateError::NotWritable`; there is
    no privilege escalation.
 3. Re-verify the staged files' hashes.
-4. Write `LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` beside the executable, additively:
+4. Write `LICENSE-vVERSION` and `NOTICES-vVERSION` beside the executable, additively:
    never over a different existing file or a symlink; an identical existing file is accepted.
 5. **Windows only:** create a recovery copy of the current executable next to it,
    `.animatic-recovery-RANDOM.exe` (dot-prefixed, created exclusively).
@@ -983,7 +983,7 @@ files placed in step 4 may remain after a later failure and are harmless. The st
 temporary directory until the `VerifiedUpdate` is dropped.
 
 The desktop About window prefers the versioned third-party notices for the running version and shows
-Animatic's own license from the text built into the executable. The updater thread
+Animatic's own license from the texts built into the executable (`NOTICES` and `LICENSE`); the versioned files beside the executable are only for the user. The updater thread
 owns the install, so a quit waits for it (see [Architecture](architecture.md#updater-thread)).
 
 **Tests.** Automated tests use synthetic archives and loopback servers only; they never contact GitHub or

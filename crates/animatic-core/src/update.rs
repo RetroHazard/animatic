@@ -20,13 +20,13 @@
 //!   lists; it does **not** authenticate the publisher: the archives are unsigned.
 //! * Every download and every extraction is size-bounded (see the `MAX_*` constants), the
 //!   archive is verified before it is opened, and only the exact executable, `LICENSE` and
-//!   `THIRD-PARTY-NOTICES.html` are extracted. Any other entry must be a known bundled
+//!   `NOTICES` are extracted. Any other entry must be a known bundled
 //!   document and is only validated.
 //!
 //! # Installation
 //!
 //! [`VerifiedUpdate::install`] first writes the new `LICENSE-v<version>` and
-//! `THIRD-PARTY-NOTICES-v<version>.html` next to the executable (additive, never overwriting a
+//! `NOTICES-v<version>` next to the executable (additive, never overwriting a
 //! different file), then replaces the executable with the maintained `self-replace` crate.
 //! Concurrent installers are serialized with an advisory lock on the reserved, empty
 //! `.animatic-update.lock` file in the installation folder; the file's content is never read
@@ -995,7 +995,7 @@ impl Manifest {
             ([], true) | (["docs"], true) => Role::Dir,
             ([file], false) if *file == self.exe_name => Role::Exe,
             (["LICENSE"], false) => Role::License,
-            (["THIRD-PARTY-NOTICES.html"], false) => Role::Notices,
+            (["NOTICES"], false) => Role::Notices,
             (["README.md"], false) | (["CHANGELOG.md"], false) => Role::Doc,
             (["docs", file], false) if valid_doc_name(file) => Role::Doc,
             _ => return Err(unsafe_name()),
@@ -1109,7 +1109,7 @@ impl Collected {
         let (slot, file_name) = match role {
             Role::Exe => (&mut self.exe, exe_name),
             Role::License => (&mut self.license, "LICENSE"),
-            Role::Notices => (&mut self.notices, "THIRD-PARTY-NOTICES.html"),
+            Role::Notices => (&mut self.notices, "NOTICES"),
             Role::Doc | Role::Dir => return Ok(()),
         };
         if slot.is_some() {
@@ -1288,9 +1288,7 @@ fn extract(platform: Platform, version: &str, archive: &Path, stage: &Path) -> R
     let missing = |what: &str| UpdateError::Archive(format!("the archive does not contain {what}"));
     let exe = collected.exe.ok_or_else(|| missing(platform.exe_name()))?;
     let license = collected.license.ok_or_else(|| missing("LICENSE"))?;
-    let notices = collected
-        .notices
-        .ok_or_else(|| missing("THIRD-PARTY-NOTICES.html"))?;
+    let notices = collected.notices.ok_or_else(|| missing("NOTICES"))?;
     validate_executable(platform, &exe.path)?;
     #[cfg(unix)]
     {
@@ -1755,7 +1753,7 @@ impl VerifiedUpdate {
         )?;
         install_additive(
             &self.files.notices.path,
-            &dir.join(format!("THIRD-PARTY-NOTICES-v{}.html", self.version)),
+            &dir.join(format!("NOTICES-v{}", self.version)),
         )?;
         replace_with_recovery(&exe, &self.files.exe.path, backup, replace)?;
         Ok(self.version.clone())
@@ -1777,7 +1775,7 @@ mod tests {
     use std::thread;
 
     const LICENSE_TEXT: &[u8] = b"synthetic license text\n";
-    const NOTICES_TEXT: &[u8] = b"<html>synthetic notices</html>\n";
+    const NOTICES_TEXT: &[u8] = b"synthetic notices\n";
     const VER: &str = "2099.1.0";
     const CURRENT: &str = "2026.11.0";
     const BOTH: [Platform; 2] = [Platform::Windows, Platform::Linux];
@@ -2004,10 +2002,7 @@ mod tests {
         }
         entries.push(Entry::exec(&format!("{stem}/{}", platform.exe_name()), exe));
         entries.push(Entry::file(&format!("{stem}/LICENSE"), LICENSE_TEXT));
-        entries.push(Entry::file(
-            &format!("{stem}/THIRD-PARTY-NOTICES.html"),
-            NOTICES_TEXT,
-        ));
+        entries.push(Entry::file(&format!("{stem}/NOTICES"), NOTICES_TEXT));
         entries.push(Entry::file(&format!("{stem}/README.md"), b"readme"));
         entries.push(Entry::file(&format!("{stem}/CHANGELOG.md"), b"changelog"));
         entries.push(Entry::file(&format!("{stem}/docs/guide.md"), b"guide"));
@@ -2415,7 +2410,7 @@ mod tests {
             Role::License
         );
         assert_eq!(
-            accept(&format!("{stem}/THIRD-PARTY-NOTICES.html"), false, 1).unwrap(),
+            accept(&format!("{stem}/NOTICES"), false, 1).unwrap(),
             Role::Notices
         );
         assert_eq!(
@@ -2963,7 +2958,7 @@ mod tests {
             let mut expected = vec![
                 platform.exe_name().to_owned(),
                 "LICENSE".to_owned(),
-                "THIRD-PARTY-NOTICES.html".to_owned(),
+                "NOTICES".to_owned(),
             ];
             expected.sort();
             assert_eq!(
@@ -3225,7 +3220,7 @@ mod tests {
             for name in [
                 platform.exe_name().to_owned(),
                 "LICENSE".to_owned(),
-                "THIRD-PARTY-NOTICES.html".to_owned(),
+                "NOTICES".to_owned(),
                 "docs/guide.md".to_owned(),
             ] {
                 let mut entries = standard_entries(platform, VER, &fake_exe(platform));
@@ -3239,7 +3234,7 @@ mod tests {
     fn archives_missing_required_files_are_rejected() {
         for platform in BOTH {
             let stem = platform.stem(VER);
-            for name in [platform.exe_name(), "LICENSE", "THIRD-PARTY-NOTICES.html"] {
+            for name in [platform.exe_name(), "LICENSE", "NOTICES"] {
                 let mut entries = standard_entries(platform, VER, &fake_exe(platform));
                 let full = format!("{stem}/{name}");
                 entries.retain(|e| e.name != full);
@@ -3430,7 +3425,7 @@ mod tests {
         }
 
         fn notices(&self) -> PathBuf {
-            self.dir.join(format!("THIRD-PARTY-NOTICES-v{VER}.html"))
+            self.dir.join(format!("NOTICES-v{VER}"))
         }
     }
 
@@ -3918,7 +3913,7 @@ mod tests {
             LICENSE_TEXT
         );
         assert_eq!(
-            fs::read(install_dir.join(format!("THIRD-PARTY-NOTICES-v{VER}.html"))).unwrap(),
+            fs::read(install_dir.join(format!("NOTICES-v{VER}"))).unwrap(),
             NOTICES_TEXT
         );
 

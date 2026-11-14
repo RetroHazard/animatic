@@ -14,14 +14,14 @@ name: CI
 #
 # Three modes, so no commit pays for the same work twice:
 # - check (pull requests, merge groups, manual and release-preparation runs): Clippy,
-#   tests and rustdoc on Windows and Linux in the `ci` profile, plus the license notices.
+#   tests and rustdoc on Windows and Linux in the `ci` profile, plus the license notices check.
 #   No release executable unless a manual run asks for one.
 # - refresh (pushes to main): the merged code was checked on its pull request, so only
 #   the dependency caches that pull requests restore are kept current. A cache that
 #   already exists for the lockfile and toolchain costs a lookup; a missing one is
 #   rebuilt by running the same checks, which also checks that commit.
 # - package (`package: true`, releases): the tag is on checked main history, so only the
-#   clean, uncached release executables and notices are built and packaged.
+#   clean, uncached release executables are built and packaged with the repository NOTICES.
 on:
   push:
     branches: [main]
@@ -235,7 +235,7 @@ jobs:
         if: needs.plan.outputs.rust == 'true'
         run: cargo fmt --all -- --check
 
-  # Dependency license policy and the generated notices bundled into releases.
+  # Dependency license policy and the committed NOTICES file bundled into releases.
   # Starts only after quality passed, so a failed quality run spends no further runners.
   # Refresh runs only keep the registry and renderer caches current; they generate nothing.
   notices:
@@ -311,7 +311,7 @@ jobs:
         if: env.CI_MODE != 'refresh'
         run: |
           log="$RUNNER_TEMP/cargo-about.stderr"
-          if ! cargo about generate --locked --fail about.hbs --output-file "$RUNNER_TEMP/THIRD-PARTY-NOTICES.html" 2> "$log"; then
+          if ! cargo about generate --locked --fail about.hbs --output-file "$RUNNER_TEMP/NOTICES" 2> "$log"; then
             cat "$log" >&2
             exit 1
           fi
@@ -320,12 +320,13 @@ jobs:
           # Require maintainer review rather than silently accepting fallback notices.
           test ! -s "$log"
       - if: env.CI_MODE != 'refresh'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          name: dependency-notices
-          path: ${{ runner.temp }}/THIRD-PARTY-NOTICES.html
-          if-no-files-found: error
-          retention-days: 14
+          python-version: '3.12'
+      # The committed NOTICES must equal the generated text (regenerate command in the error).
+      - name: Check the committed NOTICES is up to date
+        if: env.CI_MODE != 'refresh'
+        run: python scripts/ci.py notices "$RUNNER_TEMP/NOTICES"
 
   # Independent of notices so one failure never hides the other's diagnostics; both wait
   # for quality but not for each other.
@@ -418,7 +419,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # Release callers only: wrap the checked executables and notices into archives.
+  # Release callers only: wrap the checked executables and the repository NOTICES into archives.
   # Plain name for the same reason as `rust`: it is skipped on every ordinary run.
   package:
     name: Package
@@ -442,15 +443,11 @@ jobs:
         with:
           name: animatic-${{ matrix.platform }}-x86_64
           path: ${{ runner.temp }}/animatic-executable
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: dependency-notices
-          path: ${{ runner.temp }}/animatic-notices
       - name: Package release archive
         env:
           PLATFORM: ${{ matrix.platform }}
           BINARY: ${{ matrix.platform == 'windows' && 'animatic.exe' || 'animatic' }}
-        run: python scripts/release.py package --platform "$PLATFORM" --binary "$RUNNER_TEMP/animatic-executable/$BINARY" --notices "$RUNNER_TEMP/animatic-notices/THIRD-PARTY-NOTICES.html" --output dist
+        run: python scripts/release.py package --platform "$PLATFORM" --binary "$RUNNER_TEMP/animatic-executable/$BINARY" --output dist
       - name: Upload release archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

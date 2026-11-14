@@ -52,7 +52,7 @@ There is **no media-deletion UI**, and renaming is never implicit. See the
 Published [GitHub Releases](https://github.com/RetroHazard/animatic/releases) carry an
 unsigned `animatic-vVERSION-windows-x86_64.zip`, an unsigned
 `animatic-vVERSION-linux-x86_64.tar.gz` and a `SHA256SUMS` file. Each archive contains the
-executable plus `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`, `CHANGELOG.md` and the user
+executable plus `LICENSE`, `NOTICES`, `README.md`, `CHANGELOG.md` and the user
 guide from the [wiki](https://github.com/RetroHazard/animatic/wiki) as `docs/*.md` for offline
 reading (developer and Rust API documentation are not included). There is no installer or code signing.
 Verify the checksum before unpacking; the Windows PowerShell and Linux `sha256sum` commands

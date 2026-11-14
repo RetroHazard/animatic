@@ -44,9 +44,9 @@ download of these same assets and adds no signing. Other architectures, distribu
 targets are not built.
 
 Each archive does include license notices: Animatic's own `LICENSE` and a generated
-`THIRD-PARTY-NOTICES.html` listing the licenses of the Rust dependencies (including the fonts
+`NOTICES` (committed plain text in the repository root) listing the licenses of the Rust dependencies (including the fonts
 embedded by the UI toolkit). These are license-compliance material, not code signing, and they
-say nothing about the origin or integrity of the binary. They are generated automatically and
+say nothing about the origin or integrity of the binary. They are generated with `cargo-about`, committed as `NOTICES`, and
 are **not a legal audit**; see [Third-party notices](#third-party-notices) for their limits.
 
 ## Install a release
@@ -119,19 +119,19 @@ been run against a real GitHub release or on Linux by the project.
   `animatic-vVERSION-windows-x86_64.zip` or `animatic-vVERSION-linux-x86_64.tar.gz` and
   `SHA256SUMS` with the standard `sha256sum` format (64 lowercase hex digits, two spaces, the file
   name). The archive must have exactly one root folder (the archive stem) containing the
-  executable (`animatic.exe` or `animatic`), `LICENSE`, `THIRD-PARTY-NOTICES.html`, `README.md`,
+  executable (`animatic.exe` or `animatic`), `LICENSE`, `NOTICES`, `README.md`,
   `CHANGELOG.md` and `docs/*.md` (the user guide), as built by `release.py package` (see
   [Archive contents](#archive-contents)). Renaming assets, changing the folder layout or the
   checksum format breaks updates for every already-installed copy, so change
   `scripts/release.py` and `animatic-core/src/update.rs` together and keep the previous layout readable
   for as long as older versions are in use.
 - **What gets installed.** Only the executable is swapped, using the maintained `self-replace`
-  crate. The new `LICENSE` and `THIRD-PARTY-NOTICES.html` are written beside it as
-  `LICENSE-vVERSION` and `THIRD-PARTY-NOTICES-vVERSION.html` before the swap and are never
-  overwritten if a different file exists. The old `LICENSE`, `THIRD-PARTY-NOTICES.html`,
+  crate. The new `LICENSE` and `NOTICES` are written beside it as
+  `LICENSE-vVERSION` and `NOTICES-vVERSION` before the swap and are never
+  overwritten if a different file exists. The old `LICENSE`, `NOTICES`,
   `README.md`, `CHANGELOG.md` and `docs/` stay as they were until the user replaces them from a new
   archive by hand (so the bundled guides can lag the executable), and the About window shows the
-  versioned third-party notices for the running version (its own license text is built into the
+  built-in third-party notices and license text (both are built into the
   executable). Profiles, databases, settings and media are never touched.
 - **Limits.** Metadata 1 MiB, `SHA256SUMS` 64 KiB, archive 256 MiB, extracted executable 512 MiB,
   each license file 8 MiB. A release whose archive would exceed them cannot be installed by the
@@ -229,7 +229,7 @@ synthetic fixture repositories.
 | `python scripts/release.py prepare --version VERSION` | Validate the version and update `workspace.package.version`, the explicit internal dependency versions and the `Cargo.lock` entries of the local crates; write the dated changelog section and a new empty `Unreleased`. Internal dependency pins are rewritten only in the one-line inline form (`{ version = "…", path = "…" }`); any other table form is refused before anything is written. Performs no `git commit` or push and does not require a globally clean worktree, but it rewrites those files, so run it where you can discard the result. Refuses a duplicate section, an existing tag or a version that is not an increase, and fails before changing files where possible. Prints the changed paths. There is no `--dry-run` or date option; rehearse in a disposable worktree (below). |
 | `python scripts/release.py validate [--tag vVERSION]` | Check that the workspace, crates, internal dependency requirements and lock file agree. With `--tag`, additionally require the tag to equal the workspace version and require a non-empty matching changelog section. Without a tag, an `Unreleased`-only repository passes. Exits non-zero on any error. |
 | `python scripts/release.py notes --version VERSION --output PATH` | Write exactly that version's changelog section (non-empty, with no `Unreleased` content) as the GitHub release notes. The output path may be anywhere, including outside the repository. |
-| `python scripts/release.py package --platform windows\|linux --binary PATH --notices PATH --output DIRECTORY` | Validate metadata, then build the archive from an explicit binary, the generated third-party notices file and tracked `docs/*.md` selected by `git ls-files`. `--notices` is required. Refuses missing, empty, directory or symlinked binary/notices inputs, missing tracked docs, and repository documents redirected outside the checkout. The explicitly selected binary and notices may live outside it. See [Archive contents](#archive-contents). |
+| `python scripts/release.py package --platform windows\|linux --binary PATH --output DIRECTORY` | Validate metadata, then build the archive from an explicit binary, the repository `LICENSE` and `NOTICES` and tracked `docs/*.md` selected by `git ls-files`. Refuses missing, empty, directory or symlinked binary input, missing tracked docs, and repository documents redirected outside the checkout. The explicitly selected binary may live outside it. See [Archive contents](#archive-contents). |
 | `python scripts/release.py checksums --directory DIRECTORY` | Require exactly the two archives of the current version (plus an optional existing `SHA256SUMS`), hash them by streaming and write `SHA256SUMS`. Missing, symlinked or unexpected files are errors. |
 
 Do not rehearse `prepare` in a working tree that holds your own changes: it rewrites version
@@ -269,13 +269,13 @@ GitHub Release, tag or push. The release workflows reuse it through
 default `false`). A call with a non-empty `ref` runs every check, never the planner's reduced
 selection; release preparation uses this for its bot branch. A call with `package: true`
 (Release) runs no Clippy, tests or rustdoc, because the tag must be on `main` history that was
-checked through pull requests: it builds clean, uncached release executables and notices,
+checked through pull requests: it builds clean, uncached release executables,
 smoke-runs `--help`, packages the versioned archives with `scripts/release.py package` and
 uploads them as `release-windows-x86_64` or `release-linux-x86_64`. A manual CI run with
 **executables** ticked uploads the raw executables (`animatic-windows-x86_64`,
 `animatic-linux-x86_64`, 14 days), which are build outputs, not releases. The `notices` job
-generates `THIRD-PARTY-NOTICES.html` (artifact `dependency-notices`) after installing the pinned
-`cargo-about` with `--features cli`, and doubles as the license-policy gate. The `quality` job
+regenerates the notices (no artifact) after installing the pinned
+`cargo-about` with `--features cli`, fails when the committed `NOTICES` is stale and doubles as the license-policy gate. The `quality` job
 must pass before the Rust and license jobs start, and those then run in parallel. The stable aggregate
 job **`Required checks`** is the check to require on pull requests; it fails closed. Pull
 requests whose base is not `main` (stacked children) may start the workflow, but a cheap `scope` job checks
@@ -350,7 +350,7 @@ rehearsal can neither delay nor replace a queued publication.
    only if it already points at this commit (a retry after a failed publication), and an existing
    GitHub Release for it is refused.
 2. **Build:** call `ci.yml` with `package: true` on exactly that commit: clean, uncached release
-   executables with a `--help` smoke run on both platforms, the license notices, and the
+   executables with a `--help` smoke run on both platforms, and the
    `release-windows-x86_64` and `release-linux-x86_64` archives. Clippy, tests and rustdoc are not
    rerun: they ran on the release pull request, and the commit must be on `main`.
 3. **Bundle:** download both archives, run `release.py checksums` and upload the artifact
@@ -445,7 +445,7 @@ updater requires this layout; see [In-app updates](#in-app-updates)):
 animatic-v2026.11.0-windows-x86_64/
   animatic.exe            (animatic on Linux, mode 0755)
   LICENSE
-  THIRD-PARTY-NOTICES.html   generated by cargo-about
+  NOTICES                 committed plain-text third-party notices (generated by cargo-about)
   README.md
   CHANGELOG.md
   docs/*.md               the user guide: every tracked wiki/*.md page except _Sidebar.md and _Footer.md
@@ -456,7 +456,7 @@ same inputs aim to produce the same archive. Documentation comes from `git ls-fi
 is no fallback to files outside Git, and ignored or untracked files are never included, so
 packaging needs a Git checkout. Not included: `AGENTS.md`, databases, settings,
 media, build sources, Cargo manifests, scripts, workflows, `target/` output or any other file.
-The packager takes the binary and notices from explicit paths and copies only those inputs and
+The packager takes the binary from an explicit path and copies only those inputs and
 the allowlisted repository documents. Review those inputs for privacy; tests use synthetic data.
 
 A new or upgraded dependency whose license is not already accepted in `about.toml`, or whose

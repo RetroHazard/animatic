@@ -128,6 +128,9 @@ class ClassifyTests(unittest.TestCase):
             "about.toml": LICENSES,
             "about.hbs": LICENSES,
             "LICENSE": LICENSES,
+            # embedded into the executable with include_str!
+            "NOTICES": BOTH,
+            "docs/NOTICES": BOTH,
             # packaging, CI and toolchain are critical
             "scripts/release.py": BOTH,
             "scripts/test_release.py": BOTH,
@@ -701,6 +704,61 @@ class DocsCliTests(unittest.TestCase):
         code, _, err = run_cli("--root", str(repo.root), "docs")
         self.assertEqual(code, 1)
         self.assertIn("NOTES.MD:1:", err)
+
+
+class NoticesTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "repo"
+        self.root.mkdir()
+        self.generated = Path(tmp.name) / "generated.txt"
+
+    def notices(self, *extra: str) -> tuple[int, str, str]:
+        return run_cli("--root", str(self.root), "notices", str(self.generated), *extra)
+
+    def test_normalization(self):
+        self.assertEqual(ci.normalize_notices(b"a\r\nb\rc\nd\r\r\ne"), b"a\nb\nc\nd\n\ne")
+        self.assertEqual(ci.normalize_notices(b"plain\n"), b"plain\n")
+
+    def test_equal_text_passes_after_normalization(self):
+        (self.root / "NOTICES").write_bytes(b"one\ntwo\n")
+        self.generated.write_bytes(b"one\r\ntwo\r\n")
+        code, out, err = self.notices()
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("up to date", out)
+
+    def test_different_text_fails_naming_the_regenerate_command(self):
+        (self.root / "NOTICES").write_bytes(b"one\n")
+        self.generated.write_bytes(b"two\n")
+        code, _, err = self.notices()
+        self.assertEqual(code, 1)
+        self.assertIn("out of date", err)
+        self.assertIn("scripts/ci.py notices", err)
+        self.assertIn("--write", err)
+        self.assertEqual((self.root / "NOTICES").read_bytes(), b"one\n")
+
+    def test_missing_committed_file_fails(self):
+        self.generated.write_bytes(b"two\n")
+        code, _, err = self.notices()
+        self.assertEqual(code, 1)
+        self.assertIn("--write", err)
+
+    def test_write_stores_lf_bytes(self):
+        self.generated.write_bytes(b"one\r\ntwo\rthree\n")
+        code, _, err = self.notices("--write")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual((self.root / "NOTICES").read_bytes(), b"one\ntwo\nthree\n")
+        self.assertEqual(self.notices()[0], 0)
+
+    def test_empty_generated_text_is_refused(self):
+        self.generated.write_bytes(b"\n")
+        (self.root / "NOTICES").write_bytes(b"keep\n")
+        self.assertEqual(self.notices("--write")[0], 1)
+        self.assertEqual((self.root / "NOTICES").read_bytes(), b"keep\n")
+
+    def test_missing_generated_file_fails(self):
+        self.assertEqual(self.notices()[0], 1)
 
 
 def needs(**results: str) -> str:

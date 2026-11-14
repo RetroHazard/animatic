@@ -1,7 +1,8 @@
-# cargo-about configuration for the third-party notices shipped in release archives.
+# cargo-about configuration for NOTICES, the committed plain-text third-party notices shipped in release archives.
 #
-# Generate (see docs/releases.md for the pinned cargo-about version):
-#   cargo about generate --locked about.hbs --output-file "$RUNNER_TEMP/THIRD-PARTY-NOTICES.html"
+# Regenerate (see docs/development.md for the pinned cargo-about version):
+#   cargo about generate --locked --fail about.hbs --output-file "$RUNNER_TEMP/NOTICES"
+#   python scripts/ci.py notices "$RUNNER_TEMP/NOTICES" --write
 #
 # The report covers the workspace's resolved dependency graph for the two release targets only.
 # Build-only dependencies are intentionally kept (default): code generators such as gl_generator and

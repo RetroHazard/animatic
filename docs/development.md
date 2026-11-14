@@ -522,9 +522,9 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   |---|---|---|
   | `plan` (*Plan checks*) | every code-check event (not metadata-only edits) | Runs `scripts/ci.py plan` on the Git diff, outputs whether the Rust jobs and the license-policy job are needed, and writes the selection to the run summary |
   | `quality` (*Quality*) | every code-check event, including docs-only changes; runs after `plan` | Python 3.12: all `scripts/test_*.py` behavior tests, `release.py validate`, `scripts/ci.py docs` (Markdown links, anchors, fences and tables), pinned `actionlint` over the workflows with its `shellcheck` integration active, and `cargo fmt --check` when Rust is selected |
-  | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Check and package: installs or restores the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, runs the license-policy gate and uploads `dependency-notices`. Refresh: only fetches the registry and installs the renderer when their caches are missing |
+  | `notices` (*Dependency license notices*) | when the plan selects licenses and `quality` succeeded | Check and package: installs or restores the pinned `cargo-about` (`--features cli`), verifies `cargo about --version`, generates the notices to `$RUNNER_TEMP`, fails on stderr warnings and runs `python scripts/ci.py notices` (Python 3.11+), which fails when the committed `NOTICES` is stale. Nothing is uploaded. Refresh: only fetches the registry and installs the renderer when their caches are missing |
   | `rust` (*Rust (windows)*, *Rust (linux)*) | when the plan selects Rust and `quality` succeeded | Matrix: `windows-latest` (MSVC) and `ubuntu-22.04` (GNU), `fail-fast: false`. Check: locked Clippy with warnings denied, tests and rustdoc with warnings denied, all in the `ci` profile for the matrix target. Refresh: a cache lookup, and the check steps only on a miss. Package, or a manual run with **executables**: the release build and a `--help` smoke run, uploading `animatic-windows-x86_64` / `animatic-linux-x86_64` for 14 days |
-  | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust` and `notices`; wraps their executables and notices with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
+  | `package` (*Package (windows)*, *Package (linux)*) | only when called with `package: true` | Needs `rust`; wraps its executables and the repository `LICENSE` and `NOTICES` with `scripts/release.py package` and uploads `release-windows-x86_64` / `release-linux-x86_64` |
   | `required` (**Required checks**; *Main cache refresh* on a `main` push; *PR metadata (no code checks)* on a title or description edit; *Stacked PR (deferred)* when the actual base is not `main` and the pull request is not in a stack on `main`) | every event, even when upstream jobs failed or were skipped | Fails closed unless every job the plan selected succeeded (see below). Under the metadata and stacked names it only writes a run summary and passes; those names are never required. A lower pull request of a stack on `main` reports a passing **Required checks** without checks, covered by the top pull request's run. A `main` push uses its own name because it normally runs no Rust checks |
 
   **Quality first.** The expensive jobs need both `plan` and `quality`, so a failing quality
@@ -595,9 +595,9 @@ when the first page is saved in the web interface.
 ### Third-party license gate
 
 The `notices` job installs `cargo-about` with the `cli` feature and generates
-`THIRD-PARTY-NOTICES.html` from [`about.toml`](../about.toml) and [`about.hbs`](../about.hbs) for
+the notices text from [`about.toml`](../about.toml) and [`about.hbs`](../about.hbs) for
 the union of the Windows and Linux dependencies. Generation fails on a license outside the policy,
-and the job also fails on any `cargo-about` warning on standard error (for example a changed
+and compares the result with the committed `NOTICES`. The job also fails on any `cargo-about` warning on standard error (for example a changed
 pinned license file). A new dependency license needs a deliberate maintainer review (see
 [Releases](releases.md#third-party-notices)); the generated notices are not a legal audit.
 
@@ -608,16 +608,25 @@ To run it locally, use the version pinned in `ci.yml` (shown here as `0.9.3`). T
 ```sh
 cargo install --locked --version 0.9.3 --features cli cargo-about
 cargo about --version
-cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/THIRD-PARTY-NOTICES.html"
+cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/NOTICES"
+python scripts/ci.py notices "${TMPDIR:-/tmp}/NOTICES"          # compare with the committed NOTICES
+python scripts/ci.py notices "${TMPDIR:-/tmp}/NOTICES" --write  # regenerate NOTICES
 ```
 
 ```powershell
 cargo install --locked --version 0.9.3 --features cli cargo-about
 cargo about --version
-cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\THIRD-PARTY-NOTICES.html"
+cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\NOTICES"
+python scripts/ci.py notices "$env:TEMP\NOTICES"          # compare with the committed NOTICES
+python scripts/ci.py notices "$env:TEMP\NOTICES" --write  # regenerate NOTICES
 ```
 
-Write the output outside the repository. `--fail` alone does not reproduce the whole gate:
+Write the generated output outside the repository; the committed result is `NOTICES` in the
+repository root next to `LICENSE`, plain text with LF line endings. Without `--write` the second
+command only compares and exits non-zero (naming the regenerate command) when `NOTICES` is stale,
+which is exactly what CI does; with `--write` it normalizes line endings and rewrites `NOTICES`.
+Python 3.11 or newer is required. Regenerate and commit `NOTICES` whenever dependencies change. `--fail` alone
+does not reproduce the whole gate:
 `cargo-about` only warns about a changed pinned license file, which CI turns into a failure by
 rejecting standard-error output, so read the command's warnings yourself.
 
@@ -660,7 +669,7 @@ standard-error guard on `generate` is unchanged: stderr is never suppressed.
 rerunning the old failure and not on GitHub Actions or Linux: `cargo install --locked --version 0.9.3
 --features cli cargo-about` into a throwaway `--root` and target directory installed a real
 `cargo-about.exe`; `cargo about --version` reported `cargo-about 0.9.3`; and `cargo about generate
---locked --fail` for the then-current workspace produced `THIRD-PARTY-NOTICES.html`, exited 0 and
+--locked --fail` for the then-current workspace produced a notices text, exited 0 and
 wrote nothing to standard error. Treat it as a dated observation; the workflow's own run remains the
 authoritative gate.
 

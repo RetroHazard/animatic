@@ -175,6 +175,7 @@ def write_workspace(root: Path, *, changelog: str = CHANGELOG) -> None:
     write(root, "Cargo.lock", LOCK)
     write(root, "CHANGELOG.md", changelog)
     write(root, "LICENSE", "Synthetic license text\n")
+    write(root, "NOTICES", "Synthetic third-party notices\n")
     write(root, "README.md", "# Synthetic readme\n")
     for rel, text in DOCS.items():
         write(root, rel, text)
@@ -670,14 +671,12 @@ class PackageTests(GitCase):
         self.binary = self.tmp / "bin" / "built-binary"
         self.binary.parent.mkdir()
         self.binary.write_bytes(b"\x7fELF synthetic binary bytes " * 64)
-        self.notices = self.tmp / "notices.html"
-        self.notices.write_text("<html>synthetic notices</html>\n", encoding="utf-8")
         self.out = self.tmp / "dist"
 
     def package(self, platform: str, **kw) -> tuple[int, str, str]:
         return run_cli(
             self.root, "package", "--platform", platform, "--binary", str(kw.get("binary", self.binary)),
-            "--notices", str(kw.get("notices", self.notices)), "--output", str(kw.get("output", self.out)),
+            "--output", str(kw.get("output", self.out)),
         )
 
     EXPECTED_DOCS = {"docs/Home.md", "docs/Guide.md"}
@@ -691,12 +690,12 @@ class PackageTests(GitCase):
             names = zf.namelist()
             self.assertEqual(
                 set(names),
-                {f"{stem}/{n}" for n in {"animatic.exe", "LICENSE", "README.md", "CHANGELOG.md",
-                                          "THIRD-PARTY-NOTICES.html", *self.EXPECTED_DOCS}},
+                {f"{stem}/{n}" for n in {"animatic.exe", "LICENSE", "NOTICES", "README.md", "CHANGELOG.md",
+                                          *self.EXPECTED_DOCS}},
             )
             self.assertEqual(len(names), len(set(names)))
             self.assertEqual(zf.read(f"{stem}/animatic.exe"), self.binary.read_bytes())
-            self.assertEqual(zf.read(f"{stem}/THIRD-PARTY-NOTICES.html"), self.notices.read_bytes())
+            self.assertEqual(zf.read(f"{stem}/NOTICES"), (self.root / "NOTICES").read_bytes())
             self.assertEqual(zf.read(f"{stem}/docs/Guide.md"), (self.root / "wiki/Guide.md").read_bytes())
             self.assertEqual(zf.read(f"{stem}/CHANGELOG.md"), (self.root / "CHANGELOG.md").read_bytes())
         self.assertEqual([p.name for p in self.out.iterdir()], [archive.name])  # no temp leftovers
@@ -710,8 +709,8 @@ class PackageTests(GitCase):
             files = {n for n, m in members.items() if m.isfile()}
             self.assertEqual(
                 files,
-                {f"{stem}/{n}" for n in {"animatic", "LICENSE", "README.md", "CHANGELOG.md",
-                                          "THIRD-PARTY-NOTICES.html", *self.EXPECTED_DOCS}},
+                {f"{stem}/{n}" for n in {"animatic", "LICENSE", "NOTICES", "README.md", "CHANGELOG.md",
+                                          *self.EXPECTED_DOCS}},
             )
             for name, member in members.items():
                 self.assertTrue(name == stem or name.startswith(stem + "/"), name)
@@ -726,7 +725,7 @@ class PackageTests(GitCase):
         self.package("windows")
         self.package("linux")
         first = {p.name: p.read_bytes() for p in self.out.iterdir()}
-        for path in [self.binary, self.notices, *(self.root / "wiki").glob("*.md")]:
+        for path in [self.binary, self.root / "NOTICES", *(self.root / "wiki").glob("*.md")]:
             os.utime(path, (1_900_000_000, 1_900_000_000))
         second_out = self.tmp / "dist2"
         self.package("windows", output=second_out)
@@ -814,28 +813,36 @@ class PackageTests(GitCase):
         empty.write_bytes(b"")
         directory = self.tmp / "a-directory"
         directory.mkdir()
-        empty_notices = self.tmp / "empty.html"
-        empty_notices.write_bytes(b"")
         cases = {
             "missing binary": dict(binary=self.tmp / "nope.exe"),
             "directory binary": dict(binary=directory),
             "empty binary": dict(binary=empty),
-            "missing notices": dict(notices=self.tmp / "nope.html"),
-            "directory notices": dict(notices=directory),
-            "empty notices": dict(notices=empty_notices),
         }
         for label, kw in cases.items():
             with self.subTest(label):
                 self.assertNotEqual(self.package("linux", **kw)[0], 0)
                 self.assertFalse(self.out.exists() and any(self.out.iterdir()))
 
-    def test_symlink_notices_are_refused(self) -> None:
-        link = self.tmp / "link.html"
+    def test_missing_empty_or_linked_repository_notices_are_refused(self) -> None:
+        notices = self.root / "NOTICES"
+        original = notices.read_bytes()
+        notices.write_bytes(b"")
+        code, _, err = self.package("linux")
+        self.assertNotEqual(code, 0)
+        self.assertIn("NOTICES is empty", err)
+        notices.unlink()
+        code, _, err = self.package("linux")
+        self.assertNotEqual(code, 0)
+        self.assertIn("NOTICES is missing", err)
+        target = self.tmp / "elsewhere.txt"
+        target.write_bytes(original)
         try:
-            link.symlink_to(self.notices)
+            notices.symlink_to(target)
         except (OSError, NotImplementedError):
-            self.skipTest("symlinks unavailable")
-        self.assertNotEqual(self.package("linux", notices=link)[0], 0)
+            pass
+        else:
+            self.assertNotEqual(self.package("linux")[0], 0)
+        self.assertFalse(self.out.exists() and any(self.out.iterdir()))
 
     def test_inconsistent_metadata_or_missing_required_file_is_refused(self) -> None:
         (self.root / "LICENSE").unlink()
@@ -858,11 +865,9 @@ class PackageWithoutGitTests(TempDirCase):
         write_workspace(self.root)
         binary = self.tmp / "bin"
         binary.write_bytes(b"synthetic")
-        notices = self.tmp / "notices.html"
-        notices.write_text("<html></html>", encoding="utf-8")
         out = self.tmp / "dist"
         code, _, err = run_cli(self.root, "package", "--platform", "linux", "--binary", str(binary),
-                               "--notices", str(notices), "--output", str(out))
+                               "--output", str(out))
         self.assertNotEqual(code, 0)
         self.assertIn("git", err)
         self.assertFalse(out.exists() and any(out.iterdir()))
