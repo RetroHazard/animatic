@@ -16,8 +16,9 @@ offered.
 **Betas and the Beta channel.** A beta is the same program with the same library and settings,
 packaged exactly like a stable release, but its newest features may still have bugs. Switching
 back to Stable never installs an older version: the next stable release newer than the running
-version is offered. Changing the channel discards an "available" or "up to date" result found on
-the other channel; the next check uses the new channel.
+version is offered. The channel buttons are disabled while a check or download runs (cancel it or
+wait) and after an install; changing the channel discards an "available" or "up to date" result
+and a downloaded update that is not installed yet, and the next check uses the new channel.
 
 **The steps** (each needs a click; the **Software updates** window shows the installed version
 and the current step):

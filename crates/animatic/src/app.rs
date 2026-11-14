@@ -404,6 +404,38 @@ struct UpdateState {
     open: bool,
 }
 
+impl UpdateStage {
+    /// Why the release channel cannot change now: a check or download in flight would deliver a
+    /// result of the old channel that nothing could tell apart afterwards, and an install has
+    /// already replaced the program.
+    fn channel_change_blocker(&self) -> Option<&'static str> {
+        match self {
+            UpdateStage::Idle
+            | UpdateStage::UpToDate
+            | UpdateStage::Available
+            | UpdateStage::Ready { .. } => None,
+            UpdateStage::Checking { .. } | UpdateStage::Downloading { .. } => Some(
+                "An update check or download is running; wait for it or cancel it in the \
+                 Software updates window first",
+            ),
+            UpdateStage::Installing | UpdateStage::Installed | UpdateStage::InstallFailed => {
+                Some("An update has been installed or attempted; restart Animatic first")
+            }
+        }
+    }
+
+    /// The stage after the channel changed: any result of the old channel is gone.
+    fn forget_other_channel_result(&mut self) {
+        debug_assert!(self.channel_change_blocker().is_none());
+        if matches!(
+            self,
+            UpdateStage::UpToDate | UpdateStage::Available | UpdateStage::Ready { .. }
+        ) {
+            *self = UpdateStage::Idle;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum UpdateAction {
     Check,
@@ -4960,22 +4992,28 @@ impl AnimaticApp {
             &mut self.settings.updates.auto_check,
             "Check for updates at startup",
         );
+        let blocked = self.update.stage.channel_change_blocker();
         let before = self.settings.updates.channel;
         ui.horizontal(|ui| {
             ui.label("Release channel");
-            for channel in UpdateChannel::ALL {
-                ui.selectable_value(&mut self.settings.updates.channel, channel, channel.label());
-            }
+            ui.add_enabled_ui(blocked.is_none(), |ui| {
+                for channel in UpdateChannel::ALL {
+                    ui.selectable_value(
+                        &mut self.settings.updates.channel,
+                        channel,
+                        channel.label(),
+                    )
+                    .on_disabled_hover_text(blocked.unwrap_or_default());
+                }
+            });
         });
-        if self.settings.updates.channel != before
-            && matches!(
-                self.update.stage,
-                UpdateStage::Available | UpdateStage::UpToDate
-            )
-        {
-            // A result found on the other channel no longer applies; the next check uses this one.
-            self.update.stage = UpdateStage::Idle;
+        if self.settings.updates.channel != before {
+            // A release found, or downloaded and staged, on the other channel no longer
+            // applies (a staged download's temporary files go with it); the next check uses
+            // the new channel.
+            self.update.stage.forget_other_channel_result();
             self.update.release = None;
+            self.update.ready = None;
         }
         let channel_text = match self.settings.updates.channel {
             UpdateChannel::Stable => "Stable: only stable releases are offered.",
@@ -6480,6 +6518,33 @@ mod tests {
         assert!(stage.begin_download(), "the release is kept for a retry");
         assert!(stage.download_failed());
         assert_eq!(stage, UpdateStage::Available);
+    }
+
+    #[test]
+    fn the_channel_cannot_change_while_a_result_of_the_old_one_is_on_its_way() {
+        // Checking: the coming Checked event would carry a release of the old channel.
+        let mut stage = UpdateStage::Idle;
+        stage.begin_check(true);
+        assert!(stage.channel_change_blocker().is_some());
+        assert!(stage.check_finished(true));
+        // Available or staged (Ready): switching drops the old channel's release.
+        assert!(stage.channel_change_blocker().is_none());
+        stage.forget_other_channel_result();
+        assert_eq!(stage, UpdateStage::Idle);
+        let mut stage = UpdateStage::Available;
+        assert!(stage.begin_download());
+        assert!(stage.channel_change_blocker().is_some(), "downloading");
+        assert!(stage.download_ready());
+        assert!(stage.channel_change_blocker().is_none());
+        stage.forget_other_channel_result();
+        assert_eq!(stage, UpdateStage::Idle);
+        for done in [
+            UpdateStage::Installing,
+            UpdateStage::Installed,
+            UpdateStage::InstallFailed,
+        ] {
+            assert!(done.channel_change_blocker().is_some());
+        }
     }
 
     #[test]
