@@ -242,6 +242,18 @@ def is_repo_root(root: Path) -> bool:
         return False
 
 
+def becomes_latest(version: Version, published_tags: list[str]) -> bool:
+    """Whether publishing ``version`` may mark it as GitHub's latest release.
+
+    Only a stable release that is newer than every published stable release may; retrying an
+    older stable after a newer one is out must not turn the older one into the default download.
+    """
+    if stream_of(version) != "stable":
+        return False
+    stables = [v for v in release_tags(published_tags).values() if not v.pre]
+    return all(version.key() > v.key() for v in stables)
+
+
 def release_tags(tags: list[str]) -> dict[str, Version]:
     """Keep only ``v<calver>`` tags (no build metadata; old ``v1.0.0`` SemVer tags are not ours)."""
     found: dict[str, Version] = {}
@@ -1221,6 +1233,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("stream", help="print the release stream (stable or beta) of a version")
     p.add_argument("--version", required=True)
+    p.add_argument(
+        "--published",
+        type=Path,
+        help="file listing the tags of the published GitHub Releases, one per line; then also print "
+        "whether VERSION may become the latest release ('latest=true|false')",
+    )
 
     p = sub.add_parser("validate", help="check version/changelog/lock consistency")
     p.add_argument("--tag", help="release tag (vVERSION) that must match the workspace version")
@@ -1252,7 +1270,15 @@ def run(args: argparse.Namespace) -> None:
         for path in result.changed:
             print(f"  updated {path}")
     elif args.command == "stream":
-        print(stream_of(parse_version(args.version)))
+        version = parse_version(args.version)
+        stream = stream_of(version)
+        print(stream)
+        if args.published is not None:
+            try:
+                published = args.published.read_text(encoding="utf-8").split()
+            except OSError as exc:
+                raise ReleaseError(f"cannot read {args.published}: {exc}") from None
+            print(f"latest={'true' if becomes_latest(version, published) else 'false'}")
     elif args.command == "validate":
         state = check_repository(root, args.tag)
         stream = stream_of(state.version)

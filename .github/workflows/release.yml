@@ -159,6 +159,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           STREAM: ${{ needs.validate.outputs.stream }}
           EXPECTED_SHA: ${{ needs.validate.outputs.sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           # Refuse a tag that appeared, pointing elsewhere, between validation and now.
           gh auth setup-git
@@ -169,13 +170,22 @@ jobs:
               exit 1
             fi
           fi
-          # A beta is a prerelease and never becomes "latest"; a stable release always does,
-          # which is what the in-app updater and the release page's default download follow.
+          # A beta is a prerelease and never becomes "latest". A stable becomes "latest" only
+          # when it is newer than every published stable release, read now, right before
+          # publishing: retrying an older stable after a newer one is out must not make the
+          # older one the default download. A failed lookup fails the job (never a guess).
+          published="$RUNNER_TEMP/published-tags.txt"
+          gh release list --limit 1000 --exclude-drafts --json tagName --jq '.[].tagName' > "$published"
+          python scripts/release.py stream --version "$VERSION" --published "$published" > "$RUNNER_TEMP/stream.txt"
+          if grep -qx 'latest=true' "$RUNNER_TEMP/stream.txt"; then latest=true; else latest=false; fi
           title="Animatic $RELEASE_TAG"
           if [ "$STREAM" = beta ]; then
             flags=(--prerelease --latest=false)
             title="$title (beta)"
           else
-            flags=(--latest)
+            flags=("--latest=$latest")
+            if [ "$latest" = false ]; then
+              echo "::warning::$RELEASE_TAG is older than a published stable release; it is not marked latest"
+            fi
           fi
           gh release create "$RELEASE_TAG" dist/* --target "$EXPECTED_SHA" --title "$title" --notes-file "$RUNNER_TEMP/release-notes.md" "${flags[@]}"

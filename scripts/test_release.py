@@ -298,6 +298,30 @@ class NextVersionTests(unittest.TestCase):
             with self.subTest(latest=latest, stream=stream, today=str(today)):
                 self.assertEqual(release.next_version(v(latest), released, stream, today).text, expected)
 
+    def test_only_the_newest_stable_becomes_latest(self) -> None:
+        v = release.parse_version
+        published = ["v2026.11.0", "v2026.11.2", "v2026.12.0-rc.1", "v1.0.0", "nightly"]
+        self.assertTrue(release.becomes_latest(v("2026.11.3"), published))
+        self.assertTrue(release.becomes_latest(v("2026.11.3"), []))
+        # a retried older stable must not replace the newer latest release
+        self.assertFalse(release.becomes_latest(v("2026.11.1"), published))
+        self.assertFalse(release.becomes_latest(v("2026.11.2"), published))
+        # betas never become latest, and a newer beta does not block a stable
+        self.assertFalse(release.becomes_latest(v("2026.12.0-rc.2"), published))
+        self.assertTrue(release.becomes_latest(v("2026.11.5"), published))
+
+    def test_stream_cli_reports_latest_and_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_workspace(root)
+            tags = root / "published.txt"
+            tags.write_text("v2026.11.2\n", encoding="utf-8")
+            code, out, _ = run_cli(root, "stream", "--version", "2026.11.1", "--published", str(tags))
+            self.assertEqual((code, out), (0, "stable\nlatest=false\n"))
+            code, out, _ = run_cli(root, "stream", "--version", "2026.11.3", "--published", str(tags))
+            self.assertEqual((code, out), (0, "stable\nlatest=true\n"))
+            self.assertEqual(run_cli(root, "stream", "--version", "2026.11.3", "--published", str(root / "missing"))[0], 1)
+
 
 class PrepareTests(GitCase):
     def test_first_release_uses_root_history_and_preserves_curated_entries(self) -> None:

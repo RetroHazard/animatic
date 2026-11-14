@@ -383,8 +383,13 @@ rehearsal can neither delay nor replace a queued publication.
    still points at the validated commit, then runs `gh release create --target <commit>`, which
    creates the tag at that commit and publishes the release. The validate job's `stream` output
    (from `release.py stream`) selects the form: a **beta** is published with
-   `--prerelease --latest=false` and titled "Animatic vVERSION (beta)"; a **stable** with
-   `--latest` and titled "Animatic vVERSION". Only this job has `contents: write`. An existing release is never
+   `--prerelease --latest=false` and titled "Animatic vVERSION (beta)"; a **stable** is titled
+   "Animatic vVERSION" and marked latest only when it is newer than every published stable
+   release: right before publishing, the job lists the published releases
+   (`gh release list`, failing the job if that lookup fails) and `release.py stream --published`
+   decides, so retrying an older stable after a newer one is out never makes the older one the
+   default download (it is published with `--latest=false` and a warning). Only this job has
+   `contents: write`. An existing release is never
    overwritten (the command fails). The tag is created with the workflow token, so it starts no
    other workflow.
 
