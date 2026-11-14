@@ -2762,19 +2762,18 @@ impl AnimaticApp {
                     }
                 }
                 ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} · {}",
-                            style::plural(self.projection.anime.len(), "anime", "anime"),
-                            style::plural(
-                                self.projection.mylist.len(),
-                                "MyList entry",
-                                "MyList entries"
-                            ),
-                        ))
-                        .small()
-                        .weak(),
-                    );
+                    // One count per row so neither wraps in the narrow sidebar. The layout
+                    // grows upwards: the MyList line is added first so it sits under the anime.
+                    for text in [
+                        style::plural(
+                            self.projection.mylist.len(),
+                            "MyList entry",
+                            "MyList entries",
+                        ),
+                        style::plural(self.projection.anime.len(), "anime", "anime"),
+                    ] {
+                        ui.label(RichText::new(text).small().weak());
+                    }
                     if nav_item(ui, self.settings_open, "⚙ Options", None)
                         .on_hover_text(shortcut_hint(ui.ctx(), &shortcuts::OPTIONS))
                         .clicked()
