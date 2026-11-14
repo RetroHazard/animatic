@@ -538,8 +538,9 @@ A `scope` API error fails closed. To check a branch earlier, run the workflow ma
   request base and the merge commit (for `main`, the pushed range) and prints
   `rust=true|false` and `licenses=false|true`. Documentation-only changes (Markdown and
   documentation assets) select neither; Rust sources under `crates/` select Rust; `Cargo.toml`,
-  `Cargo.lock` or a crate manifest selects both; `about.toml`, `about.hbs` and `LICENSE` select
-  the license job; `scripts/release.py`, `scripts/test_release.py`, anything under `.github/`,
+  `Cargo.lock` or a crate manifest selects both; `about.toml`, `LICENSE` and `scripts/ci.py`
+  (which renders `NOTICES`) select the license job; `NOTICES` selects both (it is embedded in
+  the executable); `scripts/release.py`, `scripts/test_release.py`, anything under `.github/`,
   `.cargo/` or a `rust-toolchain*` file select both because they affect packaging or CI itself;
   other Python under `scripts/` selects only `quality`. **Any path it does not recognize selects
   both**, so a new kind of file fails safe. A reusable call with a non-empty `ref`, `package: true`,
@@ -594,12 +595,23 @@ when the first page is saved in the web interface.
 
 ### Third-party license gate
 
-The `notices` job installs `cargo-about` with the `cli` feature and generates
-the notices text from [`about.toml`](../about.toml) and [`about.hbs`](../about.hbs) for
-the union of the Windows and Linux dependencies. Generation fails on a license outside the policy,
-and compares the result with the committed `NOTICES`. The job also fails on any `cargo-about` warning on standard error (for example a changed
-pinned license file). A new dependency license needs a deliberate maintainer review (see
+The `notices` job installs `cargo-about` with the `cli` feature and has it write the license
+data of the Windows and Linux dependencies, as configured in [`about.toml`](../about.toml), as
+JSON. Generation fails on a license outside the policy, and the job also fails on any
+`cargo-about` warning on standard error (for example a changed pinned license file). Then
+`python scripts/ci.py notices` renders the plain-text notices from that JSON and fails when the
+committed `NOTICES` differs. A new dependency license needs a deliberate maintainer review (see
 [Releases](releases.md#third-party-notices)); the generated notices are not a legal audit.
+
+The rendering groups by license so the file stays readable: each license's wording is printed
+once, followed by every crate that uses it with the copyright lines of that crate's own license
+file. Two license files share a wording when they are equal after removing copyright lines,
+comment markers (a license taken from a source file keeps only its leading license comment), a
+short title line, letter case and punctuation; any other difference keeps that file's text in
+full under its crates. A crate whose license file names no copyright holder is listed with its
+Cargo.toml authors, marked as such. The hand-maintained upstream copyright lines for `egui`,
+`profiling` and `pulp-wasm-simd-flag` (`NOTICES_UPSTREAM` in `scripts/ci.py`) must be
+re-verified when those crates change.
 
 To run it locally, use the version pinned in `ci.yml` (shown here as `0.9.3`). The
 `--features cli` flag is **required**: the crate's executable is built only with that feature, and without it
@@ -608,23 +620,23 @@ To run it locally, use the version pinned in `ci.yml` (shown here as `0.9.3`). T
 ```sh
 cargo install --locked --version 0.9.3 --features cli cargo-about
 cargo about --version
-cargo about generate --locked --fail about.hbs --output-file "${TMPDIR:-/tmp}/NOTICES"
-python scripts/ci.py notices "${TMPDIR:-/tmp}/NOTICES"          # compare with the committed NOTICES
-python scripts/ci.py notices "${TMPDIR:-/tmp}/NOTICES" --write  # regenerate NOTICES
+cargo about generate --locked --fail --format json --output-file "${TMPDIR:-/tmp}/about.json"
+python scripts/ci.py notices "${TMPDIR:-/tmp}/about.json"          # compare with the committed NOTICES
+python scripts/ci.py notices "${TMPDIR:-/tmp}/about.json" --write  # regenerate NOTICES
 ```
 
 ```powershell
 cargo install --locked --version 0.9.3 --features cli cargo-about
 cargo about --version
-cargo about generate --locked --fail about.hbs --output-file "$env:TEMP\NOTICES"
-python scripts/ci.py notices "$env:TEMP\NOTICES"          # compare with the committed NOTICES
-python scripts/ci.py notices "$env:TEMP\NOTICES" --write  # regenerate NOTICES
+cargo about generate --locked --fail --format json --output-file "$env:TEMP\about.json"
+python scripts/ci.py notices "$env:TEMP\about.json"          # compare with the committed NOTICES
+python scripts/ci.py notices "$env:TEMP\about.json" --write  # regenerate NOTICES
 ```
 
-Write the generated output outside the repository; the committed result is `NOTICES` in the
-repository root next to `LICENSE`, plain text with LF line endings. Without `--write` the second
-command only compares and exits non-zero (naming the regenerate command) when `NOTICES` is stale,
-which is exactly what CI does; with `--write` it normalizes line endings and rewrites `NOTICES`.
+Write the JSON outside the repository; the committed result is `NOTICES` in the repository root
+next to `LICENSE`, plain text with LF line endings. Without `--write` the second command only
+compares and exits non-zero (naming the regenerate command) when `NOTICES` is stale, which is
+exactly what CI does; with `--write` it rewrites `NOTICES`.
 Python 3.11 or newer is required. Regenerate and commit `NOTICES` whenever dependencies change. `--fail` alone
 does not reproduce the whole gate:
 `cargo-about` only warns about a changed pinned license file, which CI turns into a failure by

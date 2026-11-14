@@ -470,13 +470,18 @@ green.
 `cargo-about` cannot identify on its own (including the embedded fonts and some Windows-support
 crates) by checksum, and covers only the two release targets. Known limits:
 
+- `NOTICES` is grouped by license: each license wording appears once, followed by the crates
+  that use it and the copyright lines of each crate's own license file; a license file worded
+  differently is reproduced in full (see
+  [Third-party license gate](development.md#third-party-license-gate) for the matching rule).
 - Some crates do not package their license text. For those the generator falls back to the
-  canonical SPDX license text **without a crate-specific copyright line**; the report notes the
-  fallback visibly and gives the upstream URL so a reader can find the original. For three
+  canonical SPDX license text **without a crate-specific copyright line**; such a crate is listed
+  with its Cargo.toml authors, marked as not being an upstream copyright notice. For three
   crates (`egui`, `profiling`, `pulp`) whose upstream copyright lines are not packaged,
-  `about.hbs` carries a statically verified supplement with the upstream source URLs and
-  pinned versions. Re-verify that supplement when those crates are upgraded. Public author
-  attribution (names and contact addresses from upstream licenses) is intentionally kept.
+  `scripts/ci.py` (`NOTICES_UPSTREAM`) carries a statically verified supplement with the upstream
+  source URLs and pinned versions. Re-verify that supplement when those crates are upgraded.
+  Public author attribution (names and contact addresses from upstream licenses) is
+  intentionally kept.
 - Generation is automatic and reflects what the crates declare and package. It is not a legal
   review or a guarantee of exhaustive compliance. A maintainer should read the generated file
   when dependencies change, especially after upgrades, and treat any change to a

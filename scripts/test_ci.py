@@ -126,7 +126,6 @@ class ClassifyTests(unittest.TestCase):
             "rustfmt.toml": RUST,
             # licence policy inputs
             "about.toml": LICENSES,
-            "about.hbs": LICENSES,
             "LICENSE": LICENSES,
             # embedded into the executable with include_str!
             "NOTICES": BOTH,
@@ -139,8 +138,8 @@ class ClassifyTests(unittest.TestCase):
             ".github/dependabot.yml": BOTH,
             ".cargo/config.toml": BOTH,
             "rust-toolchain.toml": BOTH,
-            # other Python tooling is quality-only
-            "scripts/ci.py": NEITHER,
+            # ci.py renders NOTICES, so the notices check runs; other Python tooling is quality-only
+            "scripts/ci.py": LICENSES,
             "scripts/test_ci.py": NEITHER,
             "scripts/another_tool.py": NEITHER,
             # unknown things fail closed
@@ -153,10 +152,10 @@ class ClassifyTests(unittest.TestCase):
                 self.assertEqual(ci.classify_path(path), expected)
 
     def test_mixed_changes_or_together(self):
-        self.assertEqual(ci.select_paths(["README.md", "scripts/ci.py"]), NEITHER)
+        self.assertEqual(ci.select_paths(["README.md", "scripts/test_ci.py"]), NEITHER)
         self.assertEqual(ci.select_paths(["README.md", "crates/a/src/lib.rs"]), RUST)
         self.assertEqual(ci.select_paths(["crates/a/src/lib.rs", "about.toml"]), BOTH)
-        self.assertEqual(ci.select_paths(["README.md", "about.hbs"]), LICENSES)
+        self.assertEqual(ci.select_paths(["README.md", "about.toml"]), LICENSES)
         self.assertEqual(ci.select_paths(["README.md", "mystery.bin"]), BOTH)
 
     def test_no_changed_paths_selects_nothing(self):
@@ -182,7 +181,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(planned(self.repo.plan(self.base)), NEITHER)
 
     def test_quality_script_change_skips_expensive_jobs(self):
-        self.repo.apply({"scripts/ci.py": "changed\n"})
+        self.repo.apply({"scripts/test_ci.py": "changed\n"})
         self.assertEqual(planned(self.repo.plan(self.base)), NEITHER)
 
     def test_rust_source_change_selects_rust_only(self):
@@ -706,59 +705,158 @@ class DocsCliTests(unittest.TestCase):
         self.assertIn("NOTES.MD:1:", err)
 
 
-class NoticesTests(unittest.TestCase):
+MIT_WORDING = """Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software, to deal in the Software without restriction.
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software."""
+
+
+def crate(name: str, version: str = "1.0.0", registry: bool = True, authors=("Synthetic Author",)) -> dict:
+    source = "registry+https://github.com/rust-lang/crates.io-index" if registry else None
+    return {"name": name, "version": version, "source": source, "authors": list(authors)}
+
+
+def license_entry(lid: str, text: str, *crates: dict, source_path: str | None = "LICENSE") -> dict:
+    name = {"MIT": "MIT License", "Apache-2.0": "Apache License 2.0"}.get(lid, lid)
+    return {
+        "id": lid,
+        "name": name,
+        "text": text,
+        "source_path": source_path,
+        "used_by": [{"crate": c, "path": None} for c in crates],
+    }
+
+
+class NoticesRenderTests(unittest.TestCase):
+    def render(self, *licenses: dict) -> str:
+        return ci.render_notices({"licenses": list(licenses)})
+
+    def test_same_wording_is_printed_once_with_every_crate_and_its_copyright_lines(self):
+        text = self.render(
+            license_entry("MIT", f"MIT License\n\nCopyright (c) 2020 Alpha Holder\n\n{MIT_WORDING}\n", crate("alpha")),
+            license_entry("MIT", f"Copyright 2021 Beta Holder\r\n\r\n{MIT_WORDING.lower()}\r\n", crate("beta", "2.0.0")),
+        )
+        self.assertEqual(text.lower().count("permission is hereby granted"), 1)
+        self.assertIn("- alpha 1.0.0: Copyright (c) 2020 Alpha Holder", text)
+        self.assertIn("- beta 2.0.0: Copyright 2021 Beta Holder", text)
+        self.assertIn("- MIT License (MIT): 2 crate(s)", text)
+        self.assertNotIn("as worded by", text)
+        self.assertNotIn("\r", text)
+
+    def test_different_wording_is_reproduced_in_full(self):
+        extra = f"Copyright 2022 Gamma Holder\n\n{MIT_WORDING}\n\nAlso, this extra condition applies.\n"
+        text = self.render(
+            license_entry("MIT", f"Copyright 2020 Alpha Holder\n\n{MIT_WORDING}\n", crate("alpha")),
+            license_entry("MIT", f"Copyright 2020 Alpha Two\n\n{MIT_WORDING}\n", crate("alpha2")),
+            license_entry("MIT", extra, crate("gamma")),
+        )
+        self.assertIn("MIT License (MIT) as worded by gamma 1.0.0:", text)
+        variant = text.split("as worded by gamma 1.0.0:", 1)[1]
+        self.assertIn("Copyright 2022 Gamma Holder", variant)
+        self.assertIn("Also, this extra condition applies.", variant)
+        self.assertIn("- MIT License (MIT): 3 crate(s)", text)
+
+    def test_a_source_file_contributes_only_its_license_comment(self):
+        source = (
+            "// Copyright 2019 Delta Holder\n//\n"
+            + "".join(f"// {line}\n" for line in MIT_WORDING.splitlines())
+            + "\n//! Module documentation.\n#![deny(unsafe_code)]\nfn private_code() {}\n"
+        )
+        block = "/*\n * Copyright 2019 Epsilon Holder\n *\n" + "".join(
+            f" * {line}\n" for line in MIT_WORDING.splitlines()
+        ) + " */\n#include <secret.h>\n"
+        text = self.render(
+            license_entry("MIT", source, crate("delta"), source_path="/registry/delta/src/lib.rs"),
+            license_entry("MIT", block, crate("epsilon"), source_path="/registry/epsilon/src/x.h"),
+        )
+        self.assertIn("- delta 1.0.0: Copyright 2019 Delta Holder", text)
+        self.assertIn("- epsilon 1.0.0: Copyright 2019 Epsilon Holder", text)
+        for code in ("private_code", "Module documentation", "deny(unsafe_code)", "secret.h"):
+            self.assertNotIn(code, text)
+        for line in text.splitlines():
+            self.assertFalse(line.lstrip().startswith(("//", "/*", "* ", "*/")), line)
+        self.assertNotIn("as worded by", text)
+
+    def test_lettered_clauses_and_placeholders_are_not_copyright_lines(self):
+        apache = (
+            "Apache License\n\n(c) You must retain, in the Source form, all copyright notices.\n\n"
+            "Copyright [yyyy] [name of copyright owner]\n"
+        )
+        text = self.render(
+            license_entry("Apache-2.0", apache, crate("zeta", authors=("Zeta Author <z@example.invalid>",))),
+        )
+        self.assertIn("(c) You must retain", text.split("- zeta", 1)[1])
+        self.assertIn(
+            "- zeta 1.0.0: no copyright line in its license file (Cargo.toml authors: Zeta Author <z@example.invalid>)",
+            text,
+        )
+
+    def test_workspace_crates_are_left_out(self):
+        text = self.render(
+            license_entry("MIT", f"Copyright 2020 Alpha Holder\n\n{MIT_WORDING}\n", crate("alpha"), crate("animatic", registry=False)),
+        )
+        self.assertNotIn("animatic 1.0.0", text)
+        with self.assertRaises(ci.CiError):
+            self.render(license_entry("MIT", MIT_WORDING, crate("animatic", registry=False)))
+
+    def test_output_does_not_depend_on_input_order(self):
+        entries = [
+            license_entry("MIT", f"Copyright 2020 Alpha Holder\n\n{MIT_WORDING}\n", crate("alpha")),
+            license_entry("MIT", f"Copyright 2021 Alpha Again\n\n{MIT_WORDING}\n", crate("alpha")),
+            license_entry("MIT", f"Copyright 2022 Gamma\n\n{MIT_WORDING}\nExtra.\n", crate("gamma")),
+            license_entry("Apache-2.0", "Apache wording.\n", crate("zeta")),
+        ]
+        self.assertEqual(self.render(*entries), self.render(*reversed(entries)))
+
+
+class NoticesCliTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name) / "repo"
         self.root.mkdir()
-        self.generated = Path(tmp.name) / "generated.txt"
+        self.about = Path(tmp.name) / "about.json"
+        self.about.write_text(
+            json.dumps({"licenses": [license_entry("MIT", f"Copyright 2020 Alpha\n\n{MIT_WORDING}\n", crate("alpha"))]}),
+            encoding="utf-8",
+        )
 
     def notices(self, *extra: str) -> tuple[int, str, str]:
-        return run_cli("--root", str(self.root), "notices", str(self.generated), *extra)
+        return run_cli("--root", str(self.root), "notices", str(self.about), *extra)
 
     def test_normalization(self):
         self.assertEqual(ci.normalize_notices(b"a\r\nb\rc\nd\r\r\ne"), b"a\nb\nc\nd\n\ne")
-        self.assertEqual(ci.normalize_notices(b"plain\n"), b"plain\n")
 
-    def test_equal_text_passes_after_normalization(self):
-        (self.root / "NOTICES").write_bytes(b"one\ntwo\n")
-        self.generated.write_bytes(b"one\r\ntwo\r\n")
+    def test_write_then_check_passes(self):
+        code, _, err = self.notices("--write")
+        self.assertEqual((code, err), (0, ""))
+        written = (self.root / "NOTICES").read_bytes()
+        self.assertNotIn(b"\r", written)
+        self.assertTrue(written.endswith(b"\n"))
         code, out, err = self.notices()
         self.assertEqual((code, err), (0, ""))
         self.assertIn("up to date", out)
 
-    def test_different_text_fails_naming_the_regenerate_command(self):
-        (self.root / "NOTICES").write_bytes(b"one\n")
-        self.generated.write_bytes(b"two\n")
+    def test_stale_file_fails_naming_the_regenerate_command(self):
+        (self.root / "NOTICES").write_bytes(b"old\n")
         code, _, err = self.notices()
         self.assertEqual(code, 1)
         self.assertIn("out of date", err)
-        self.assertIn("scripts/ci.py notices", err)
+        self.assertIn("--format json", err)
         self.assertIn("--write", err)
-        self.assertEqual((self.root / "NOTICES").read_bytes(), b"one\n")
+        self.assertEqual((self.root / "NOTICES").read_bytes(), b"old\n")
 
     def test_missing_committed_file_fails(self):
-        self.generated.write_bytes(b"two\n")
         code, _, err = self.notices()
         self.assertEqual(code, 1)
         self.assertIn("--write", err)
 
-    def test_write_stores_lf_bytes(self):
-        self.generated.write_bytes(b"one\r\ntwo\rthree\n")
-        code, _, err = self.notices("--write")
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual((self.root / "NOTICES").read_bytes(), b"one\ntwo\nthree\n")
-        self.assertEqual(self.notices()[0], 0)
-
-    def test_empty_generated_text_is_refused(self):
-        self.generated.write_bytes(b"\n")
+    def test_unreadable_json_is_refused(self):
+        self.about.write_text("not json", encoding="utf-8")
         (self.root / "NOTICES").write_bytes(b"keep\n")
         self.assertEqual(self.notices("--write")[0], 1)
         self.assertEqual((self.root / "NOTICES").read_bytes(), b"keep\n")
-
-    def test_missing_generated_file_fails(self):
-        self.assertEqual(self.notices()[0], 1)
 
 
 def needs(**results: str) -> str:
