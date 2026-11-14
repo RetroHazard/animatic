@@ -13,6 +13,14 @@ the generated line for that pull request's squash commit.
 
 ### Added
 
+- MyList is grouped by anime: one collapsible row per anime (episode count, group, common
+  state or `Mixed`, watched / partly watched, total size, queue summary). Setting State or
+  Watched on the anime row applies it to all of its entries in one step; expanding the row
+  shows the entries in episode order (regular episodes, then specials, credits and so on) for
+  per-episode changes. **Expand all** / **Collapse all** are in the toolbar.
+- Hashed files: **Remove from list…** (toolbar and right-click menu) removes the selected files'
+  records from Animatic after a confirmation: hash, path and media properties only. Media files
+  on disk and MyList entries are not touched, and a later scan or Add files brings a file back.
 - Colour schemes: Options → Appearance → **Color scheme** offers Sakura (the original pink,
   default), Ocean, Forest, Sunset, Wisteria and Graphite, each with a dark and a light variant
   (`ui.color_scheme`). Every scheme is checked by tests for readable contrast. Text on accent

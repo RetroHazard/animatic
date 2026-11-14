@@ -60,6 +60,11 @@ pub enum Job {
     },
     /// Remove every hash queue entry, waiting and failed.
     ClearHashQueue,
+    /// Remove the Animatic records (path, hash, media properties) of hashed files, in one
+    /// transaction. Never touches the media files on disk or MyList.
+    RemoveLocalFiles {
+        ids: Vec<i64>,
+    },
     Scan {
         settings: FileManagerSettings,
         extensions: String,
@@ -266,6 +271,12 @@ pub enum Event {
     CoverLoaded {
         picname: String,
         outcome: CoverOutcome,
+    },
+    /// Answer to `Job::RemoveLocalFiles`: the records of `ids` are gone (`removed` of them
+    /// existed); the files on disk and MyList are untouched. Sent before `Finished`.
+    LocalFilesRemoved {
+        ids: Vec<i64>,
+        removed: usize,
     },
     Finished,
     /// The hash queue table changed (files queued, drained or cleared); reload the projection.
@@ -744,6 +755,9 @@ fn run(
                 &pause,
             ),
             Job::ClearHashQueue => hash_jobs::run_clear(&db_path, &events),
+            Job::RemoveLocalFiles { ids } => {
+                run_remove_local_files(&db_path, ids, &mut auto_rename_memory, &events)
+            }
             Job::ReadMedia { ffprobe, scope } => {
                 crate::media::read_media(&db_path, &ffprobe, scope, &events, &cancel)
             }
@@ -1480,6 +1494,35 @@ fn run_renames(
         renamed: tally.renamed,
         not_renamed: tally.not_renamed,
     });
+    let _ = events.send(Event::Finished);
+}
+
+/// **Remove from list** (`Job::RemoveLocalFiles`): delete the Animatic records of the given
+/// hashed files in one transaction (`Db::remove_local_files`) and forget them in the automatic
+/// rename memory. Media files on disk and MyList entries are never touched.
+fn run_remove_local_files(
+    db_path: &Path,
+    ids: Vec<i64>,
+    memory: &mut AutoRenameMemory,
+    events: &Sender<Event>,
+) {
+    let _ = events.send(Event::Started {
+        label: "Removing files from the list".into(),
+        total: ids.len(),
+    });
+    match Db::open(db_path).and_then(|db| db.remove_local_files(&ids)) {
+        Ok(removed) => {
+            for id in &ids {
+                memory.forget(*id);
+            }
+            let _ = events.send(Event::LocalFilesRemoved { ids, removed });
+        }
+        Err(e) => {
+            let _ = events.send(Event::Error(format!(
+                "Could not remove the files from the list: {e}"
+            )));
+        }
+    }
     let _ = events.send(Event::Finished);
 }
 
@@ -2535,6 +2578,41 @@ mod tests {
             std::fs::read(media.join("taken.mkv")).unwrap(),
             b"someone else's file"
         );
+    }
+
+    #[test]
+    fn a_remove_job_drops_the_records_and_leaves_the_files_on_disk() {
+        let db = TempDb::new();
+        let library = db.open();
+        let media = db.dir.join("animatic-test-media");
+        let (a, b, c) = (
+            register_media(&library, &media.join("a.mkv"), b"synthetic a"),
+            register_media(&library, &media.join("b.mkv"), b"synthetic b"),
+            register_media(&library, &media.join("c.mkv"), b"synthetic c"),
+        );
+        let worker = Worker::spawn(db.path.clone());
+
+        worker.submit(Job::RemoveLocalFiles { ids: vec![a, b] });
+        let mut removed = None;
+        wait_for(&worker, |e| {
+            if let Event::LocalFilesRemoved { ids, removed: n } = e {
+                removed = Some((ids.clone(), *n));
+            }
+            matches!(e, Event::Finished)
+        });
+
+        assert_eq!(removed, Some((vec![a, b], 2)));
+        let ids: Vec<i64> = db
+            .open()
+            .local_files()
+            .unwrap()
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(ids, [c]);
+        for name in ["a.mkv", "b.mkv", "c.mkv"] {
+            assert!(media.join(name).exists(), "{name} stays on disk");
+        }
     }
 
     #[test]

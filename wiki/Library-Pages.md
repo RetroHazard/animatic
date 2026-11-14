@@ -63,27 +63,60 @@ clears the flag and writes the settings file at once (unless
 
 ## MyList
 
-Columns: **Anime** (link; opens the [detail window](#anime-detail-window)), **Episode**
-(`12`, `S1`, `C1`, `T1`, `P1`, `O1`, or `—` if unknown; **click it to select the row**), **Group**
-(short name, else full name), **State** (combo box), **Watched** (checkbox), **Size**, **Queue**
+The page groups the MyList by anime: one top-level row per anime, collapsed by default, and the
+anime's MyList entries (episodes and files) as child rows when it is expanded. Click the arrow in
+front of the title to expand or collapse one anime; **Expand all** and **Collapse all** in the
+toolbar do it for every anime in the table (the expand state is kept while you work and is not
+saved when you quit). Child rows are always in AniDB episode order: regular episodes by number,
+then specials (`S`), credits (`C`), trailers (`T`), parodies (`P`) and others (`O`) by type and
+number; entries whose episode is unknown come last.
+
+Columns of an **anime row**: **Anime** (the title; a link that opens the
+[detail window](#anime-detail-window)), **Episode** (`12 eps`, or `15 files` when an episode has
+several files; hover shows both counts; **click it to select every entry of the anime**),
+**Group** (the group's name, or `various`), **State** (a combo box showing the common state, or
+`Mixed`), **Watched** (a checkbox: ticked when every entry is watched, unticked when none is, a
+dash when only some are), **Size** (the sum) and **Queue** (how many entries wait for an edit, a
+removal or are blocked, for example `2 queued, 1 blocked`). The row is tinted like a watched
+entry once all of its entries are watched.
+
+Columns of an **entry row**: **Anime** (the episode's title, indented), **Episode** (`12`, `S1`,
+`C1`, `T1`, `P1`, `O1`, or `—` if unknown; **click it to select the entry**), **Group** (short
+name, else full name), **State** (combo box), **Watched** (checkbox), **Size**, **Queue**
 (`Edit queued`, `Removal queued`, or the same with `blocked`; hover shows the last error).
+
+Choosing a **State** or ticking **Watched** on an anime row applies it to every entry of the
+anime in one step: one merged `Edit mylist entry N` per entry, all saved in a single database
+transaction, with the new values shown at once. Entries that already have the value are left alone
+(nothing is queued for them and a watched date is not restamped), entries waiting to be removed
+are skipped, and marking watched stamps the moment of the click. Clicking the dash of a partly
+watched anime marks every entry watched; click again to unmark them all.
+
+The sort buttons in the headers sort the anime rows by their totals (title, episodes/files,
+group, state, watched share, size, queue); the entries below an anime stay in episode order
+whatever the sort. Without a sort the anime are in title order. The search box filters by anime
+title: a matching anime shows with all of its entries.
 
 The page lists the MyList entries stored locally. They come from an AOM import, from files
 identified or added through the [queue](#queue), or from a
 [MyList export import](AniDB-Synchronization.md#full-account-mylist-import) (**File → Import →
 MyList export…**); Animatic never downloads your MyList entry by entry (see
 [Not implemented](Feature-Parity.md#not-implemented)). State and Watched toggle in the row; the
-buttons above the table act on the selected row (click its episode to select it); a weak hint says
-so until one is selected, then the toolbar shows `Entry N · <anime — episode>`. All changes are
-queued first, so they work offline; see [MyList editing](AniDB-Synchronization.md#mylist-editing).
+buttons above the table act on the selection: an entry (click its episode) or all entries of an
+anime (click the episode count of its row). A weak hint says so until something is selected, then
+the toolbar shows `Entry N · <anime — episode>` or `<anime> · all N entries selected`. All changes
+are queued first, so they work offline; see
+[MyList editing](AniDB-Synchronization.md#mylist-editing).
 
 | Button | Does |
 |---|---|
-| **Edit…** | Opens the entry editor for the selected row (below). Disabled while the entry waits to be removed. |
-| **Remove from MyList…** | Opens a confirmation dialog (Esc or a click outside cancels); its **Remove from MyList** button queues `Remove mylist entry N`. Your media file is never touched. The row stays until AniDB confirms, shows `Removal queued` meanwhile and `Removal blocked` if the request failed permanently (it stays listed on the [Queue](#queue) page until you retry or discard it). Edits of the entry still waiting in the queue are discarded; later edits are refused while the removal waits. |
-| **Refresh from AniDB** | Queues `Refresh mylist entry N`. The reply replaces the cached row but never overwrites a change you made that has not been sent yet. If AniDB says the entry no longer exists, the row is removed unless you have queued changes for it. |
+| **Edit…** | Opens the entry editor for the selected entry (below), or for every entry of the selected anime. Disabled while the entry waits to be removed (for an anime: while all its entries do; entries already waiting are left out). |
+| **Remove from MyList…** | Opens a confirmation dialog (Esc or a click outside cancels); its **Remove from MyList** button queues `Remove mylist entry N`, one per selected entry (every entry of the anime for an anime row). Your media files are never touched. The rows stay until AniDB confirms, show `Removal queued` meanwhile and `Removal blocked` if the request failed permanently (they stay listed on the [Queue](#queue) page until you retry or discard them). Edits of the entries still waiting in the queue are discarded; later edits are refused while the removal waits. |
+| **Refresh from AniDB** | Queues `Refresh mylist entry N` for the selected entry, or for each entry of the selected anime. The reply replaces the cached row but never overwrites a change you made that has not been sent yet. If AniDB says the entry no longer exists, the row is removed unless you have queued changes for it. |
+| **Expand all** / **Collapse all** | Show the entries of every anime in the table, or one row per anime. |
 
-**Entry editor** (window **Edit MyList entry**, with the anime and episode below the title). Fields: **state**, **watched**, **view date**, **storage**, **source** and
+**Entry editor** (window **Edit MyList entry**, with the anime and episode below the title; for an
+anime row the title names the anime and how many entries are edited). Fields: **state**, **watched**, **view date**, **storage**, **source** and
 **other**. Each has a *Change* checkbox, ticked automatically when you edit the value. An
 **unticked field is left as it is on AniDB; a ticked empty text field clears it** (the same rule as
 the [folder policy](Options-Window.md)). The view date (`YYYY-MM-DD HH:MM` or `YYYY-MM-DD`, in your
@@ -91,7 +124,9 @@ local time zone) is offered while the entry is watched; ticking it with no text 
 an entry watched stamps the moment you saved it, not the moment AniDB hears of it, and marking it
 unwatched drops the date. **Save** queues one merged `Edit mylist entry N` (merged with any edit still
 waiting, so a stale acknowledgement never undoes a newer edit) and shows the new values at once;
-**Cancel** changes nothing. The edit survives a restart.
+**Cancel** changes nothing. The edit survives a restart. Edited for an anime, the fields start
+unticked and empty (the entries differ, so there is nothing to show), a ticked field is set on every
+entry that does not already have the value, and all the changes are saved in one transaction.
 
 State choices are `Unknown`, `On HDD`, `On CD/DVD`, `Deleted`, `Remote/Shared` (stored
 as 0–4), shown the same way in the closed combo box. Any other stored value
@@ -154,11 +189,11 @@ hashing**, **Retry failed** and **Clear hash queue** (they wait while another ta
 [Hash queue](Hashing-and-Identification.md#hash-queue).
 
 The toolbar wraps onto several lines instead of clipping and groups its buttons: **Add files…** |
-**Rename…**, **Rename N selected…**, **Add to MyList…** | **Play**, **Open file**, the player buttons,
+**Rename…**, **Rename N selected…**, **Add to MyList…**, **Remove from list…** | **Play**, **Open file**, the player buttons,
 **AVDump** | **Select all**, **Clear selection**, the count. Buttons that need a selected file
-(Rename…, Play, Open file, Open in player, Enqueue and AVDump) are disabled until you select
-one; hover the disabled button for the reason. **Add to MyList…** and **Rename N selected…** take
-one or several (with nothing selected the latter reads **Rename selected…**):
+(Rename…, Remove from list…, Play, Open file, Open in player, Enqueue and AVDump) are disabled until you select
+one; hover the disabled button for the reason. **Add to MyList…**, **Rename N selected…** and **Remove from list…** take
+one or several (with nothing selected the second reads **Rename selected…**). Right-clicking a file name also offers **Remove from list…**:
 
 | Button | Does |
 |---|---|
@@ -172,6 +207,7 @@ one or several (with nothing selected the latter reads **Rename selected…**):
 | Open in player, Enqueue | Appear only when the chosen player has *Open* or *Enqueue arguments* set; start it with those. Right-clicking a file name offers the same actions |
 | AVDump | Enabled only when AVDump integration is on; starts [AVDump](External-Tools.md) |
 | Add to MyList… | Opens a dialog for the selected files: state, watched, view date, storage, source and other (tick a field to set it; unticked fields keep AniDB's defaults). **Queue add** queues one `Add to mylist` per file: an identified file by its file id, an unidentified one by size and ED2K hash, which AniDB resolves first (a file AniDB does not know is skipped when the queue runs). Files already in MyList, files with an add already waiting and further copies of the same content are left out; the dialog says how many. The MyList column shows `Add queued` at once and `lid N` after AniDB confirmed. |
+| Remove from list… | Asks first (Esc or Cancel closes the window), then removes Animatic's records of the selected files, one or several: their hash, path and [media properties](External-Tools.md#media-properties-ffprobe). **Your media files on disk are not touched, and neither are MyList entries** (the local rows and anything queued for AniDB). It is a manual cleanup of the list, never automatic: a later [scan](Managed-Folders-and-Scans.md) of the folder or **Add files…** lists the file again (and hashes it again). It runs as a background task, so it waits while another task runs, and the log says `Removed N files from the list` |
 
 "AniDB: fid N" means the hash matches a file record already stored locally (from the import or
 from an identify command that ran); `Not identified` means no such record, not necessarily that

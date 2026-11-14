@@ -681,16 +681,34 @@ impl Db {
         )
     }
 
+    /// Remove the Animatic records of one hashed file: its path, its media properties and any
+    /// hash record no other path uses any more. The media file and MyList entries (local rows
+    /// and queued edits) are untouched. See [`Db::remove_local_files`].
     pub fn remove_local_file(&self, id: i64) -> Result<()> {
-        self.conn()
-            .execute("DELETE FROM media_info WHERE local_file_id = ?1", [id])?;
-        self.conn()
-            .execute("DELETE FROM local_file WHERE id = ?1", [id])?;
-        self.conn().execute(
-            "DELETE FROM local_hash WHERE NOT EXISTS (SELECT 1 FROM local_file l WHERE l.hash_id = local_hash.id)",
-            [],
-        )?;
-        Ok(())
+        self.remove_local_files(&[id]).map(|_| ())
+    }
+
+    /// Remove the Animatic records of the given hashed files in one transaction (all or none):
+    /// each file's `local_file` row and `media_info` row, then every `local_hash` row no path
+    /// uses any more, so a hash shared with a file that stays is kept. Ids that do not exist
+    /// are ignored; returns how many files were removed. This only deletes database rows: media
+    /// files on disk, MyList entries, the command queue and the hash queue are not touched.
+    pub fn remove_local_files(&self, ids: &[i64]) -> Result<usize> {
+        self.write_tx(|| {
+            let c = self.conn();
+            let mut media = c.prepare_cached("DELETE FROM media_info WHERE local_file_id = ?1")?;
+            let mut file = c.prepare_cached("DELETE FROM local_file WHERE id = ?1")?;
+            let mut removed = 0;
+            for &id in ids {
+                media.execute([id])?;
+                removed += file.execute([id])?;
+            }
+            c.execute(
+                "DELETE FROM local_hash WHERE NOT EXISTS (SELECT 1 FROM local_file l WHERE l.hash_id = local_hash.id)",
+                [],
+            )?;
+            Ok(removed)
+        })
     }
 
     pub fn clear_local_files(&self) -> Result<()> {
@@ -945,6 +963,76 @@ mod tests {
             .query_row("SELECT count(*) FROM local_hash", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "orphaned hashes are dropped");
+    }
+
+    #[test]
+    fn removing_local_files_drops_only_their_records() {
+        let db = Db::memory().unwrap();
+        let hashes = |ed2k: &str| Hashes {
+            size: 10,
+            ed2k: ed2k.into(),
+            crc32: "C".into(),
+            md5: "M".into(),
+            sha1: "S".into(),
+        };
+        let shared = hashes("shared");
+        let a = db.add_local_file("/x/a.mkv", &shared, 1).unwrap();
+        let b = db.add_local_file("/y/a.mkv", &shared, 2).unwrap();
+        let c = db.add_local_file("/x/c.mkv", &hashes("only-c"), 3).unwrap();
+        let d = db.add_local_file("/x/d.mkv", &hashes("only-d"), 4).unwrap();
+        for id in [a, c, d] {
+            let hash_id: i64 = db
+                .conn()
+                .query_row("SELECT hash_id FROM local_file WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let info = crate::media::MediaInfo {
+                length: Some(60.0),
+                ..Default::default()
+            };
+            db.set_media_info(id, hash_id, &info).unwrap();
+        }
+        db.store_api_mylist(&ApiMylistEntry {
+            lid: 77,
+            fid: 5,
+            state: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        db.queue_edit_mylist(
+            77,
+            &animatic_anidb::commands::MylistEdit {
+                state: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let count = |sql: &str| -> i64 { db.conn().query_row(sql, [], |r| r.get(0)).unwrap() };
+        let queued = count("SELECT count(*) FROM command_queue");
+
+        // A missing id is ignored; the shared hash stays while `b` uses it.
+        assert_eq!(db.remove_local_files(&[a, c, 9999]).unwrap(), 2);
+
+        let left: Vec<i64> = db.local_files().unwrap().iter().map(|f| f.id).collect();
+        assert_eq!(left.len(), 2);
+        assert!(left.contains(&b) && left.contains(&d));
+        assert_eq!(count("SELECT count(*) FROM local_hash"), 2, "shared and d");
+        assert_eq!(
+            count("SELECT count(*) FROM media_info"),
+            1,
+            "only d keeps its media properties"
+        );
+        assert!(db.local_file_record(b).unwrap().is_some());
+        assert_eq!(db.mylist_entry(77).unwrap().unwrap().state, 2);
+        assert_eq!(count("SELECT count(*) FROM command_queue"), queued);
+
+        assert_eq!(db.remove_local_files(&[]).unwrap(), 0);
+        assert_eq!(db.remove_local_files(&[b, d]).unwrap(), 2);
+        assert!(db.local_files().unwrap().is_empty());
+        assert_eq!(count("SELECT count(*) FROM local_hash"), 0);
+        assert_eq!(count("SELECT count(*) FROM media_info"), 0);
+        assert!(db.mylist_entry(77).unwrap().is_some(), "MyList is kept");
     }
 
     const DUMP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

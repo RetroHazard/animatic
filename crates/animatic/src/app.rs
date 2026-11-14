@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crate::style;
 use crate::table::{
     SortKey, data_table, row_height, sort_anime, sort_genres, sort_groups, sort_key, sort_local,
-    sort_mylist,
 };
 use crate::worker::{
     Event, Job, RenameItem, RestoreResult, UpdateEvent, UpdateJob, Updater, Worker, spawn_restore,
@@ -39,6 +38,7 @@ mod mylist_editor;
 mod mylist_export;
 mod player_actions;
 mod refresh;
+mod remove_files;
 mod shell_menu;
 mod status_colors;
 mod tray_ui;
@@ -145,7 +145,7 @@ impl<K: PartialEq + Clone> IndexCache<K> {
 struct TableViews {
     anime: IndexCache<(u64, String, BTreeSet<i64>, SortKey)>,
     search: IndexCache<(u64, String, String, i64, bool, bool, SortKey)>,
-    mylist: IndexCache<(u64, String, SortKey)>,
+    mylist: crate::mylist_tree::MylistView,
     local: IndexCache<(u64, String, SortKey)>,
     groups: IndexCache<(u64, String, SortKey)>,
     genres: IndexCache<(u64, String, SortKey)>,
@@ -602,6 +602,8 @@ pub struct AnimaticApp {
     selected_local: Option<i64>,
     rename_preview: Option<RenamePreview>,
     batch_rename: Option<BatchRename>,
+    /// Hashed files selected for **Remove from list**, while the confirmation is open.
+    remove_files_confirm: Option<Vec<i64>>,
     /// Automatic rename (roadmap M6.3): when a pass is due and the preview before a folder is
     /// turned on.
     auto_rename: auto_rename::AutoRenameState,
@@ -723,6 +725,7 @@ impl AnimaticApp {
             selected_local: None,
             rename_preview: None,
             batch_rename: None,
+            remove_files_confirm: None,
             auto_rename: auto_rename::AutoRenameState::default(),
             rename_requests: 0,
             pattern_editor: PatternEditor::default(),
@@ -1389,6 +1392,9 @@ impl AnimaticApp {
                         self.full_update = refresh::FullUpdateStage::Closed;
                     }
                     self.error(e)
+                }
+                Event::LocalFilesRemoved { ids, removed } => {
+                    self.local_files_removed(&ids, removed)
                 }
                 Event::HashQueueChanged => self.request_library_refresh(),
                 Event::Finished => {
@@ -3465,15 +3471,23 @@ impl AnimaticApp {
     }
 
     fn mylist_page(&mut self, ui: &mut egui::Ui) {
+        use crate::mylist_tree::{RowRef, Summary, Watched};
+        use animatic_anidb::commands::MylistEdit;
         self.page_header(ui, None, true);
-        self.mylist_toolbar(ui);
-        let key = (
+        // Grouped by anime, entries in episode order; rebuilt only when the projection, the
+        // search or the sort changed (the projection version keeps stale snapshots out).
+        self.views.mylist.refresh(
+            &self.projection,
             self.loader.version,
-            self.query.to_ascii_lowercase(),
-            sort_key(&self.settings.ui.columns, "mylist_table"),
+            &self.query.to_ascii_lowercase(),
+            &sort_key(&self.settings.ui.columns, "mylist_table"),
         );
+        self.mylist_toolbar(ui);
         // (lid, edit, resulting state, resulting watched flag)
-        let mut edits: Vec<(i64, animatic_anidb::commands::MylistEdit, i64, bool)> = Vec::new();
+        let mut edits: Vec<(i64, MylistEdit, i64, bool)> = Vec::new();
+        // Edits of an anime row: (aid, edit applied to every entry of the anime).
+        let mut anime_edits: Vec<(i64, MylistEdit)> = Vec::new();
+        let mut toggles: Vec<i64> = Vec::new();
         {
             let Self {
                 projection,
@@ -3484,12 +3498,8 @@ impl AnimaticApp {
                 settings,
                 ..
             } = self;
-            views.mylist.refresh(&key, || {
-                let mut rows = filter_mylist(projection, &key.1);
-                sort_mylist(projection, &mut rows, &key.2);
-                rows
-            });
-            let rows = &views.mylist.rows;
+            let view = &views.mylist;
+            let rows = view.rows();
             let row_height = row_height(ui);
             let (colored, overrides) = (settings.ui.tint_mode(), &settings.ui.colors);
             data_table(
@@ -3507,89 +3517,225 @@ impl AnimaticApp {
                 &mut settings.ui.columns,
             )
             .body(|body| {
-                body.rows(row_height, rows.len(), |mut row| {
-                    let i = rows[row.index()];
-                    let item = &projection.mylist[i];
-                    let lid = item.entry.lid;
-                    // Show a toggle the user just saved even before a projection includes it.
-                    let (shown_state, shown_viewed) = mylist_overlay
-                        .get(&lid)
-                        .map_or((item.entry.state, item.entry.viewed), |o| {
-                            (o.state, o.viewed)
+                body.rows(row_height, rows.len(), |mut row| match rows[row.index()] {
+                    RowRef::Anime(n) => {
+                        let group = view.group(n);
+                        let aid = group.aid;
+                        // The aggregate includes edits the user just saved even before a
+                        // projection reflects them.
+                        let summary = Summary::of(projection, &group.members, |m| {
+                            mylist_overlay
+                                .get(&m.entry.lid)
+                                .map_or((m.entry.state, m.entry.viewed), |o| (o.state, o.viewed))
                         });
-                    let mut state = shown_state;
-                    let mut watched = shown_viewed;
-                    row.tint(row_colors(colored, overrides, mylist_slot(shown_viewed)));
-                    row.col(|ui| {
-                        if ui.link(projection.mylist_title(i)).clicked() {
-                            *selected_aid = Some(item.entry.aid);
-                        }
-                    });
-                    row.col(|ui| {
-                        let epno = item
-                            .episode
-                            .as_ref()
-                            .map_or_else(|| "—".to_string(), |e| e.epno_str());
-                        if ui
-                            .selectable_label(mylist_ui.selected_lid == Some(lid), epno)
-                            .clicked()
-                        {
-                            mylist_ui.selected_lid = Some(lid);
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            item.file
-                                .as_ref()
-                                .map(|f| f.group_label())
-                                .unwrap_or_default(),
-                        );
-                    });
-                    row.col(|ui| {
-                        egui::ComboBox::from_id_salt(("state", lid))
-                            .selected_text(mylist_state_name(state))
-                            .show_ui(ui, |ui| {
-                                for (id, name) in MYLIST_STATES.iter().enumerate() {
-                                    ui.selectable_value(&mut state, id as i64, *name);
-                                }
-                            });
-                    });
-                    row.col(|ui| {
-                        ui.checkbox(&mut watched, "");
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            item.file
-                                .as_ref()
-                                .map(|f| format::size_short(f.size))
-                                .unwrap_or_default(),
-                        );
-                    });
-                    row.col(|ui| {
-                        if let Some(p) = projection.mylist_pending.get(&lid) {
-                            let response = ui.label(p.label());
-                            if let Some(error) = &p.error {
-                                response.on_hover_text(error);
-                            }
-                        }
-                    });
-                    if state != shown_state || watched != shown_viewed {
-                        edits.push((
-                            lid,
-                            animatic_anidb::commands::MylistEdit {
-                                state: (state != shown_state).then_some(state),
-                                viewed: (watched != shown_viewed).then_some(watched),
-                                viewdate: None,
-                                storage: None,
-                                source: None,
-                                other: None,
-                            },
-                            state,
-                            watched,
+                        let watched = summary.watched_state();
+                        row.tint(row_colors(
+                            colored,
+                            overrides,
+                            mylist_slot(watched == Watched::All),
                         ));
+                        row.col(|ui| {
+                            let open = view.is_expanded(aid);
+                            let side = ui.spacing().icon_width;
+                            let (_, arrow) = ui
+                                .allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+                            egui::collapsing_header::paint_default_icon(
+                                ui,
+                                if open { 1.0 } else { 0.0 },
+                                &arrow,
+                            );
+                            if arrow
+                                .on_hover_text(if open {
+                                    "Hide the entries of this anime"
+                                } else {
+                                    "Show the entries of this anime"
+                                })
+                                .clicked()
+                            {
+                                toggles.push(aid);
+                            }
+                            if ui.link(projection.mylist_title(group.members[0])).clicked() {
+                                *selected_aid = Some(aid);
+                            }
+                        });
+                        row.col(|ui| {
+                            if ui
+                                .selectable_label(
+                                    mylist_ui.selected_anime == Some(aid),
+                                    summary.episode_text(),
+                                )
+                                .on_hover_text(format!(
+                                    "{}. Click to select all of them: Edit…, Remove from \
+                                     MyList… and Refresh then act on every entry of this anime",
+                                    summary.episode_detail()
+                                ))
+                                .clicked()
+                            {
+                                mylist_ui.select_anime(aid);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(summary.group.text());
+                        });
+                        row.col(|ui| {
+                            let mut picked = None;
+                            let shown = summary.state.map_or_else(
+                                || std::borrow::Cow::Borrowed("Mixed"),
+                                mylist_state_name,
+                            );
+                            egui::ComboBox::from_id_salt(("anime-state", aid))
+                                .selected_text(shown)
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in MYLIST_STATES.iter().enumerate() {
+                                        let id = id as i64;
+                                        if ui
+                                            .selectable_label(summary.state == Some(id), *name)
+                                            .clicked()
+                                        {
+                                            picked = Some(id);
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text("Sets the state of every entry of this anime");
+                            if let Some(state) = picked {
+                                anime_edits.push((
+                                    aid,
+                                    MylistEdit {
+                                        state: Some(state),
+                                        ..MylistEdit::default()
+                                    },
+                                ));
+                            }
+                        });
+                        row.col(|ui| {
+                            let mut checked = watched == Watched::All;
+                            if ui
+                                .add(
+                                    egui::Checkbox::new(&mut checked, "")
+                                        .indeterminate(watched == Watched::Partly),
+                                )
+                                .on_hover_text(
+                                    "Marks every entry of this anime watched, or none of them",
+                                )
+                                .changed()
+                            {
+                                anime_edits.push((
+                                    aid,
+                                    MylistEdit {
+                                        viewed: Some(checked),
+                                        ..MylistEdit::default()
+                                    },
+                                ));
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(format::size_short(summary.size));
+                        });
+                        row.col(|ui| {
+                            ui.label(summary.queue_text());
+                        });
+                    }
+                    RowRef::Entry { item: i, .. } => {
+                        let item = &projection.mylist[i];
+                        let lid = item.entry.lid;
+                        // Show a toggle the user just saved even before a projection includes it.
+                        let (shown_state, shown_viewed) = mylist_overlay
+                            .get(&lid)
+                            .map_or((item.entry.state, item.entry.viewed), |o| {
+                                (o.state, o.viewed)
+                            });
+                        let mut state = shown_state;
+                        let mut watched = shown_viewed;
+                        row.tint(row_colors(colored, overrides, mylist_slot(shown_viewed)));
+                        row.col(|ui| {
+                            // Indented under the arrow of its anime row.
+                            ui.add_space(ui.spacing().icon_width + ui.spacing().item_spacing.x);
+                            if let Some(episode) =
+                                item.episode.as_ref().filter(|e| !e.name.is_empty())
+                            {
+                                ui.label(RichText::new(&episode.name).weak());
+                            }
+                        });
+                        row.col(|ui| {
+                            let epno = item
+                                .episode
+                                .as_ref()
+                                .map_or_else(|| "—".to_string(), |e| e.epno_str());
+                            let chosen = mylist_ui.selected_lid == Some(lid)
+                                || mylist_ui.selected_anime == Some(item.entry.aid);
+                            if ui.selectable_label(chosen, epno).clicked() {
+                                mylist_ui.select_entry(lid);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                item.file
+                                    .as_ref()
+                                    .map(|f| f.group_label())
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        row.col(|ui| {
+                            egui::ComboBox::from_id_salt(("state", lid))
+                                .selected_text(mylist_state_name(state))
+                                .show_ui(ui, |ui| {
+                                    for (id, name) in MYLIST_STATES.iter().enumerate() {
+                                        ui.selectable_value(&mut state, id as i64, *name);
+                                    }
+                                });
+                        });
+                        row.col(|ui| {
+                            ui.checkbox(&mut watched, "");
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                item.file
+                                    .as_ref()
+                                    .map(|f| format::size_short(f.size))
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        row.col(|ui| {
+                            if let Some(p) = projection.mylist_pending.get(&lid) {
+                                let response = ui.label(p.label());
+                                if let Some(error) = &p.error {
+                                    response.on_hover_text(error);
+                                }
+                            }
+                        });
+                        if state != shown_state || watched != shown_viewed {
+                            edits.push((
+                                lid,
+                                MylistEdit {
+                                    state: (state != shown_state).then_some(state),
+                                    viewed: (watched != shown_viewed).then_some(watched),
+                                    viewdate: None,
+                                    storage: None,
+                                    source: None,
+                                    other: None,
+                                },
+                                state,
+                                watched,
+                            ));
+                        }
                     }
                 });
             });
+        }
+        for aid in toggles {
+            self.views.mylist.toggle(aid);
+        }
+        for (aid, edit) in anime_edits {
+            let lids: Vec<i64> = self.views.mylist.group_of(aid).map_or_else(Vec::new, |g| {
+                g.members
+                    .iter()
+                    .map(|&i| self.projection.mylist[i].entry.lid)
+                    .collect()
+            });
+            if let Err(e) = self.queue_mylist_edit_many(&lids, &edit) {
+                self.db_write_error("Could not edit the MyList entries of the anime", &e);
+            }
         }
         for (lid, edit, state, viewed) in edits {
             // One atomic outbox + optimistic-row transaction; the overlay only bridges the
@@ -3659,6 +3805,7 @@ impl AnimaticApp {
         ui.horizontal_wrapped(|ui| {
             let selected = self.selected_local.is_some();
             let marked = self.selected_locals().len();
+            let remove_blocker = self.busy_reason();
             let group_gap = |ui: &mut egui::Ui| {
                 ui.add(egui::Separator::default().vertical().spacing(10.0));
             };
@@ -3704,6 +3851,19 @@ impl AnimaticApp {
                 .clicked()
             {
                 self.open_add_dialog();
+            }
+            if ui
+                .add_enabled(
+                    marked > 0 && remove_blocker.is_none(),
+                    egui::Button::new("Remove from list…"),
+                )
+                .on_hover_text(
+                    "Forget the selected files in Animatic; the files on disk and MyList are untouched",
+                )
+                .on_disabled_hover_text(remove_blocker.unwrap_or(SELECT_FIRST))
+                .clicked()
+            {
+                self.open_remove_files();
             }
             group_gap(ui);
             if ui
@@ -3778,6 +3938,8 @@ impl AnimaticApp {
         self.hash_queue_panel(ui, false);
         let file_menu = self.file_menu();
         let mut file_action = None;
+        let remove_blocker = self.busy_reason();
+        let mut remove_request = false;
         {
             let Self {
                 projection,
@@ -3831,6 +3993,20 @@ impl AnimaticApp {
                             if let Some(action) = player_actions::file_menu_ui(ui, &file_menu) {
                                 file_action = Some(action);
                             }
+                            ui.separator();
+                            let remove = ui.add_enabled(
+                                remove_blocker.is_none(),
+                                egui::Button::new("Remove from list…"),
+                            );
+                            if let Some(reason) = remove_blocker {
+                                remove.on_disabled_hover_text(reason);
+                            } else if remove
+                                .on_hover_text("Forget the selected files; the files on disk stay")
+                                .clicked()
+                            {
+                                remove_request = true;
+                                ui.close();
+                            }
                         });
                     });
                     row.col(|ui| {
@@ -3871,6 +4047,9 @@ impl AnimaticApp {
         }
         if let Some(action) = file_action {
             self.run_file_action(action);
+        }
+        if remove_request {
+            self.open_remove_files();
         }
     }
 
@@ -5984,6 +6163,7 @@ impl eframe::App for AnimaticApp {
         self.leftover_import_window(&ctx);
         self.library_safety_windows(&ctx);
         self.rename_window(&ctx);
+        self.remove_files_window(&ctx);
         self.mylist_windows(&ctx);
         self.full_update_window(&ctx);
         self.mylist_export_window(&ctx);
@@ -6287,12 +6467,6 @@ fn filter_search(p: &LibraryProjection, f: &SearchFilter) -> Vec<usize> {
         .collect()
 }
 
-fn filter_mylist(p: &LibraryProjection, q: &str) -> Vec<usize> {
-    (0..p.mylist.len())
-        .filter(|&i| q.is_empty() || p.keys.mylist[i].contains(q))
-        .collect()
-}
-
 fn filter_local(p: &LibraryProjection, q: &str) -> Vec<usize> {
     (0..p.local.len())
         .filter(|&i| q.is_empty() || p.keys.local[i].contains(q))
@@ -6516,8 +6690,8 @@ mod tests {
     #[test]
     fn table_filters_use_projection_keys() {
         let p = fixture();
-        assert_eq!(filter_mylist(&p, "alpha").len(), 1);
-        assert!(filter_mylist(&p, "third").is_empty());
+        assert_eq!(crate::mylist_tree::build_groups(&p, "alpha").len(), 1);
+        assert!(crate::mylist_tree::build_groups(&p, "third").is_empty());
         assert_eq!(filter_local(&p, "/fixture/root").len(), 1);
         assert_eq!(filter_groups(&p, "fg").len(), 1);
         assert_eq!(filter_groups(&p, "fixture g").len(), 1);

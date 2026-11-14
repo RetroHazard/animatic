@@ -413,7 +413,11 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
 }
 
 /// Stable sort of row indices; equal rows keep their default order, in both directions.
-fn sort_rows(rows: &mut [usize], sort: &SortKey, compare: impl Fn(&str, usize, usize) -> Ordering) {
+pub(crate) fn sort_rows(
+    rows: &mut [usize],
+    sort: &SortKey,
+    compare: impl Fn(&str, usize, usize) -> Ordering,
+) {
     let Some((column, direction)) = sort else {
         return;
     };
@@ -440,41 +444,6 @@ pub fn sort_anime(p: &LibraryProjection, rows: &mut [usize], sort: &SortKey) {
         "episodes" => p.anime[a].episodes.cmp(&p.anime[b].episodes),
         "rating" => p.anime[a].rating.cmp(&p.anime[b].rating),
         "mylist" => mylist(a).cmp(&mylist(b)),
-        _ => Ordering::Equal,
-    });
-}
-
-/// Orders the rows of the My list table.
-pub fn sort_mylist(p: &LibraryProjection, rows: &mut [usize], sort: &SortKey) {
-    let episode = |i: usize| {
-        p.mylist[i]
-            .episode
-            .as_ref()
-            .map(|e| e.epno_str())
-            .unwrap_or_default()
-    };
-    let group = |i: usize| {
-        p.mylist[i]
-            .file
-            .as_ref()
-            .map(|f| f.group_label())
-            .unwrap_or_default()
-    };
-    let size = |i: usize| p.mylist[i].file.as_ref().map_or(0, |f| f.size);
-    // Entries without a queued change sort before those with one.
-    let queue = |i: usize| {
-        p.mylist_pending
-            .get(&p.mylist[i].entry.lid)
-            .map_or("", |pending| pending.label())
-    };
-    sort_rows(rows, sort, |column, a, b| match column {
-        "anime" => natural_cmp(&p.keys.mylist[a], &p.keys.mylist[b]),
-        "episode" => natural_cmp(&episode(a), &episode(b)),
-        "group" => natural_cmp(&group(a), &group(b)),
-        "state" => p.mylist[a].entry.state.cmp(&p.mylist[b].entry.state),
-        "watched" => p.mylist[a].entry.viewed.cmp(&p.mylist[b].entry.viewed),
-        "size" => size(a).cmp(&size(b)),
-        "queue" => queue(a).cmp(queue(b)),
         _ => Ordering::Equal,
     });
 }
