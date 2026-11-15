@@ -347,6 +347,11 @@ impl FileManager {
             ..FileManager::default()
         }
     }
+
+    /// The built-in `\\` rule: every UNC path, with a path that cannot be edited.
+    pub fn is_network_builtin(&self) -> bool {
+        !self.default && !self.can_edit_path && self.path == "\\\\"
+    }
 }
 
 /// Longest settle delay (`action_delay_ms`) and file pacing pause (`sleep_time_ms`): 10 minutes
@@ -419,12 +424,32 @@ impl FileManagerSettings {
         std::time::Duration::from_secs(u64::from(minutes) * 60)
     }
 
+    /// The policy for files outside every folder rule: the rule marked `default`. Without one,
+    /// a neutral policy applies (nothing is added to MyList, renamed files stay in their
+    /// folder), never another folder's rule.
     pub fn default_manager(&self) -> &FileManager {
+        static NO_DEFAULT_RULE: std::sync::LazyLock<FileManager> =
+            std::sync::LazyLock::new(|| FileManager {
+                name: "No default rule".into(),
+                can_edit_path: false,
+                ..FileManager::default()
+            });
         self.managers
             .iter()
             .find(|m| m.default)
-            .or_else(|| self.managers.first())
-            .expect("at least one file manager")
+            .unwrap_or(&NO_DEFAULT_RULE)
+    }
+
+    /// Built-in rules (Default, the `\\` network rule) that are not in the list.
+    pub fn missing_builtins(&self) -> Vec<FileManager> {
+        let mut missing = Vec::new();
+        if !self.managers.iter().any(|m| m.default) {
+            missing.push(FileManager::builtin_default());
+        }
+        if !self.managers.iter().any(FileManager::is_network_builtin) {
+            missing.push(FileManager::network_default());
+        }
+        missing
     }
 
     /// The manager whose path is the longest prefix of `path`; the default manager otherwise.
@@ -1149,10 +1174,12 @@ impl Settings {
     }
 
     fn fixup(&mut self) {
-        if !self.file_managers.managers.iter().any(|m| m.default) {
+        // At least one rule always exists (Options never removes the last one). Removing the
+        // Default rule is allowed and stays removed; see `FileManagerSettings::default_manager`.
+        if self.file_managers.managers.is_empty() {
             self.file_managers
                 .managers
-                .insert(0, FileManager::builtin_default());
+                .push(FileManager::builtin_default());
         }
         self.file_managers.clamp_timing();
         self.anidb.clamp_timing();
@@ -1674,6 +1701,46 @@ x</renamingPattern>
             "b excludes subdirectories"
         );
         assert_eq!(fm.manager_for(Path::new("/other/y.mkv")).name, "Default");
+    }
+
+    #[test]
+    fn without_a_default_rule_files_outside_every_folder_get_a_neutral_policy() {
+        let mut fm = FileManagerSettings::default();
+        fm.managers.push(FileManager {
+            name: "a".into(),
+            path: "/media/anime".into(),
+            mylist_auto_add: true,
+            base_path: "/media/sorted".into(),
+            ..FileManager::default()
+        });
+        fm.managers.retain(|m| !m.default);
+        let fallback = fm.manager_for(Path::new("/other/y.mkv"));
+        assert_ne!(fallback.name, "a", "another folder's rule never applies");
+        assert!(!fallback.mylist_auto_add);
+        assert!(fallback.base_path.is_empty());
+        assert_eq!(
+            fm.missing_builtins(),
+            vec![FileManager::builtin_default()],
+            "only the removed Default rule can be restored"
+        );
+    }
+
+    #[test]
+    fn a_removed_default_rule_stays_removed_after_loading() {
+        let mut settings = Settings::default();
+        settings.file_managers.managers.retain(|m| !m.default);
+        let text = serde_json::to_vec(&settings).unwrap();
+        let loaded = parse_settings(&text).unwrap();
+        assert_eq!(
+            loaded.file_managers.managers,
+            settings.file_managers.managers
+        );
+        let empty = parse_settings(br#"{"file_managers":{"managers":[]}}"#).unwrap();
+        assert_eq!(
+            empty.file_managers.managers,
+            vec![FileManager::builtin_default()],
+            "an empty list loads with one rule"
+        );
     }
 
     struct TestDir(std::path::PathBuf);

@@ -69,7 +69,7 @@ stages in order, with the text and buttons you see:
 | Up to date | `Animatic is up to date.` | **Check again** |
 | Update available | `Version X is available`, `(<size> download)`, a **Release notes** link to the release page on GitHub, and the warning `Releases are not code-signed. The checksum only catches a damaged download.` (hover for the full integrity explanation) | **Download and verify** (hover: `Downloads the archive and checks it against the release's SHA-256 checksum. Nothing is installed yet.`) |
 | Downloading | `Downloading version X…` and a progress bar with a percentage | **Cancel** |
-| Ready to install | `Version X downloaded. Checksum matches.`, `SHA-256:` and the verified value, and the same code-signing warning | **Install**, **Discard download** |
+| Ready to install | `✓ Version X downloaded. Checksum matches.` in green, `SHA-256:` and the verified value, and the same code-signing warning | **Install**, **Discard download** |
 | Confirm install | `Replace <path of the running executable> with the new version?` and `Your data stays as it is. Bundled docs stay at the old version.` | **Confirm installation**, **Back** |
 | Installing | A spinner and `Installing… do not close Animatic.` | none |
 | Installed | `Version X is installed.` and `Restart Animatic to start using it.` | **Restart now**, **Later** |
@@ -142,21 +142,22 @@ The executable is replaced with the operating system's own swap method (on Windo
 executable is renamed aside and removed after it exits). For developers: this is done with the
 maintained [`self-replace`](https://crates.io/crates/self-replace) crate.
 
-Before that swap Animatic writes the new release's license files **next to the executable** as
-`LICENSE-vVERSION` and `NOTICES-vVERSION` (for example
-`LICENSE-v2026.12.0`). An existing different file of that name, or a symlink, is never
-overwritten; an identical file is fine. Everything else is left alone:
+After the swap Animatic replaces `LICENSE` and `NOTICES` **next to the executable** with the new
+release's files, so the folder always has one of each, matching the installed version. They are
+prepared beside the old files before the swap, so a failed swap leaves the old ones in place. A
+folder or symlink with either name makes the install stop before anything changes. Copies named
+`LICENSE-vVERSION` and `NOTICES-vVERSION`, which older versions of Animatic added instead, are
+removed. If replacing one of these files fails after the swap, the update is still installed, the
+log says which file was not updated, and that file's older copies are kept. Everything else is left
+alone:
 
-- The bundled `LICENSE`, `NOTICES`, `README.md`, `CHANGELOG.md` and `docs/`
-  stay at the **old** version. They change only if you replace them from a newly downloaded
-  archive yourself. The documentation you are reading may therefore describe an older version
-  than the executable.
+- The bundled `README.md`, `CHANGELOG.md` and `docs/` stay at the **old** version. They change
+  only if you replace them from a newly downloaded archive yourself. The documentation you are
+  reading may therefore describe an older version than the executable.
 - Your database, settings, backups, profiles, queue, media and any files you have hashed are
-  never touched; an update replaces the program only.
-- The new version's licenses are also the versioned files next to the executable. After the next
-  start, **About Animatic → View license** shows the license built into the version you run, and
-  **Third-party notices** shows the `NOTICES` text built into that version; the versioned files are
-  only copies for you.
+  never touched.
+- **About Animatic → View license** and **Third-party notices** show the texts built into the
+  version you run, so after a restart they match the new files.
 - Installing also creates an empty `.animatic-update.lock` file next to the executable. The
   operating system holds an advisory lock on it only while an install runs, so two Animatic
   processes cannot install at once; the file is harmless, may remain afterwards and can be

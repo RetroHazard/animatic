@@ -166,9 +166,9 @@ Then follow [Quick start](Quick-Start.md). **Start Animatic offline** on the fir
 #### Updating later
 
 An installed release can replace its own executable with a newer published release through
-**Help → Check for updates…** (Windows and Linux x86-64, writable folder required, no elevation). The
-bundled `LICENSE`, `NOTICES`, README, changelog and guides stay at the version you unpacked; the new
-version's licenses are added as `LICENSE-vVERSION` and `NOTICES-vVERSION` beside the executable.
+**Help → Check for updates…** (Windows and Linux x86-64, writable folder required, no elevation). It
+also replaces `LICENSE` and `NOTICES` beside the executable; the README, changelog and guides stay at
+the version you unpacked.
 Download a new archive by hand when you want the newer guide pages. Details and limits:
 [Updating Animatic](Updating-Animatic.md). A checkout built from source can run the updater, but it
 only replaces the compiled binary, never the source: use `git pull` and rebuild, and update

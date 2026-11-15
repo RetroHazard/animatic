@@ -628,9 +628,10 @@ Rules the code relies on:
   `--database FILE` (absolute) and nothing else (never media files or `--full-update`), inherits the
   environment, and gets `ANIMATIC_SETTINGS` as the absolute path in use when it was set. A failed spawn is reported as an error telling the
   user to start Animatic manually; there is no retry.
-- **Scope of an install.** Only the executable is replaced; versioned license and notices files are added next
-  to it. Profiles, database, settings, backups, queue and media are untouched, and the canonical
-  `LICENSE`, `NOTICES`, README, changelog and docs of the original archive remain.
+- **Scope of an install.** The executable is replaced, then `LICENSE` and `NOTICES` beside it (the
+  `LICENSE-vVERSION`/`NOTICES-vVERSION` copies earlier versions added are removed). Profiles,
+  database, settings, backups, queue and media are untouched, and the README, changelog and docs of
+  the original archive remain.
 - **No AniDB coupling.** The update path uses no AniDB client, spacing or cooldown, and its failures
   never enter the command queue. Only the startup check consults AniDB *settings* (offline,
   recovery) to decide whether to contact GitHub automatically.

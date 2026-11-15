@@ -141,7 +141,7 @@ Files waiting to be hashed are saved in the library database, so they survive cl
 | State | Meaning | How it ends |
 |---|---|---|
 | **Queued** | Waiting for its turn. Files are hashed oldest first. | Hashed (the entry disappears), or canceled (stays queued), or it fails. |
-| **Failed** | Could not be read; keeps its reason. Hashing does not retry it by itself. | You add the file again, click **Retry failed**, or clear the queue. A scan with **Auto hash** that finds the file again also queues it again. |
+| **Failed** | Could not be read; keeps its reason. Hashing does not retry it by itself. | You add the file again, click **Retry failed**, or clear the queue. A scan with **Hash new files** that finds the file again also queues it again. |
 
 ### Controls
 
@@ -175,8 +175,8 @@ Identification means asking AniDB which file a hash belongs to. It uses the ED2K
 
 | Situation after hashing | What is queued |
 |---|---|
-| The library has no AniDB record for the file yet and **Identify** is on | An **Identify** command. If the file's [folder rule](Managed-Folders-and-Scans.md#folder-rules) has **Add to MyList** on, the command also carries that rule's MyList settings (add policy). |
-| The library already has the file's AniDB record, **Identify** is on and the rule has **Add to MyList** on | An **Identify** command again, so the add policy can be applied; it refreshes the record too. |
+| The library has no AniDB record for the file yet and **Identify** is on | An **Identify** command. If the file's [folder rule](Managed-Folders-and-Scans.md#folder-rules) has **Add identified files to MyList** on, the command also carries that rule's MyList settings (add policy). |
+| The library already has the file's AniDB record, **Identify** is on and the rule has **Add identified files to MyList** on | An **Identify** command again, so the add policy can be applied; it refreshes the record too. |
 | The library already has the record, the row above does not apply, and **Update known file information** (**Options → AniDB account → Downloads**, off by default) is on | A refresh of the file record, unless it was requested within the last 7 days; then the Log says `File N skipped: it was requested from AniDB recently …`. |
 | Anything else (for example **Identify** is off and the file is new) | Nothing. The file stays **Not identified** until you identify it some other way (for example **Add to MyList…** on **Hashed files**). |
 
@@ -188,7 +188,7 @@ Commands are not sent when they are queued. They wait in the persistent command 
 - If AniDB explicitly reports that the file is **not** in your MyList, local entries for that file are removed unless they have queued edits.
 - If AniDB does not know the file, the Log says `file unknown to AniDB` and nothing else changes. The row stays **Not identified**; see [File and import problems](File-and-Import-Problems.md).
 
-With default settings, the built-in **Default** rule has **Add to MyList** on, **Set state** on with **On HDD**, and **Set watched** on with **Watched** off. Identified files that match no folder rule are therefore added to MyList as "On HDD", unwatched, when you run the queue. Review this before online work.
+With default settings, the built-in **Default** rule has **Add identified files to MyList** on, **Set state** on with **On HDD**, and **Set watched** on with **Watched** off. Identified files that match no folder rule are therefore added to MyList as "On HDD", unwatched, when you run the queue. Review this before online work. Without a Default rule (it can be removed), such files are not added to MyList.
 
 Once a file is identified and its anime and episode records are cached, a [folder with automatic rename](Managed-Folders-and-Scans.md#automatic-rename) can rename it.
 

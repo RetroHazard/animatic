@@ -39,7 +39,7 @@ The last line yields an empty string for a pending title, and the plan reports t
 Turning the result into a path is a pure string operation: it never looks at the disk. Both `\` and `/` are separators on every platform.
 
 1. A blank result is an error (above).
-2. If the managed folder's **Rename destination** (`base_path`) is not empty, the result is **always appended to it**: its trailing separators are trimmed, then the result is joined. A result that starts with a separator is joined as is; otherwise the platform's separator is inserted.
+2. If the managed folder's rename destination (**Move renamed files to another folder** → **Destination**, stored as `base_path`) is not empty, the result is **always appended to it**: its trailing separators are trimmed, then the result is joined. A result that starts with a separator is joined as is; otherwise the platform's separator is inserted.
 3. The joined text is split into a root and components:
    - `\\server\share\rest`: a UNC root,
    - `X:` followed by anything (`X` any single ASCII letter, so also `a:`): treated as a drive root on every platform, with `rest` as components. **A result such as `a:b.mkv` is therefore accepted on Windows as drive `a:` plus the file `b.mkv`** (target `a:\b.mkv`), not rejected for its colon. Use a longer prefix (`bad:name.mkv`) to see the colon rule.
@@ -48,7 +48,7 @@ Turning the result into a path is a pure string operation: it never looks at the
 4. Every component is trimmed of trailing dots and spaces, then of all characters at or below U+0020 at both ends, then validated.
 5. The components are pushed onto the root. If the path equals the current path, the result is "already named".
 
-`base_path` is the **Rename destination** of the managed folder the file belongs to: the folder whose path is the longest match for the file (subfolder inclusion respected), otherwise the built-in default rule. This longest-match rule is specific to the rename destination and post-hash MyList policy; scan discovery of hash/rehash candidates uses a different rule (first matching rule in list order). The default rule has an empty base path, and an empty base path keeps the file in its current folder. How rules match is in the [Settings reference](Settings-Reference.md) and [Managed folders and scans](Managed-Folders-and-Scans.md).
+`base_path` is the rename destination of the managed folder the file belongs to: the folder whose path is the longest match for the file (subfolder inclusion respected), otherwise the built-in default rule (when it has been removed, the file is renamed in place). This longest-match rule is specific to the rename destination and post-hash MyList policy; scan discovery of hash/rehash candidates uses a different rule (first matching rule in list order). The default rule has an empty base path, and an empty base path keeps the file in its current folder. How rules match is in the [Settings reference](Settings-Reference.md) and [Managed folders and scans](Managed-Folders-and-Scans.md).
 
 | Base path | Result | Target |
 |---|---|---|
@@ -64,7 +64,7 @@ Turning the result into a path is a pure string operation: it never looks at the
 
 An absolute result and a non-empty base path therefore do not combine; with a base path every result must be relative. A relative base path is relative to the file's folder, not to the program's working directory. Drive-letter roots are recognized on every platform; on POSIX such a name is not meaningful (reading of the code: it would become a relative path whose first component is `D:`).
 
-To send files to a network share, put the share in the managed folder's **Rename destination** (for example `\\server\share\Anime`): the destination is not reduced the way a pattern's result is, so it is read as a UNC root on Windows. On POSIX the backslashes are ordinary characters and the path would be read as a relative one (reading of the code; Linux was not exercised).
+To send files to a network share, put the share in the managed folder's rename destination (**Move renamed files to another folder** → **Destination**, for example `\\server\share\Anime`): the destination is not reduced the way a pattern's result is, so it is read as a UNC root on Windows. On POSIX the backslashes are ordinary characters and the path would be read as a relative one (reading of the code; Linux was not exercised).
 
 Sample library, built-in default convention, file `S:\Downloads\hanabi_paper_moon_radio_01_720p.mkv` in the Downloads rule (rename destination `S:\Anime`):
 
@@ -370,7 +370,7 @@ A **Custom** pattern, including an old default whose counter width depended on c
 
 - [Renaming files](Renaming-Files.md): the preview windows and the options.
 - [Rename patterns](Rename-Patterns.md): custom patterns, pitfalls and diagnostics.
-- [Managed folders and scans](Managed-Folders-and-Scans.md): the rename destination and **Remove emptied folders**.
+- [Managed folders and scans](Managed-Folders-and-Scans.md): the rename destination and **Remove folders a rename leaves empty**.
 - [Settings reference](Settings-Reference.md): `renaming_pattern`, `base_path`, `auto_rename`.
 
 For developers: the built-in convention texts are the `.txt` files in [crates/animatic-core/src/rename](https://github.com/RetroHazard/animatic/tree/main/crates/animatic-core/src/rename), and the Rust API is described in [rename-api.md](https://github.com/RetroHazard/animatic/blob/main/docs/rename-api.md).

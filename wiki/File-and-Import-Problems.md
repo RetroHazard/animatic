@@ -21,13 +21,13 @@ in-memory settings and plans three possible actions:
 
 | Action | Condition |
 |---|---|
-| Hash | A file under a rule with **Auto hash** whose extension is allowed and whose path is not yet in the library. If several rules cover the same path, the **first rule in list order** that takes part in discovery wins (longest-path matching applies to MyList defaults, the rename base path and removal, not to discovery) |
-| Rehash | A known file under a rule with **Rehash changed** whose modification time (in seconds) changed |
-| Remove missing | A library path under a rule with **Remove missing** that is affirmatively absent; see [Offline drives](#offline-drives-and-automatic-removal) |
+| Hash | A file under a rule with **Hash new files** whose extension is allowed and whose path is not yet in the library. If several rules cover the same path, the **first rule in list order** that takes part in discovery wins (longest-path matching applies to MyList defaults, the rename base path and removal, not to discovery) |
+| Rehash | A known file under a rule with **Rehash changed files** whose modification time (in seconds) changed |
+| Remove missing | A library path under a rule with **Remove missing files from the library** that is affirmatively absent; see [Offline drives](#offline-drives-and-automatic-removal) |
 
 If a scan hashes nothing:
 
-1. **No rule has Auto hash or Rehash changed**, or its folder path is empty or not an existing
+1. **No rule has Hash new files or Rehash changed files**, or its folder path is empty or not an existing
    directory. A rule with neither box ticked is skipped for hashing.
 2. **Extensions:** scans always filter by the extension list in **Tools → Options… → Hashing**,
    whatever **Restrict file extensions** is set to. A file without an extension never matches
@@ -38,13 +38,13 @@ If a scan hashes nothing:
    new rules and false for the built-in network rule and for rules imported from AOM. Animatic
    does not look at the Windows *Hidden* attribute. On Windows, files and folders with the
    *system* attribute are skipped when the rule's **Skip system files** is on (no effect on
-   Linux). Symbolic links are not followed. **Subfolders** controls depth: a non-recursive rule
+   Linux). Symbolic links are not followed. **Include subfolders** controls depth: a non-recursive rule
    sees only its own folder.
 4. Unreadable subfolders are skipped silently; they produce no hash actions.
 5. A file that may still be being written is **deferred** to the next scan (the Log says `Scan
    deferred N file(s) that may still be written`; see [Settle delay and pacing](Managed-Folders-and-Scans.md#settle-delay-and-pacing)).
 
-A scan never deletes folders (see **Remove emptied folders** under [Rename problems](#rename-problems)).
+A scan never deletes folders (see **Remove folders a rename leaves empty** under [Rename problems](#rename-problems)).
 **Auto rename** is separate: a rule set to **Dry run (log only)** only logs planned renames, and one set to
 **On** renames identified files (see
 [Renaming files](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder)). An imported
@@ -58,7 +58,7 @@ file to MyList when the queue later runs online. Keep **Work offline** ticked un
 reviewed the queue.
 
 Moving or renaming files outside Animatic does not update library paths. The old record keeps
-its path until a scan with **Remove missing** drops it and **Auto hash** adds the new location
+its path until a scan with **Remove missing files from the library** drops it and **Hash new files** adds the new location
 (which hashes that file again), or until you add the file again with **File → Add files…**.
 
 ## Offline drives and automatic removal
@@ -69,7 +69,7 @@ record means that file must be **hashed again** if you want it back, which re-re
 
 A path is planned for removal only when all of these hold:
 
-- a matching folder rule exists and has **Remove missing** on (a non-matching path never falls
+- a matching folder rule exists and has **Remove missing files from the library** on (a non-matching path never falls
   back to the default rule, and a non-recursive rule does not cover its subfolders);
 - looking up the file reports that it **does not exist** (a permission or I/O error preserves
   the record);
@@ -84,8 +84,8 @@ between planning and execution; the check is a conservative plan, not an atomic 
 
 Recommendations:
 
-- Leave **Remove missing** off for removable, network or cloud-backed folders.
-- Back up the database before a scan with **Remove missing** enabled, and check the drive is
+- Leave **Remove missing files from the library** off for removable, network or cloud-backed folders.
+- Back up the database before a scan with **Remove missing files from the library** enabled, and check the drive is
   mounted and shows its files first.
 - If records were removed because storage was absent, restore the database from a backup made
   before the scan, or remount the storage and let a scan hash the files again.
@@ -108,7 +108,7 @@ The Log then says `Removed N file(s) from the list`. Only Animatic's records go:
 stored hash (when no other path uses it) and the media properties, in one transaction. The
 media files are not touched, MyList entries (local and on AniDB) are not touched, and queued
 MyList changes stay in the queue. The files are not blocked: a later scan of a folder with
-**Auto hash**, or **Add files…**, lists them again and hashes them again. If the removal fails
+**Hash new files**, or **Add files…**, lists them again and hashes them again. If the removal fails
 you see `Could not remove the files from the list: <error>` and nothing was removed. Nothing
 removed this way can be undone except by hashing the file again or restoring a
 [library backup](Backups-and-Recovery.md#back-up-and-restore-inside-animatic).
@@ -244,7 +244,7 @@ Details:
   is undone (the rename is reverted, or the new copy removed), so the library keeps naming a
   file that exists. If the undo itself is impossible (for example the file is locked) the library
   can still show the old path; add the file again at its new location with **File → Add files…**,
-  or let a scan hash it, and remove the stale record with a scan that has **Remove missing** or
+  or let a scan hash it, and remove the stale record with a scan that has **Remove missing files from the library** or
   accept it as stale.
 - An existing target is never replaced. The check happens before the move and the move itself
   refuses to replace, so a file another program created at the target in between makes the

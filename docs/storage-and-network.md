@@ -965,15 +965,19 @@ it. An install then runs in this order, and stops at the first failure:
    Re-validate the identity under the lock. An unwritable folder is `UpdateError::NotWritable`; there is
    no privilege escalation.
 3. Re-verify the staged files' hashes.
-4. Write `LICENSE-vVERSION` and `NOTICES-vVERSION` beside the executable, additively:
-   never over a different existing file or a symlink; an identical existing file is accepted.
+4. Stage the new `LICENSE` and `NOTICES` as `.animatic-install-*` temporary files beside the
+   executable. A folder or symlink at `LICENSE` or `NOTICES` is `UpdateError::Refused`.
 5. **Windows only:** create a recovery copy of the current executable next to it,
    `.animatic-recovery-RANDOM.exe` (dot-prefixed, created exclusively).
 6. Replace the executable through the maintained [`self-replace`](https://crates.io/crates/self-replace)
    crate (Unix: a single atomic rename; Windows: the old executable is moved aside and removed after
    exit).
 
-On success the recovery copy is removed. If step 6 fails, `UpdateError::Replace` is returned (its
+On success the recovery copy is removed, the staged files are renamed over `LICENSE` and `NOTICES`, and
+regular files named `LICENSE-vVERSION`/`NOTICES-vVERSION` (VERSION a valid CalVer; added by earlier
+updaters) are removed, but only for a file that was replaced (a copy stays while its file could not be).
+A failure in that last part does not fail the install: `Installed::text_files_problem`
+carries it and the app logs it as an error. If step 6 fails, `UpdateError::Replace` is returned (its
 `install_attempted()` is true). `self-replace` is **not transactional** on Windows, so the failure path
 is best effort: if nothing exists at the original path, the previous executable is restored from the
 recovery copy without overwriting anything (a file another writer put there is never overwritten), and
@@ -981,12 +985,12 @@ the recovery copy is **kept** in every failure case; if restoring fails, the err
 copy it back manually. Atomicity against power loss or a crash is not promised, and leftover dot-prefixed
 files (`.animatic-recovery-*`, `.animatic-restore-*`, or `self-replace`'s own temporary files) are
 never deleted automatically. After an `install_attempted()` error the caller must neither retry nor
-restart by itself. Failures in steps 1-4 happen before the executable is touched; the versioned license
-files placed in step 4 may remain after a later failure and are harmless. The staged files live in the
-temporary directory until the `VerifiedUpdate` is dropped.
+restart by itself. Failures in steps 1-4 happen before the executable is touched; the staged files are
+deleted on any failure, so `LICENSE` and `NOTICES` stay old unless the swap succeeded. The staged files
+live in the temporary directory until the `VerifiedUpdate` is dropped.
 
 The desktop About window shows the third-party notices and Animatic's own license from the texts built
-into the executable (`NOTICES` and `LICENSE`); the versioned files beside the executable are only for the user. The updater thread
+into the executable (`NOTICES` and `LICENSE`); the files beside the executable are only for the user. The updater thread
 owns the install, so a quit waits for it (see [Architecture](architecture.md#updater-thread)).
 
 **Tests.** Automated tests use synthetic archives and loopback servers only; they never contact GitHub or

@@ -11,6 +11,33 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+### Fixed
+
+- The **Software updates** window shows the program's location as `C:\…` instead of the Windows
+  internal form `\\?\C:\…` when asking to confirm an installation and after a failed one.
+
+### Changed
+
+- Options → Updates no longer lists the MyList states. They are fixed by AniDB, cannot be
+  changed there, and every MyList state picker already offers them.
+- After a download, the **Software updates** window marks `Checksum matches.` with a green ✓.
+  The code-signing warning below it is unchanged.
+- An in-app update now replaces `LICENSE` and `NOTICES` beside the program instead of adding
+  `LICENSE-vVERSION` and `NOTICES-vVERSION` copies, and removes the copies earlier updates left,
+  so the folder keeps one of each, matching the installed version.
+- Options → Managed folders is regrouped per rule into **Folder**, **When a scan finds files**,
+  **Renaming** and **MyList**, with clearer labels. A folder rule's header shows its path. **Path**
+  and the rename destination get a **Browse…** folder picker. The destination is shown only after
+  ticking **Move renamed files to another folder** (unticking clears it). The MyList values are greyed
+  out until **Add identified files to MyList** is on, and the two options that remove things are
+  shown in red. The Default rule shows only what applies to files outside every folder, and the
+  network rule's fixed path is no longer an editable field.
+- Any folder rule, the built-in Default and network rules included, can be removed after a
+  confirmation, as long as one rule remains; **Restore built-in rules** brings them back. Without a
+  Default rule, files outside every folder rule are not added to MyList and are renamed in place;
+  previously the first rule in the list would have applied to them. A removed Default rule is no
+  longer added back when the settings are loaded.
+
 ## 2026.11.0-rc.2 - 2026-11-14
 
 ### Fixed

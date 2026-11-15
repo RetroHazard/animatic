@@ -99,7 +99,7 @@ to finish, or cancel it, first.`
   Queue only fills as you hash/identify or refresh. Imported MyList entries stay as the local copy
   until an identify reply for their file says otherwise (see [Hashing and identification](Hashing-and-Identification.md)).
 - Local file paths are imported verbatim (AOM's Windows paths). On Linux those paths do not
-  exist; **Remove missing** only acts under an explicit folder rule whose directory exists, so
+  exist; **Remove missing files from the library** only acts under an explicit folder rule whose directory exists, so
   they remain as stale records until you configure rules or remove them
   (**Hashed files → Remove from list…**).
 
@@ -223,7 +223,7 @@ A profile that imports an XML without a user name shows the **Getting started** 
 
 ### After applying
 
-1. Review the **Managed folders**: paths, **Subfolders**, **Remove missing**, **Add to MyList** and
+1. Review the **Managed folders**: paths, **Include subfolders**, **Remove missing files from the library**, **Add identified files to MyList** and
    its values, **Auto rename** (check that dry run is what you want).
 2. Check **External players** and the **Renaming** pattern.
 3. Enter or confirm your **Password** and **API key** if AOM did not hold them.

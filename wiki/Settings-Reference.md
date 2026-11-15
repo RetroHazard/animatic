@@ -278,29 +278,29 @@ Each element of `managers` may omit any key; an omitted key takes the value in t
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
 | `name` | string | `""` | Name | Display label of the rule in Options and in the automatic-rename confirmation and log lines. With an empty name the Options list reads `Unnamed folder` and the confirmation shows the path. |
-| `path` | string | `""` | Path | **Active.** Folder the rule applies to. Empty paths never match a file and are skipped by scans. |
-| `include_subdirs` | boolean | `true` | "Subfolders" | **Active.** Scan depth (all levels or direct children only) and whether files below the folder match this rule. |
-| `auto_hash` | boolean | `false` | "Auto hash" | **Active in scans.** A scan hashes files that are not yet in the database. The scan itself writes no MyList data, but each hashed file raises the same post-hash event as Add files, so with `identify_after_hashing` and the matching rule's `mylist_auto_add` it queues an `Identify` that adds the file to MyList on AniDB when the queue next runs online. |
-| `auto_rehash` | boolean | `false` | "Rehash changed" | **Active in scans.** A scan rehashes known files whose modification time (whole seconds) differs from the stored value. |
-| `auto_remove` | boolean | `false` | "Remove missing" | **Active in scans.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path by an explicit path match (no fallback rule) and the rule's folder is a reachable directory. Never deletes media files. The removal itself writes only those local tables. |
+| `path` | string | `""` | Path (with "Browse…") | **Active.** Folder the rule applies to. Empty paths never match a file and are skipped by scans. |
+| `include_subdirs` | boolean | `true` | "Include subfolders" | **Active.** Scan depth (all levels or direct children only) and whether files below the folder match this rule. |
+| `auto_hash` | boolean | `false` | "Hash new files" | **Active in scans.** A scan hashes files that are not yet in the database. The scan itself writes no MyList data, but each hashed file raises the same post-hash event as Add files, so with `identify_after_hashing` and the matching rule's `mylist_auto_add` it queues an `Identify` that adds the file to MyList on AniDB when the queue next runs online. |
+| `auto_rehash` | boolean | `false` | "Rehash changed files" | **Active in scans.** A scan rehashes known files whose modification time (whole seconds) differs from the stored value. |
+| `auto_remove` | boolean | `false` | "Remove missing files from the library" | **Active in scans.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path by an explicit path match (no fallback rule) and the rule's folder is a reachable directory. Never deletes media files. The removal itself writes only those local tables. |
 | `auto_rename` | string (`"off"`, `"dry_run"`, `"on"`) | `"off"` | "Auto rename" selector | **Active.** Opt-in automatic rename of identified files inside this folder (and below it when `include_subdirs` is on), see [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). `off`: never. `dry_run`: write the planned renames to the Log, move nothing. `on`: rename in a background job that verifies each file; skip and log collisions, never overwrite. Options asks you to confirm a dry-run preview whenever you switch a folder to On. **Compatibility:** earlier versions stored a boolean here (and an AOM settings import still reads AOM's flag as one). `false` loads as `off` and `true` loads as `dry_run`, deliberately **never `on`**, so no file is renamed until you choose On yourself; the key is rewritten as a string on the next save. Only rules with a non-empty `path` count; the built-in Default fallback never renames. |
-| `base_path` | string | `""` | "Rename destination" | **Active.** Folder used as the rename target base and exposed to rename patterns as `BASEPATH`; empty keeps the file's current folder. See [Rename language](Rename-Language.md). |
+| `base_path` | string | `""` | "Move renamed files to another folder" and its "Destination" | **Active.** Folder used as the rename target base and exposed to rename patterns as `BASEPATH`; empty keeps the file's current folder (the checkbox shows ticked while it is not empty, and unticking it clears the value). See [Rename language](Rename-Language.md). |
 | `exclude_hidden` | boolean | `true` | none | **Active.** Scans skip entries (files and folders) whose name starts with `.`. The OS "hidden" attribute is not consulted. |
 | `exclude_system` | boolean | `true` | "Skip system files" | **Active on Windows.** Scans skip files and folders that have the Windows system attribute (a skipped folder is not entered). **No effect on Linux**, which has no such attribute. |
-| `clear_empty_folders` | boolean | `false` | "Remove emptied folders" | **Active.** After a manual, batch or automatic rename moves a file, the folders it left are removed while they are strictly below this rule's folder and completely empty (hidden files keep a folder). The rule's own folder is never removed and nothing is deleted recursively. See [Removing folders a rename emptied](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). |
-| `mylist_auto_add` | boolean | `false` | "Add to MyList" | **Active.** When true and `identify_after_hashing` is on, the post-hash `Identify` command (queued after Add files, command-line hashing or a scan) carries the MyList parameters below, so the file is **added to your MyList on AniDB when the queue runs online**. Offline, the command only waits locally. |
+| `clear_empty_folders` | boolean | `false` | "Remove folders a rename leaves empty" | **Active.** After a manual, batch or automatic rename moves a file, the folders it left are removed while they are strictly below this rule's folder and completely empty (hidden files keep a folder). The rule's own folder is never removed and nothing is deleted recursively. See [Removing folders a rename emptied](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). |
+| `mylist_auto_add` | boolean | `false` | "Add identified files to MyList" | **Active.** When true and `identify_after_hashing` is on, the post-hash `Identify` command (queued after Add files, command-line hashing or a scan) carries the MyList parameters below, so the file is **added to your MyList on AniDB when the queue runs online**. Offline, the command only waits locally. |
 | `mylist_watched_check` | boolean | `false` | "Set watched" | **Active.** Gates `mylist_watched`: when false the watched flag is not sent. |
 | `mylist_watched` | boolean | `false` | "Watched" (shown when the check is on) | **Active.** Watched flag sent when the check is on; `true` also sends the current time as view date. |
 | `mylist_state_check` | boolean | `true` | "Set state" | **Active.** Gates `mylist_state`. |
-| `mylist_state` | integer (i64) | `1` | state combo (shown when the check is on) | **Active.** One of the labels in `Unknown`=0, `On HDD`=1, `On CD/DVD`=2, `Deleted`=3, `Remote/Shared`=4. Other integers are accepted by the file and sent as written. |
+| `mylist_state` | integer (i64) | `1` | state combo (greyed out while the check is off) | **Active.** One of the labels in `Unknown`=0, `On HDD`=1, `On CD/DVD`=2, `Deleted`=3, `Remote/Shared`=4. Other integers are accepted by the file and sent as written. |
 | `mylist_storage_check` | boolean | `false` | "Set storage" | **Active.** Gates `mylist_storage`. |
 | `mylist_storage` | string | `""` | Storage | **Active.** Sent when its check is on (an empty string is sent as an empty value). |
 | `mylist_source_check` | boolean | `false` | "Set source" | **Active.** Gates `mylist_source`. |
 | `mylist_source` | string | `""` | Source | **Active** when its check is on. |
 | `mylist_other_check` | boolean | `false` | "Set other" | **Active.** Gates `mylist_other`. |
 | `mylist_other` | string | `""` | Other | **Active** when its check is on. |
-| `can_edit_path` | boolean | `true` | hides "Remove folder rule" when false | **Active.** Entries with `false` cannot be removed from Options. |
-| `default` | boolean | `false` | none | **Active.** Marks the fallback rule, see below. Options cannot change it. |
+| `can_edit_path` | boolean | `true` | none | **Active.** `false` on the two built-in rules. Together with `path` `\\` it marks the built-in network rule, whose path Options shows no field for. Any rule can be removed in Options while another remains. |
+| `default` | boolean | `false` | none | **Active.** Marks the Default (fallback) rule, see below. Options cannot change it; it hides the folder and scan controls of that rule. |
 
 "Add folder rule" creates an entry named "New folder" using the omitted-key defaults above, which
 means it has `include_subdirs`, `exclude_hidden`, `exclude_system` and `mylist_state_check` on.
@@ -351,15 +351,15 @@ Longest-path matching (post-hash MyList parameters, rename destination, `auto_re
 2. A rule with `include_subdirs` matches anything below its folder; without it, only files directly
    inside. The network rule matches every `//...` path.
 3. Of several matching rules, the one with the **longest path** wins.
-4. If none matches, the rule flagged `default` is used (the first flagged one; if none is flagged,
-   the first entry). The fallback is used for MyList parameters and rename destination, but
-   **never** for automatic removal.
+4. If none matches, the rule flagged `default` is used (the first flagged one). Without such a rule
+   a neutral policy applies: nothing is added to MyList and renamed files stay in their folder;
+   another folder's rule is never used. The fallback is used for MyList parameters and rename
+   destination, but **never** for automatic removal.
 
-On load, if no entry is flagged `default`, the built-in "Default" entry is inserted at position 0.
-An explicit empty `managers` array therefore yields just that entry; the network entry is not
-re-added. Animatic assumes at least one rule exists; the built-in entries cannot be removed in
-Options, but a rule you flagged `default` with `can_edit_path: true` can be, so keep the built-in
-"Default" entry in files you edit by hand (this exact sequence has not been tested).
+Options can remove any rule, the built-in ones included, but never the last one; **Restore
+built-in rules** adds a missing built-in rule back with the values above. A removed Default rule
+stays removed when the file is loaded again. Only an explicit empty `managers` array is repaired on
+load: it yields the built-in "Default" entry alone.
 
 ## External players (`players`)
 
