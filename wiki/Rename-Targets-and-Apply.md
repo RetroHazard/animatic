@@ -48,7 +48,7 @@ Turning the result into a path is a pure string operation: it never looks at the
 4. Every component is trimmed of trailing dots and spaces, then of all characters at or below U+0020 at both ends, then validated.
 5. The components are pushed onto the root. If the path equals the current path, the result is "already named".
 
-`base_path` is the rename destination of the managed folder the file belongs to: the folder whose path is the longest match for the file (subfolder inclusion respected), otherwise the built-in default rule (when it has been removed, the file is renamed in place). This longest-match rule is specific to the rename destination and post-hash MyList policy; scan discovery of hash/rehash candidates uses a different rule (first matching rule in list order). The default rule has an empty base path, and an empty base path keeps the file in its current folder. How rules match is in the [Settings reference](Settings-Reference.md) and [Managed folders and scans](Managed-Folders-and-Scans.md).
+`base_path` is the rename destination of the managed folder the file belongs to: the folder whose path is the longest match for the file (subfolder inclusion respected). When no rule matches, the file is renamed in place (an empty base path keeps the file in its current folder). This longest-match rule is specific to the rename destination and post-hash MyList policy; scan discovery of hash/rehash candidates uses a different rule (first matching rule in list order). How rules match is in the [Settings reference](Settings-Reference.md) and [Managed folders and scans](Managed-Folders-and-Scans.md).
 
 | Base path | Result | Target |
 |---|---|---|

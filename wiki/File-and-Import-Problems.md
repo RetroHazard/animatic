@@ -35,7 +35,7 @@ If a scan hashes nothing:
    case-insensitively. (Files passed on the command line are not filtered.)
 3. **Hidden entries** are skipped when the rule's `exclude_hidden` key is true: any file or
    folder whose name starts with `.`. There is no control for it in Options. It is true for
-   new rules and false for the built-in network rule and for rules imported from AOM. Animatic
+   new rules and usually false for rules imported from AOM. Animatic
    does not look at the Windows *Hidden* attribute. On Windows, files and folders with the
    *system* attribute are skipped when the rule's **Skip system files** is on (no effect on
    Linux). Symbolic links are not followed. **Include subfolders** controls depth: a non-recursive rule
@@ -53,7 +53,7 @@ AOM `autorename` flag loads as **Dry run (log only)**.
 Per-file hashing errors appear in the Log as `<path>: <reason>. It stays in the hash queue until
 it is retried or cleared.` and hashing continues with the
 next file. After a scan, each hashed file queues an **Identify** command when **Identify files
-with AniDB after hashing** is on; with the default folder rule that command may also add the
+with AniDB after hashing** is on; when the file's folder rule has **Add identified files to MyList** on, that command may also add the
 file to MyList when the queue later runs online. Keep **Work offline** ticked until you have
 reviewed the queue.
 
@@ -69,8 +69,8 @@ record means that file must be **hashed again** if you want it back, which re-re
 
 A path is planned for removal only when all of these hold:
 
-- a matching folder rule exists and has **Remove missing files from the library** on (a non-matching path never falls
-  back to the default rule, and a non-recursive rule does not cover its subfolders);
+- a matching folder rule exists and has **Remove missing files from the library** on (a file no rule covers is
+  never removed, and a non-recursive rule does not cover its subfolders);
 - looking up the file reports that it **does not exist** (a permission or I/O error preserves
   the record);
 - the rule's root folder is **currently a directory** (an unmounted Windows drive letter or an

@@ -153,7 +153,7 @@ If the file already has the produced name, Animatic says nothing needs renaming.
 
 ## Where the file goes
 
-The destination is the matching managed folder's rename destination (**Move renamed files to another folder** → **Destination**) joined with the pattern's result:
+The destination is the matching managed folder's rename destination (**Move renamed files to another folder** → **Destination**) joined with the pattern's result; a file that no rule covers has an empty destination:
 
 | Destination | Pattern result | File ends up |
 |---|---|---|
@@ -218,7 +218,7 @@ A pass runs only while no other task is running, and not while an import, a rest
 
 **What it renames.** Only a file that
 
-- lies inside a managed folder with a non-empty path (the built-in **Default** rule, which matches everything else, never renames; the folder with the longest matching path decides, so a subfolder rule set to Off excludes its files),
+- lies inside a managed folder with a non-empty path (a file no rule covers is never renamed automatically; the folder with the longest matching path decides, so a subfolder rule set to Off excludes its files),
 - AniDB has identified **and** whose anime and episode records are cached (until then it is left alone without a note; the reply that completes it triggers a new pass),
 - still exists on disk, and
 - has a plan that is valid for **Apply** with the current pattern: a pattern that does not compile pauses the whole pass with one `Automatic rename is paused: the renaming pattern cannot be used (<problem>)` log line; warnings, a missing title or episode number (built-in conventions), an empty or true/false result or an unusable name block the file.

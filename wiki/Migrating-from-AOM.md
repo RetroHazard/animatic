@@ -214,7 +214,7 @@ object (`media.read_properties`, `media.ffprobe_path`) and the color scheme (`ui
 | AVDump enable and key | **Players and tools → AVDump** |
 | Players | **External players** |
 | Window position and size, maximized, last directory, tray icon and minimize-to-tray, tree and size display preferences, colors | The UI state and [row colors](Main-Window.md#sorting-columns-and-row-colors) |
-| Folder rules, with their MyList policy | **Managed folders**. An AOM rule with automatic rename on becomes **Dry run (log only)**, never **On** |
+| Folder rules, with their MyList policy | **Managed folders**. An AOM rule with automatic rename on becomes **Dry run (log only)**, never **On**. AOM's fallback rule (the one flagged default, with no path) is **not imported**, because nothing could match it; every other AOM rule is imported as an ordinary rule, AOM's `\\` rule included |
 | The folder-scan settle delay and AOM's pause between scans | The settle delay, and the interval of the [scheduled scan](Managed-Folders-and-Scans.md#scheduled-scans), left switched off |
 
 Several of those have no effect in Animatic (see

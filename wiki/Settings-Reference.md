@@ -45,7 +45,7 @@ The root of the file must be a JSON object. Keys use `snake_case`, exactly as th
 | `hashing` | object | see [Hashing](#hashing) | Extension filter, hash export, post-hash identification |
 | `ui` | object | see [UI](#ui) | Theme, scale, colors, column and window state |
 | `players` | array of objects | `[]` | [External players](#external-players-players) |
-| `file_managers` | object | two built-in entries | [Managed folders](#managed-folders-file_managers) |
+| `file_managers` | object | no folder rules | [Managed folders](#managed-folders-file_managers) |
 | `renaming_pattern` | string | the [Group] Title - episode [CRC] convention | [Top-level keys](#top-level-keys) |
 | `stat_whore` | object | disabled | [Statistics export](#statistics-export-stat_whore) |
 | `avdump` | object | disabled | [AVDump](#avdump-avdump) |
@@ -268,12 +268,11 @@ scan runs only when you start it or when one of the scan automation settings bel
 | `scan_at_start` | boolean | `false` | "Scan managed folders when Animatic starts" | **Active.** Runs one scan after the application starts, as soon as nothing blocks it. |
 | `scheduled_scan` | boolean | `false` | "Scan managed folders on a schedule" | **Active.** Runs a scan every `scan_interval_minutes` minutes on the background worker. Never overlaps another task, import, settings review or restore. |
 | `scan_interval_minutes` | integer (u32) | `60` | "Scan every N minutes" | **Active** while `scheduled_scan` is on. Load-time fixup limits values to 5-10080 (5 minutes to one week). |
-| `managers` | array of objects | built-in "Default" and "\\\\ (Default network path)" entries | "Managed folders" list | See below. If present in the file, the array replaces the default list entirely. |
+| `managers` | array of objects | `[]` | "Managed folders" list | See below. If present in the file, the array replaces the default list entirely. |
 
 ### Per-folder keys
 
-Each element of `managers` may omit any key; an omitted key takes the value in the Default column
-(these differ from the two built-in entries, shown afterwards).
+Each element of `managers` may omit any key; an omitted key takes the value in the Default column.
 
 | Key | Type | Default | Options control | Status and effect |
 |---|---|---|---|---|
@@ -282,8 +281,8 @@ Each element of `managers` may omit any key; an omitted key takes the value in t
 | `include_subdirs` | boolean | `true` | "Include subfolders" | **Active.** Scan depth (all levels or direct children only) and whether files below the folder match this rule. |
 | `auto_hash` | boolean | `false` | "Hash new files" | **Active in scans.** A scan hashes files that are not yet in the database. The scan itself writes no MyList data, but each hashed file raises the same post-hash event as Add files, so with `identify_after_hashing` and the matching rule's `mylist_auto_add` it queues an `Identify` that adds the file to MyList on AniDB when the queue next runs online. |
 | `auto_rehash` | boolean | `false` | "Rehash changed files" | **Active in scans.** A scan rehashes known files whose modification time (whole seconds) differs from the stored value. |
-| `auto_remove` | boolean | `false` | "Remove missing files from the library" | **Active in scans.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path by an explicit path match (no fallback rule) and the rule's folder is a reachable directory. Never deletes media files. The removal itself writes only those local tables. |
-| `auto_rename` | string (`"off"`, `"dry_run"`, `"on"`) | `"off"` | "Auto rename" selector | **Active.** Opt-in automatic rename of identified files inside this folder (and below it when `include_subdirs` is on), see [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). `off`: never. `dry_run`: write the planned renames to the Log, move nothing. `on`: rename in a background job that verifies each file; skip and log collisions, never overwrite. Options asks you to confirm a dry-run preview whenever you switch a folder to On. **Compatibility:** earlier versions stored a boolean here (and an AOM settings import still reads AOM's flag as one). `false` loads as `off` and `true` loads as `dry_run`, deliberately **never `on`**, so no file is renamed until you choose On yourself; the key is rewritten as a string on the next save. Only rules with a non-empty `path` count; the built-in Default fallback never renames. |
+| `auto_remove` | boolean | `false` | "Remove missing files from the library" | **Active in scans.** A scan removes the local file record (and any hash record no longer used by another local file) of a file that is positively missing (not-found), provided a rule matches its path and the rule's folder is a reachable directory. A file no rule covers is never removed. Never deletes media files. The removal itself writes only those local tables. |
+| `auto_rename` | string (`"off"`, `"dry_run"`, `"on"`) | `"off"` | "Auto rename" selector | **Active.** Opt-in automatic rename of identified files inside this folder (and below it when `include_subdirs` is on), see [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). `off`: never. `dry_run`: write the planned renames to the Log, move nothing. `on`: rename in a background job that verifies each file; skip and log collisions, never overwrite. Options asks you to confirm a dry-run preview whenever you switch a folder to On. **Compatibility:** earlier versions stored a boolean here (and an AOM settings import still reads AOM's flag as one). `false` loads as `off` and `true` loads as `dry_run`, deliberately **never `on`**, so no file is renamed until you choose On yourself; the key is rewritten as a string on the next save. Only rules with a non-empty `path` count; a file no rule covers is never renamed automatically. |
 | `base_path` | string | `""` | "Move renamed files to another folder" and its "Destination" | **Active.** Folder used as the rename target base and exposed to rename patterns as `BASEPATH`; empty keeps the file's current folder (the checkbox shows ticked while it is not empty, and unticking it clears the value). See [Rename language](Rename-Language.md). |
 | `exclude_hidden` | boolean | `true` | none | **Active.** Scans skip entries (files and folders) whose name starts with `.`. The OS "hidden" attribute is not consulted. |
 | `exclude_system` | boolean | `true` | "Skip system files" | **Active on Windows.** Scans skip files and folders that have the Windows system attribute (a skipped folder is not entered). **No effect on Linux**, which has no such attribute. |
@@ -299,35 +298,19 @@ Each element of `managers` may omit any key; an omitted key takes the value in t
 | `mylist_source` | string | `""` | Source | **Active** when its check is on. |
 | `mylist_other_check` | boolean | `false` | "Set other" | **Active.** Gates `mylist_other`. |
 | `mylist_other` | string | `""` | Other | **Active** when its check is on. |
-| `can_edit_path` | boolean | `true` | none | **Active.** `false` on the two built-in rules. Together with `path` `\\` it marks the built-in network rule, whose path Options shows no field for. Any rule can be removed in Options while another remains. |
-| `default` | boolean | `false` | none | **Active.** Marks the Default (fallback) rule, see below. Options cannot change it; it hides the folder and scan controls of that rule. |
 
 "Add folder rule" creates an entry named "New folder" using the omitted-key defaults above, which
 means it has `include_subdirs`, `exclude_hidden`, `exclude_system` and `mylist_state_check` on.
 
-### Built-in entries
+### Older profiles
 
-A fresh settings file contains two rules:
-
-| | "Default" | "\\\\ (Default network path)" |
-|---|---|---|
-| `path` | `""` | `\\` (JSON: `"\\\\"`) |
-| `include_subdirs` | `false` | `false` |
-| `exclude_hidden` / `exclude_system` | `true` / `true` | `false` / `false` |
-| `mylist_auto_add` | `true` | `false` |
-| `mylist_watched_check` / `mylist_watched` | `true` / `false` | `false` / `false` |
-| `mylist_state_check` / `mylist_state` | `true` / `1` (On HDD) | `false` / `0` |
-| `can_edit_path` / `default` | `false` / `true` | `false` / `false` |
-| auto hash, rehash, remove, rename | all `false` | all `false` |
-
-Consequences:
-
-- Out of the box nothing is scanned (`auto_hash` and `auto_rehash` are off and no folder is set).
-- A file hashed from anywhere that no rule claims falls back to "Default", which adds it to MyList
-  as watched = no, state On HDD once identified (and once the queue runs online).
-- The network entry matches any path that starts with `\\` or `//`; because it has
-  `mylist_auto_add` off, such files are identified but not auto-added unless a more specific rule
-  matches them.
+A fresh profile has no rules (`managers` is `[]`) and nothing is created automatically. Older
+versions stored two built-in rules, "Default" and "\\\\ (Default network path)". When an older
+settings file is loaded, each of them that is still unchanged is removed. A built-in rule you had
+changed (for example a "Default" with a path, or with other MyList values) is kept as an ordinary
+folder rule. Files that no rule covers are therefore no longer added to MyList after the upgrade. The
+old keys `can_edit_path` and `default` are no longer used and are dropped the next time the settings
+are saved.
 
 ### How a file picks its rule
 
@@ -349,17 +332,11 @@ Longest-path matching (post-hash MyList parameters, rename destination, `auto_re
 1. Only rules with a non-empty `path` are candidates. Paths are compared after turning `\` into
    `/`, trimming trailing separators and (on Windows) lowercasing.
 2. A rule with `include_subdirs` matches anything below its folder; without it, only files directly
-   inside. The network rule matches every `//...` path.
+   inside. A rule with the path `\\` matches every `//...` path.
 3. Of several matching rules, the one with the **longest path** wins.
-4. If none matches, the rule flagged `default` is used (the first flagged one). Without such a rule
-   a neutral policy applies: nothing is added to MyList and renamed files stay in their folder;
-   another folder's rule is never used. The fallback is used for MyList parameters and rename
-   destination, but **never** for automatic removal.
-
-Options can remove any rule, the built-in ones included, but never the last one; **Restore
-built-in rules** adds a missing built-in rule back with the values above. A removed Default rule
-stays removed when the file is loaded again. Only an explicit empty `managers` array is repaired on
-load: it yields the built-in "Default" entry alone.
+4. If none matches, no rule applies: nothing is added to MyList and renamed files stay in their
+   folder; another folder's rule is never used. Such a file is still identified (when
+   `identify_after_hashing` is on), is never scanned and is never removed by `auto_remove`.
 
 ## External players (`players`)
 
@@ -525,7 +502,7 @@ controls edit; the [Options window](Options-Window.md) page describes each contr
 |---|---|
 | [AniDB account](Options-Window.md#anidb-account) | `anidb.username`, `anidb.password`, `anidb.api_key`, `anidb.offline`, `anidb.auto_run_queue`, `anidb.idle_logout_minutes`, `anidb.update_file_information`, `anidb.download_covers` |
 | [Appearance](Options-Window.md#appearance) | `ui.theme`, `ui.color_scheme`, `ui.zoom`, `ui.colored_rows`, `ui.row_style`, `ui.colors` (Customize status colors), `ui.show_tray_icon`, `ui.minimize_to_tray` |
-| [Managed folders](Options-Window.md#managed-folders) | `file_managers.managers[]` (every per-folder key except `exclude_hidden`, `can_edit_path` and `default`), `file_managers.scan_at_start`, `scheduled_scan`, `scan_interval_minutes`, `action_delay_ms`, `sleep_time_ms` |
+| [Managed folders](Options-Window.md#managed-folders) | `file_managers.managers[]` (every per-folder key except `exclude_hidden`), `file_managers.scan_at_start`, `scheduled_scan`, `scan_interval_minutes`, `action_delay_ms`, `sleep_time_ms` |
 | [Hashing](Options-Window.md#hashing) | `hashing.autostart`, `identify_after_hashing`, `integrate_into_shell`, `use_extensions`, `extensions` |
 | [Renaming](Options-Window.md#renaming) | `renaming_pattern` |
 | [Players and tools](Options-Window.md#players-and-tools) | `players[]` (every key), `avdump.enabled`, `executable`, `arguments`, `key`, `media.ffprobe_path`, `media.read_properties` |
@@ -535,7 +512,7 @@ controls edit; the [Options window](Options-Window.md) page describes each contr
 Keys that work but have no Options control:
 
 - `anidb.udp_server`, `anidb.local_port`, `anidb.image_server` (edit the file);
-- per-folder `exclude_hidden`, `can_edit_path` and `default`;
+- per-folder `exclude_hidden`;
 - `ui.window`, `ui.maximized`, `ui.columns` and `ui.last_directory`, which Animatic changes as you
   use the window, its tables and the file pickers;
 - `first_launch` (the **Hide** button of the Overview's Getting started card) and

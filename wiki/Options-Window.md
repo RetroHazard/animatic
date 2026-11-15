@@ -163,31 +163,28 @@ Appearance picture (at the top of this category) the tray icon is turned off, wh
 
 ## Managed folders
 
-![The Managed folders category: the built-in Default and network rules, then the sample's Anime and Downloads rules, all collapsed, with the Folder scanning section below](images/options-folders.png)
+![The Managed folders category: the sample profile's Anime and Downloads rules, both collapsed, with the Folder scanning section below](images/options-folders.png)
 
-*The sample profile: the two built-in rules (**Default** and `\\ (Default network path)`) followed by the user's **Anime** and **Downloads** rules.*
+*The sample profile: two folder rules, **Anime** and **Downloads**.*
 
 A managed folder is a folder rule: where your files live, what happens when a scan finds a file there,
 what is sent to MyList for them, and where renamed files go. The page lists one collapsible section per
-rule, then **Add folder rule**, then **Folder scanning**. A folder rule's header shows its **Name** and
-**Path** (`Downloads — S:\Downloads`; `Unnamed folder` while the name is empty). See
+rule, then **Add folder rule**, then **Folder scanning**. A rule's header shows its **Name** and
+**Path** (`Downloads — S:\Downloads`; just the name while the path is empty, `Unnamed folder` while the
+name is empty). See
 [Managed folders and scans](Managed-Folders-and-Scans.md) for the full picture of how rules are chosen
 and scans run.
 
-A fresh settings file holds two built-in rules:
+Rules are optional and all alike. A fresh profile has **no rules**, and nothing is created
+automatically. With none, the page says `No folder rules. Add one to scan a folder, add its files to
+MyList or move renamed files. Files outside every rule are not added to MyList, and renaming one keeps
+it in its folder.` A file that no rule covers is identified as usual (when **Identify files with
+AniDB after hashing** is on), not added to MyList, renamed in its own folder (an empty rename
+destination), never scanned and never removed by **Remove missing files from the library**.
 
-- **Default** (header `Default — files outside every folder`) is not a folder. It applies to files
-  outside every folder rule, such as files added by hand: it adds identified files to MyList as state
-  On HDD and not watched, and its **Move renamed files** destination is used when you rename them. It
-  shows only **Name**, **Renaming** (without automatic rename) and **MyList**.
-- `\\ (Default network path)` applies to every network path (`\\server\share\…`) no folder rule
-  covers. Its path cannot be changed, so it shows no **Path** or **Include subfolders**.
-
-Any rule can be removed, including the built-in ones, as long as one rule remains. Without a Default
-rule, files outside your folders are not added to MyList and are renamed where they are. While a
-built-in rule is missing, **Restore built-in rules** next to **Add folder rule** adds it back with its
-original values. The sample profile in the pictures adds two rules of its own, **Anime** and
-**Downloads**.
+**Remove rule…** works on any rule, including the last one, and asks for confirmation first. A rule
+with the path `\\` matches every network path (`\\server\share\…`); you can create one yourself. The
+sample profile in the pictures has two rules, **Anime** and **Downloads**.
 
 ![The Downloads rule expanded, with its Folder, scan, Renaming and MyList groups](images/options-folder-rule.png)
 
@@ -207,11 +204,10 @@ The controls are grouped under **Folder**, **When a scan finds files**, **Renami
 | **Move renamed files to another folder** | Off: files are renamed where they are. Ticked, a **Destination** field with **Browse…** appears: renamed files are moved under it (`BASEPATH` in rename patterns). Unticking clears the destination. | off | `base_path` (empty = off) |
 | **Auto rename** (drop-down) | **Off**, **Dry run (log only)** or **On**. Choosing **On** first shows a dry-run list of what would be renamed now and needs **Turn on automatic rename**; **Cancel** (or `Esc`) leaves the mode unchanged. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). | Off | `auto_rename` |
 | **Remove folders a rename leaves empty** (red) | After Animatic renames or moves a file out of a subfolder, remove the folder (and emptied parents) if nothing at all is left. The rule's own folder is never removed. See [Removing folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). | off | `clear_empty_folders` |
-| **Remove rule…** | Asks for confirmation (saying what changes), then deletes the rule. Disabled for the last remaining rule. | n/a | n/a |
+| **Remove rule…** | Asks `Remove this folder rule? Files in the folder stay in the library; files no rule covers are only identified.`, then deletes the rule. Works on any rule, including the last one. | n/a | n/a |
 
 Scans skip files and folders whose name starts with a dot while the rule's `exclude_hidden` key is
-`true` (the default for new rules; the built-in network rule has it off). Options has no control for
-it; edit `settings.json`.
+`true` (the default for new rules). Options has no control for it; edit `settings.json`.
 
 ### MyList values of a rule
 
@@ -419,7 +415,7 @@ the whole file when it quits:
 
 - `anidb.udp_server`, `anidb.local_port` and `anidb.image_server` (AniDB connection details);
 - `ui.window`, `ui.maximized` and `ui.columns` (kept by using the window and its tables);
-- per-folder `exclude_hidden` and the built-in rules' `can_edit_path` and `default`;
+- per-folder `exclude_hidden`;
 - the row-color slots no table uses, and keys kept only for AOM compatibility.
 
 The [Settings reference](Settings-Reference.md) lists every key with its status. How the file is read,

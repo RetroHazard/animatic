@@ -1,7 +1,7 @@
 //! Opt-in automatic rename of identified files in managed folders (roadmap M6.3).
 //!
 //! A pass looks at every hashed library file whose path is inside a managed folder
-//! (an explicit path match, never the built-in default rule) with [`AutoRename`] on or on dry
+//! (the folder rule matching its path) with [`AutoRename`] on or on dry
 //! run, plans its rename with the current pattern through [`plan_batch`], and reports what to
 //! do: the renames to carry out for folders set to [`AutoRename::On`] (the application hands
 //! them to the verified rename job, [`crate::file_manager::move_file`]) and the log notes for
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(
             renamed,
             [1],
-            "not the file outside every folder (the built-in default rule never renames), \
+            "not the file outside every folder (no rule covers it), \
              and not the one whose nearest folder rule is off"
         );
     }

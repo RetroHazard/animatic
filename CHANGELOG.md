@@ -30,13 +30,15 @@ the generated line for that pull request's squash commit.
   and the rename destination get a **Browse…** folder picker. The destination is shown only after
   ticking **Move renamed files to another folder** (unticking clears it). The MyList values are greyed
   out until **Add identified files to MyList** is on, and the two options that remove things are
-  shown in red. The Default rule shows only what applies to files outside every folder, and the
-  network rule's fixed path is no longer an editable field.
-- Any folder rule, the built-in Default and network rules included, can be removed after a
-  confirmation, as long as one rule remains; **Restore built-in rules** brings them back. Without a
-  Default rule, files outside every folder rule are not added to MyList and are renamed in place;
-  previously the first rule in the list would have applied to them. A removed Default rule is no
-  longer added back when the settings are loaded.
+  shown in red.
+- **Folder rules are now optional, and there is no Default rule.** A new profile starts with no
+  rules, and every rule is an ordinary folder rule you can edit or remove. A file outside every rule
+  is identified as before but **no longer added to MyList automatically**, and renaming it keeps it
+  in its folder. On upgrade, the built-in **Default** and `\\ (Default network path)` rules are
+  removed if you never changed them; one you changed (for example by giving Default a path) stays
+  as an ordinary rule. To keep adding files from a folder to MyList, add a rule for that folder
+  with **Add identified files to MyList**. An AOM settings import no longer brings in AOM's
+  default rule, which had no folder.
 
 ## 2026.11.0-rc.2 - 2026-11-14
 

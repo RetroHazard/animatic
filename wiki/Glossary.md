@@ -73,10 +73,6 @@ names are written as they appear on screen. If a word is missing, search the wik
   [Rename patterns](Rename-Patterns.md) and [Rename language](Rename-Language.md).
 - **Database**: `animatic.sqlite3`, the file that holds your library, hashes and command queue. See
   [Data locations](Data-Locations.md#where-data-lives).
-- **Default rule**: the built-in managed-folder rule named **Default**. It applies to every file that
-  is not inside one of your own rules. It adds identified files to MyList as On HDD, unwatched, until
-  you change it; it can be removed (as long as another rule remains) and comes back with **Restore
-  built-in rules**. See [First launch](First-Launch.md#safe-first-run-settings).
 - **Deferred** (command): a command that could not be saved to the database yet because the database
   was busy. The Overview says `N commands not saved yet; Animatic keeps retrying`. See
   [Network and sync problems](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved).
@@ -140,7 +136,8 @@ names are written as they appear on screen. If a word is missing, search the wik
 - **Log**: the page that lists this session's activity (hashing, renames, AniDB requests, errors). It
   is kept in memory and not written to disk. See [Library pages](Library-Pages.md#log).
 - **Managed folder**: a folder rule in **Options → Managed folders** that combines a folder, scan
-  behavior, a rename destination and the MyList settings for files found there. See
+  behavior, a rename destination and the MyList settings for files found there. Rules are optional;
+  a file that no rule covers is only identified, not added to MyList. See
   [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **MD5**, **SHA-1**: two more hashes computed in the same pass as the ED2K and CRC32. They are stored
   and available to rename patterns and exports. See [Hashing and identification](Hashing-and-Identification.md).

@@ -1686,8 +1686,12 @@ impl AnimaticApp {
             .fid
             .ok_or("The selected file is not identified by AniDB")?;
         let old = PathBuf::from(&local.path);
-        let manager = self.settings.file_managers.manager_for(&old);
-        let plan = plan::plan_local_file(&self.db, pattern, fid, &old, &manager.base_path);
+        let base_path = self
+            .settings
+            .file_managers
+            .manager_for(&old)
+            .map_or("", |m| m.base_path.as_str());
+        let plan = plan::plan_local_file(&self.db, pattern, fid, &old, base_path);
         Ok(RenamePreview { id, old, plan })
     }
 
@@ -1807,8 +1811,8 @@ impl AnimaticApp {
                     .settings
                     .file_managers
                     .manager_for(&path)
-                    .base_path
-                    .clone();
+                    .map(|m| m.base_path.clone())
+                    .unwrap_or_default();
                 Candidate {
                     local_id: f.id,
                     path,
@@ -6333,12 +6337,9 @@ mod shortcuts {
     ];
 }
 
-/// Whether the user has added a folder rule with a path. The built-in rules (the default rule
-/// and the `\\` network rule) are always present and do not count as a choice.
+/// Whether a folder rule with a path exists.
 fn has_user_folder(managers: &[animatic_core::settings::FileManager]) -> bool {
-    managers
-        .iter()
-        .any(|m| m.can_edit_path && !m.default && !m.path.trim().is_empty())
+    managers.iter().any(|m| !m.path.trim().is_empty())
 }
 
 /// `Shortcut: Ctrl+,` for a hover text.
@@ -6672,10 +6673,7 @@ mod tests {
     fn only_a_folder_the_user_added_completes_the_folder_step() {
         use animatic_core::settings::{FileManager, FileManagerSettings};
         let mut managers = FileManagerSettings::default().managers;
-        assert!(
-            !has_user_folder(&managers),
-            "a fresh profile has only the built-in rules"
-        );
+        assert!(!has_user_folder(&managers), "a fresh profile has no rules");
         managers.push(FileManager {
             path: "  ".into(),
             ..FileManager::default()

@@ -138,11 +138,10 @@ add files by hand (step 5), but folders make scanning and renaming much easier.
 
 1. Open **Tools → Options…** and choose **Managed folders**.
 
-   ![Options, Managed folders: the built-in Default rule, two folders you added and the Folder scanning settings](images/options-folders.png)
+   ![Options, Managed folders: the two folders you added, Anime and Downloads, and the Folder scanning settings](images/options-folders.png)
 
-   *The sample library's **Managed folders** page: the built-in **Default** rule followed by the
-   sample's two folders (**Anime** and **Downloads**). A brand-new profile lists **Default** and the
-   built-in `\\ (Default network path)` rule.*
+   *The sample library's **Managed folders** page: two folders, **Anime** and **Downloads**. A
+   brand-new profile lists no rules.*
 
 2. Click **Add folder rule**. A rule named **New folder** appears; click the small triangle left of its
    name to open it.
@@ -176,12 +175,11 @@ Expected result: the folder's rule is listed under **Managed folders**, and noth
 Folder rules do not scan by themselves. (The **Folder scanning** options at the bottom can scan when
 Animatic starts or on a schedule; they are off by default, and scans never contact AniDB.)
 
-**What about the Default rule?** It applies to every file that is not inside one of your own rules
-(except network paths starting with `\\`, which the built-in network rule covers and which adds nothing
-to MyList), including files you add by hand from outside them. It has **Add identified files to MyList** on, state
-*On HDD* and *Watched* off, so a file added by hand that AniDB identifies is **added to your MyList**
-when the queue runs. Untick **Add identified files to MyList** under **Default** if that is not what you want. The
-Default rule has no folder, so a scan never walks it.
+**What about files outside every rule?** There is no Default rule: a new profile has no rules at all.
+A file that matches no rule (for example one you add by hand from outside your folders) is identified
+as usual when **Identify files with AniDB after hashing** is on, but it is **not added to your MyList**,
+it is renamed in its own folder, and a scan never walks it. To add such files to MyList, create a rule
+whose **Path** covers them and tick **Add identified files to MyList**.
 
 ## 5. Add files and hash them
 
@@ -388,7 +386,7 @@ the file safe; it is as private as the library itself
 | Symptom | What to do |
 |---|---|
 | The library looks empty or settings look reset | You started Animatic with a different database or settings file. See [Which files is Animatic using?](Troubleshooting.md#which-files-is-animatic-using). |
-| A scan hashes nothing | The rule needs **Hash new files** (or **Rehash changed files**) on, an existing **Path** and files with an extension from the list under **Options → Hashing**; the Default rule is never scanned. See [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders). |
+| A scan hashes nothing | The rule needs **Hash new files** (or **Rehash changed files**) on, an existing **Path** and files with an extension from the list under **Options → Hashing**; a file that no rule covers is never scanned. See [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders). |
 | **Rename…** reports `The selected file is not identified by AniDB` | Identify the file first (steps 6 and 7). |
 | Commands never leave the queue | **Work offline** is on, a cooldown is active, or the commands are blocked. Look at the right of the status bar, then the Queue page. |
 | `login failed: wrong username or password` | Correct the credentials in **Options → AniDB account**, **Save options**, then **Retry failed**. |

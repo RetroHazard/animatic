@@ -188,7 +188,7 @@ Commands are not sent when they are queued. They wait in the persistent command 
 - If AniDB explicitly reports that the file is **not** in your MyList, local entries for that file are removed unless they have queued edits.
 - If AniDB does not know the file, the Log says `file unknown to AniDB` and nothing else changes. The row stays **Not identified**; see [File and import problems](File-and-Import-Problems.md).
 
-With default settings, the built-in **Default** rule has **Add identified files to MyList** on, **Set state** on with **On HDD**, and **Set watched** on with **Watched** off. Identified files that match no folder rule are therefore added to MyList as "On HDD", unwatched, when you run the queue. Review this before online work. Without a Default rule (it can be removed), such files are not added to MyList.
+A fresh profile has no folder rules, so identified files are not added to MyList. A file is added when the folder rule covering it has **Add identified files to MyList** on (with **Set state**, **Set watched** and the other values you chose there); the add happens when you run the queue. A file that matches no rule is identified but not added to MyList. Review your rules before online work.
 
 Once a file is identified and its anime and episode records are cached, a [folder with automatic rename](Managed-Folders-and-Scans.md#automatic-rename) can rename it.
 

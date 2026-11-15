@@ -346,7 +346,7 @@ fn settings(root: &Path, fresh: bool) -> Settings {
         enqueue: "--enqueue {path}".into(),
         default: true,
     });
-    // A user's own rules come after the built-in ones.
+    // The user's own rules; a profile has no others.
     s.file_managers.managers.extend([
         FileManager {
             name: "Anime".into(),
@@ -355,7 +355,6 @@ fn settings(root: &Path, fresh: bool) -> Settings {
             auto_hash: true,
             auto_rehash: true,
             clear_empty_folders: true,
-            can_edit_path: true,
             ..FileManager::default()
         },
         FileManager {
@@ -368,7 +367,6 @@ fn settings(root: &Path, fresh: bool) -> Settings {
             mylist_state: 1,
             mylist_storage_check: true,
             mylist_storage: "Library disk".into(),
-            can_edit_path: true,
             ..FileManager::default()
         },
     ]);

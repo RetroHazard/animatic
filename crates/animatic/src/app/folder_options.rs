@@ -1,10 +1,9 @@
 //! **Options → Managed folders**: one collapsible section per folder rule, grouped by what the
 //! controls act on (the folder, scans, renames, MyList), then the scan schedule.
 //!
-//! Three kinds of rule share `FileManager`: the Default rule (no folder; the policy for files
-//! outside every folder rule), the built-in `\\` network rule (every UNC path) and folder rules.
-//! Controls that cannot affect a kind are not shown for it. Any rule can be removed, after an
-//! inline confirmation, except the last one; a removed built-in rule can be restored.
+//! Folder rules are optional and all alike: a file outside every rule is only identified (not
+//! added to MyList, renamed in its own folder, never scanned). Any rule can be removed after an
+//! inline confirmation.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -24,37 +23,17 @@ pub(super) struct FolderOptionsState {
     confirm_remove: Option<usize>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Kind {
-    /// The Default rule: no folder, applies to files outside every folder rule.
-    Fallback,
-    /// The built-in `\\` rule.
-    Network,
-    Folder,
-}
-
-fn kind(manager: &FileManager) -> Kind {
-    if manager.default {
-        Kind::Fallback
-    } else if manager.is_network_builtin() {
-        Kind::Network
-    } else {
-        Kind::Folder
-    }
-}
-
-/// Section header: the name, and for a folder rule its path, so collapsed rules can be told
-/// apart.
+/// Section header: the name and the path, so collapsed rules can be told apart.
 fn header(manager: &FileManager) -> String {
     let name = if manager.name.is_empty() {
         "Unnamed folder"
     } else {
         manager.name.as_str()
     };
-    match kind(manager) {
-        Kind::Fallback => format!("{name} — files outside every folder"),
-        Kind::Folder if !manager.path.trim().is_empty() => format!("{name} — {}", manager.path),
-        _ => name.to_owned(),
+    if manager.path.trim().is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} — {}", manager.path)
     }
 }
 
@@ -94,67 +73,38 @@ fn rule_ui(
     index: usize,
     manager: &mut FileManager,
     state: &mut FolderOptionsState,
-    last_rule: bool,
 ) -> RuleOutcome {
     let mut outcome = RuleOutcome::default();
-    let kind = kind(manager);
-    match kind {
-        Kind::Fallback => {
-            ui.label(
-                RichText::new(
-                    "Applies to files outside every folder rule, such as files added by hand. \
-                     It has no folder, so scans never use it.",
-                )
-                .weak(),
-            );
-        }
-        Kind::Network => {
-            ui.label(
-                RichText::new(
-                    "Applies to every network path (\\\\server\\share\\…) that no folder rule \
-                     covers.",
-                )
-                .weak(),
-            );
-        }
-        Kind::Folder => {}
-    }
-
     group_heading(ui, "Folder");
     field(ui, "Name", &mut manager.name);
-    if kind == Kind::Folder {
-        path_field(
-            ui,
-            "Path",
-            &mut manager.path,
-            "Choose the folder of this rule",
-        );
-        ui.checkbox(&mut manager.include_subdirs, "Include subfolders")
-            .on_hover_text("Off: only files directly inside the folder belong to this rule.");
-    }
+    path_field(
+        ui,
+        "Path",
+        &mut manager.path,
+        "Choose the folder of this rule",
+    );
+    ui.checkbox(&mut manager.include_subdirs, "Include subfolders")
+        .on_hover_text("Off: only files directly inside the folder belong to this rule.");
 
-    if kind != Kind::Fallback {
-        group_heading(ui, "When a scan finds files");
-        ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut manager.auto_hash, "Hash new files");
-            ui.checkbox(&mut manager.auto_rehash, "Rehash changed files")
-                .on_hover_text("Hash a known file again when its modification time changed.");
-            ui.checkbox(&mut manager.exclude_system, "Skip system files")
-                .on_hover_text(
-                    "Scans skip files and folders with the Windows system attribute. Linux has \
-                     no such attribute, so this has no effect there.",
-                );
-        });
-        ui.checkbox(
-            &mut manager.auto_remove,
-            style::destructive(ui, "Remove missing files from the library"),
-        )
-        .on_hover_text(
-            "Removes Animatic's record of a file that is confirmed gone while the folder is \
-             reachable. Never deletes media files; an unreachable drive or share keeps every \
-             record.",
-        );
-    }
+    group_heading(ui, "When a scan finds files");
+    ui.horizontal_wrapped(|ui| {
+        ui.checkbox(&mut manager.auto_hash, "Hash new files");
+        ui.checkbox(&mut manager.auto_rehash, "Rehash changed files")
+            .on_hover_text("Hash a known file again when its modification time changed.");
+        ui.checkbox(&mut manager.exclude_system, "Skip system files")
+            .on_hover_text(
+                "Scans skip files and folders with the Windows system attribute. Linux has no \
+                 such attribute, so this has no effect there.",
+            );
+    });
+    ui.checkbox(
+        &mut manager.auto_remove,
+        style::destructive(ui, "Remove missing files from the library"),
+    )
+    .on_hover_text(
+        "Removes Animatic's record of a file that is confirmed gone while the folder is \
+         reachable. Never deletes media files; an unreachable drive or share keeps every record.",
+    );
 
     group_heading(ui, "Renaming");
     let mut moving = !manager.base_path.is_empty() || state.moving.contains(&index);
@@ -181,20 +131,18 @@ fn rule_ui(
             "Choose where renamed files go",
         );
     }
-    if kind != Kind::Fallback {
-        if auto_rename::mode_control(ui, index, manager) {
-            outcome.enable_auto_rename = true;
-        }
-        ui.checkbox(
-            &mut manager.clear_empty_folders,
-            style::destructive(ui, "Remove folders a rename leaves empty"),
-        )
-        .on_hover_text(
-            "After Animatic renames or moves a file out of a subfolder, remove the folder (and \
-             emptied parents) if nothing at all is left in it. The rule's own folder is never \
-             removed.",
-        );
+    if auto_rename::mode_control(ui, index, manager) {
+        outcome.enable_auto_rename = true;
     }
+    ui.checkbox(
+        &mut manager.clear_empty_folders,
+        style::destructive(ui, "Remove folders a rename leaves empty"),
+    )
+    .on_hover_text(
+        "After Animatic renames or moves a file out of a subfolder, remove the folder (and \
+         emptied parents) if nothing at all is left in it. The rule's own folder is never \
+         removed.",
+    );
 
     group_heading(ui, "MyList");
     ui.checkbox(
@@ -258,17 +206,10 @@ fn rule_ui(
 
     ui.add_space(6.0);
     if state.confirm_remove == Some(index) {
-        ui.label(match kind {
-            Kind::Fallback => {
-                "Remove the Default rule? Files outside your folders will no longer be added \
-                 to MyList, and renaming them keeps them in their folder."
-            }
-            Kind::Network => {
-                "Remove the network rule? Network files outside your folders will use the \
-                 Default rule."
-            }
-            Kind::Folder => "Remove this folder rule? Files in the folder stay in the library.",
-        });
+        ui.label(
+            "Remove this folder rule? Files in the folder stay in the library; files no rule \
+             covers are only identified.",
+        );
         ui.horizontal(|ui| {
             if ui.button(style::destructive(ui, "Remove")).clicked() {
                 outcome.remove = true;
@@ -277,11 +218,7 @@ fn rule_ui(
                 state.confirm_remove = None;
             }
         });
-    } else if ui
-        .add_enabled(!last_rule, egui::Button::new("Remove rule…"))
-        .on_disabled_hover_text("The last rule cannot be removed. Add another rule first.")
-        .clicked()
-    {
+    } else if ui.button("Remove rule…").clicked() {
         state.confirm_remove = Some(index);
     }
     outcome
@@ -292,13 +229,22 @@ impl AnimaticApp {
         let mut remove = None;
         let mut enable_auto_rename = None;
         let managers = &mut self.settings.file_managers.managers;
-        let last_rule = managers.len() <= 1;
+        if managers.is_empty() {
+            ui.label(
+                RichText::new(
+                    "No folder rules. Add one to scan a folder, add its files to MyList or move \
+                     renamed files. Files outside every rule are not added to MyList, and \
+                     renaming one keeps it in its folder.",
+                )
+                .weak(),
+            );
+        }
         for (index, manager) in managers.iter_mut().enumerate() {
             // Keyed by position, not by the header: typing in Name must not close the section.
             egui::CollapsingHeader::new(header(manager))
                 .id_salt(("options-managed-folder", index))
                 .show(ui, |ui| {
-                    let outcome = rule_ui(ui, index, manager, &mut self.folder_options, last_rule);
+                    let outcome = rule_ui(ui, index, manager, &mut self.folder_options);
                     if outcome.remove {
                         remove = Some(index);
                     }
@@ -308,41 +254,19 @@ impl AnimaticApp {
                 });
         }
         if let Some(index) = remove {
-            if managers.len() > 1 {
-                managers.remove(index);
-            }
+            managers.remove(index);
             // Positions moved: per-rule state no longer points at the same rules.
             self.folder_options = FolderOptionsState::default();
         }
         if let Some(index) = enable_auto_rename {
             self.begin_auto_rename_enable(index);
         }
-        ui.horizontal(|ui| {
-            if ui.button("Add folder rule").clicked() {
-                self.settings.file_managers.managers.push(FileManager {
-                    name: "New folder".into(),
-                    ..FileManager::default()
-                });
-            }
-            let missing = self.settings.file_managers.missing_builtins();
-            if !missing.is_empty() {
-                let names: Vec<&str> = missing.iter().map(|m| m.name.as_str()).collect();
-                if ui
-                    .button("Restore built-in rules")
-                    .on_hover_text(format!("Adds back: {}", names.join(", ")))
-                    .clicked()
-                {
-                    for rule in missing {
-                        if rule.default {
-                            self.settings.file_managers.managers.insert(0, rule);
-                        } else {
-                            self.settings.file_managers.managers.push(rule);
-                        }
-                    }
-                    self.folder_options = FolderOptionsState::default();
-                }
-            }
-        });
+        if ui.button("Add folder rule").clicked() {
+            self.settings.file_managers.managers.push(FileManager {
+                name: "New folder".into(),
+                ..FileManager::default()
+            });
+        }
         self.options_folder_scanning(ui);
     }
 }

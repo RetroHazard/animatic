@@ -159,6 +159,13 @@ exists. A folder that exists but is empty because its drive is not mounted looks
 files. Restore a backup or remount and rescan. See
 [Offline drives and automatic removal](File-and-Import-Problems.md#offline-drives-and-automatic-removal).
 
+### Why was a file not added to my MyList?
+
+A fresh profile has no folder rules, and only a rule with **Add identified files to MyList** on adds the
+files it covers. A file that no rule covers is identified (when **Identify files with AniDB after
+hashing** is on) but not added to MyList, and it is renamed in its own folder. See
+[Which rule applies to a file](Managed-Folders-and-Scans.md#which-rule-applies-to-a-file).
+
 ### Can I undo a rename?
 
 No. Review the preview before you apply it, and use **Dry run (log only)** before you switch a managed folder
