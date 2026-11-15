@@ -89,8 +89,8 @@ table below.
 | `login failed: wrong username or password` | Wrong credentials | Correct them in **Tools → Options… → AniDB account** | [Credentials](Network-and-Sync-Problems.md#credentials-and-client-registration) |
 | Timeouts, "cannot resolve", "no IPv4 address", "cannot bind UDP port" | DNS, firewall or another program using the local port | Allow outbound UDP; free the port | [Network and firewall](Network-and-Sync-Problems.md#network-and-firewall) |
 | `N commands not saved yet` | The database is busy with another write | Wait; do not quit | [Database busy](Network-and-Sync-Problems.md#database-busy-and-unsaved-commands) |
-| A scan hashes nothing | No **auto hash** rule, extension list, hidden or system files, folder missing | Work through the checklist | [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders) |
-| Records disappeared after a scan | **auto remove** with a folder that exists but is empty (unmounted drive) | Restore a backup or rescan | [Offline drives](File-and-Import-Problems.md#offline-drives-and-automatic-removal) |
+| A scan hashes nothing | No rule with **Hash new files**, extension list, hidden or system files, folder missing | Work through the checklist | [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders) |
+| Records disappeared after a scan | **Remove missing files from the library** with a folder that exists but is empty (unmounted drive) | Restore a backup or rescan | [Offline drives](File-and-Import-Problems.md#offline-drives-and-automatic-removal) |
 | Hashing is slow, was cancelled, or a file is shown as **Failed** | Slow disk or share; cancelled; file locked or gone | Resume, **Retry failed** | [Hashing large files](File-and-Import-Problems.md#hashing-large-files) |
 | **Rename file** is greyed or a rename fails | Pattern warnings, missing title or episode data, invalid name, collision | Read the message | [Rename problems](File-and-Import-Problems.md#rename-problems) |
 | The AOM import finished with fewer collections | A collection failed and was skipped | Read the `Legacy import warning` lines | [AOM import problems](File-and-Import-Problems.md#aom-import-problems) |
@@ -274,6 +274,7 @@ code. `<…>` marks a value that differs each time. The Log page looks like this
 | Anime detail window (cover area) | `Cover not shown: the downloaded file is not a readable picture (<why>)`, `Cover not downloaded: …`, `Cover not available…` | AniDB sent something that is not a JPEG, PNG, WebP or GIF, downloads are off or paused, or the last try failed less than an hour ago. **Try again** asks once more when the limit allows it. See [Anime detail window](Library-Pages.md#anime-detail-window) |
 | Menu bar button | `Update available: <version>`, `Update ready to install`, `Restart to finish updating`, `Update failed: see details` | Click it to open the Software updates window. [Update problems](Network-and-Sync-Problems.md#update-problems) |
 | Status bar, Log | `Update check failed: <message>` | [Update problems](Network-and-Sync-Problems.md#update-problems) |
+| Status bar, Log | `Animatic <version> is installed, but the license files beside it were not all updated: <problem>` | The new program is in place, but `LICENSE` or `NOTICES` next to it could not be replaced (an older `LICENSE-v…`/`NOTICES-v…` copy of that file is kept), or an old copy could not be deleted. Close any program holding the file, then replace it from the release archive or delete the leftover copy by hand. [What the install changes](Updating-Animatic.md#what-the-install-changes) |
 
 ## See also
 
