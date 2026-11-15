@@ -11,10 +11,7 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
-### Fixed
-
-- The **Software updates** window shows the program's location as `C:\…` instead of the Windows
-  internal form `\\?\C:\…` when asking to confirm an installation and after a failed one. (#25)
+## 2026.11.0-rc.3 - 2026-11-15
 
 ### Changed
 
@@ -39,6 +36,11 @@ the generated line for that pull request's squash commit.
   as an ordinary rule. To keep adding files from a folder to MyList, add a rule for that folder
   with **Add identified files to MyList**. An AOM settings import no longer brings in AOM's
   default rule, which had no folder. (#25)
+
+### Fixed
+
+- The **Software updates** window shows the program's location as `C:\…` instead of the Windows
+  internal form `\\?\C:\…` when asking to confirm an installation and after a failed one. (#25)
 
 ## 2026.11.0-rc.2 - 2026-11-14
 
