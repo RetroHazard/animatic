@@ -9,7 +9,7 @@ A file can be renamed when all of these are true:
 - It is on **Hashed files** (see [Hashing and identification](Hashing-and-Identification.md)).
 - AniDB has **identified** it: its `AniDB` column shows a file id such as `fid 300048`.
 - Animatic has the **anime and episode records** locally. The AniDB reply that identifies a file already carries the anime titles, the episode number and title, and the group name, so a freshly identified file can normally be renamed at once. The fuller records (other titles, episode counts, and so on) arrive with **Refresh from AniDB** or a queue run. If a stored record still lacks the title or the episode number, a built-in convention reports it (see [What blocks a rename](#what-blocks-a-rename)).
-- Its [managed folder](Managed-Folders-and-Scans.md) has the **Rename destination** you want (or empty, to keep files in their current folder). See [Where the file goes](#where-the-file-goes).
+- Its [managed folder](Managed-Folders-and-Scans.md) has the rename destination you want (**Move renamed files to another folder** → **Destination**; unticked or empty keeps files in their current folder). See [Where the file goes](#where-the-file-goes).
 
 Planning a rename uses only the local library: no network and no AniDB request. A batch plan (and the automatic rename check) only looks whether the new path is already taken on disk; it never changes a file. You can plan and rename while you **work offline**.
 
@@ -153,15 +153,15 @@ If the file already has the produced name, Animatic says nothing needs renaming.
 
 ## Where the file goes
 
-The destination is the matching managed folder's **Rename destination** joined with the pattern's result:
+The destination is the matching managed folder's rename destination (**Move renamed files to another folder** → **Destination**) joined with the pattern's result; a file that no rule covers has an empty destination:
 
-| Rename destination | Pattern result | File ends up |
+| Destination | Pattern result | File ends up |
 |---|---|---|
 | `S:\Anime` | `[Hanabi] Kami no Tsuki Radio - 01 [3E56B578].mkv` | `S:\Anime\[Hanabi] Kami no Tsuki Radio - 01 [3E56B578].mkv` (the sample's Downloads rule) |
 | empty | a plain name | the file's current folder, new name |
 | `S:\Anime` | `Sakura Signal\Sakura Signal - 03.mkv` | `S:\Anime\Sakura Signal\Sakura Signal - 03.mkv` (the folder is created) |
 
-Path separators in the result create or use subfolders; missing parent folders are created when the rename is applied. With a **Rename destination** set, every result must be relative to it. The folder rule with the longest matching path decides which destination applies. All the path rules (absolute results, drive letters, network paths) are in [Base path and absolute or relative results](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results).
+Path separators in the result create or use subfolders; missing parent folders are created when the rename is applied. With a destination set, every result must be relative to it. The folder rule with the longest matching path decides which destination applies. All the path rules (absolute results, drive letters, network paths) are in [Base path and absolute or relative results](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results).
 
 ### Collisions
 
@@ -187,7 +187,7 @@ An existing destination is never replaced: the check happens before the move, an
 
 ### Clear empty folders
 
-If the matching managed folder has **Remove emptied folders** on, the folders a successful rename left empty are removed afterwards, and the Log says `Removed 2 empty folders` (`Removed 1 empty folder` for one). Only completely empty folders strictly below the managed folder's path are removed, never recursively, never the managed folder itself, and a folder holding even a hidden file stays. Failures are logged to the log file only. Details: [Removing folders a rename emptied](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied).
+If the matching managed folder has **Remove folders a rename leaves empty** on, the folders a successful rename left empty are removed afterwards, and the Log says `Removed 2 empty folders` (`Removed 1 empty folder` for one). Only completely empty folders strictly below the managed folder's path are removed, never recursively, never the managed folder itself, and a folder holding even a hidden file stays. Failures are logged to the log file only. Details: [Removing folders a rename emptied](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied).
 
 ## Automatic rename (opt-in per managed folder)
 
@@ -218,7 +218,7 @@ A pass runs only while no other task is running, and not while an import, a rest
 
 **What it renames.** Only a file that
 
-- lies inside a managed folder with a non-empty path (the built-in **Default** rule, which matches everything else, never renames; the folder with the longest matching path decides, so a subfolder rule set to Off excludes its files),
+- lies inside a managed folder with a non-empty path (a file no rule covers is never renamed automatically; the folder with the longest matching path decides, so a subfolder rule set to Off excludes its files),
 - AniDB has identified **and** whose anime and episode records are cached (until then it is left alone without a note; the reply that completes it triggers a new pass),
 - still exists on disk, and
 - has a plan that is valid for **Apply** with the current pattern: a pattern that does not compile pauses the whole pass with one `Automatic rename is paused: the renaming pattern cannot be used (<problem>)` log line; warnings, a missing title or episode number (built-in conventions), an empty or true/false result or an unusable name block the file.
@@ -244,6 +244,6 @@ Moves are reported like manual ones (`Renamed <old> to <new>`, `Rename failed: �
 ## See also
 
 - [Options window](Options-Window.md): where **Renaming** and **Managed folders** live.
-- [Managed folders and scans](Managed-Folders-and-Scans.md): rename destination, auto rename and **Remove emptied folders** per folder.
+- [Managed folders and scans](Managed-Folders-and-Scans.md): rename destination, auto rename and **Remove folders a rename leaves empty** per folder.
 - [Rename language](Rename-Language.md) and [Patterns](Rename-Patterns.md): write and verify a custom pattern.
 - [Glossary](Glossary.md), [FAQ](FAQ.md) and [Rename problems](File-and-Import-Problems.md#rename-problems): terms and every rename message.

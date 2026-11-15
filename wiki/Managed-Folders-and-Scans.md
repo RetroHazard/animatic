@@ -1,75 +1,76 @@
 A **managed folder** (a *folder rule* in **Options → Managed folders**) tells Animatic what to do with the files below one folder: whether to hash new files, whether to forget missing ones, which MyList settings to use when a file is added, where renamed files go and whether Animatic may rename them on its own. This page is the reference for every field, for scans (manual, at start-up and scheduled), for the safety rules around deleting records, and for automatic rename. Read it before you point Animatic at the folders where your anime lives.
 
-![Options, Managed folders: the Default, Anime and Downloads rules and the Folder scanning settings](images/options-folders.png)
+![Options, Managed folders: the Anime and Downloads rules and the Folder scanning settings](images/options-folders.png)
 
-*Options → Managed folders in the sample library: three rules (all collapsed) and the **Folder scanning** section.*
+*Options → Managed folders in a sample profile: two rules, **Anime** and **Downloads** (both collapsed), and the **Folder scanning** section.*
 
 ## What a scan does and does not do
 
 Scans start from **Tools → Scan managed folders**, from the **Scan managed folders** button on **Overview**, optionally also [when Animatic starts and on a schedule](#scheduled-scans). There is no filesystem watcher, and the [tray icon](Main-Window.md#system-tray) starts nothing by itself.
 
-A scan **never deletes media files and never writes MyList**. It never moves or renames a file itself ([automatic rename](#automatic-rename) can do that afterwards for folders you switched on). It can hash files and forget missing local records. Hashing is not the end of it, though: every file the scan hashes raises the same event as any other hashing, so with **Identify files with AniDB after hashing** on and the folder rule's **Add to MyList** on, an Identify command with an add policy is queued, and **running the command queue later adds the file to your AniDB MyList**. Scans themselves never contact AniDB, so they work offline.
+A scan **never deletes media files and never writes MyList**. It never moves or renames a file itself ([automatic rename](#automatic-rename) can do that afterwards for folders you switched on). It can hash files and forget missing local records. Hashing is not the end of it, though: every file the scan hashes raises the same event as any other hashing, so with **Identify files with AniDB after hashing** on and the folder rule's **Add identified files to MyList** on, an Identify command with an add policy is queued, and **running the command queue later adds the file to your AniDB MyList**. Scans themselves never contact AniDB, so they work offline.
 
 ## Folder rules
 
-Open **Tools → Options…** and choose **Managed folders**. Each rule is a collapsible section titled with its **Name** (or `Unnamed folder`). Edits apply at once to a manual scan. A scheduled or start-up scan, and automatic rename, use your edits only after you close Options; **Save options** writes them to the settings file.
+Open **Tools → Options…** and choose **Managed folders**. Each rule is a collapsible section titled `Name — Path` (just the **Name** while the path is empty, `Unnamed folder` while the name is empty). Inside, the controls are grouped under **Folder**, **When a scan finds files**, **Renaming** and **MyList**. Edits apply at once to a manual scan. A scheduled or start-up scan, and automatic rename, use your edits only after you close Options; **Save options** writes them to the settings file.
 
-![The Downloads rule expanded: path, rename destination, scan switches and the MyList policy](images/options-folder-rule.png)
+![The Downloads rule expanded: path, scan switches, rename destination and the MyList policy](images/options-folder-rule.png)
 
-*The **Downloads** rule: it hashes new files in `S:\Downloads`, adds identified files to MyList as On HDD with the storage text "Library disk", and renames into `S:\Anime` (automatic rename is **Off**).*
+*The **Downloads** rule: it hashes new files in `S:\Downloads`, adds identified files to MyList as On HDD with the storage text "Library disk", and moves renamed files into `S:\Anime` (automatic rename is **Off**).*
+
+Every rule shows the same controls, and there is no built-in rule: a fresh profile has none. A rule's header reads `Name — Path` (just the name while the path is empty, `Unnamed folder` while the name is empty). **Remove rule…** removes any rule after a confirmation. Files that no rule covers are only identified: not added to MyList, renamed in their own folder, never scanned and never removed from the library.
 
 ### Where files are and how they are found
 
 | Field | Default for a new rule | What it does |
 |---|---|---|
 | **Name** | `New folder` | A label for the list. It has no other effect. |
-| **Path** | empty | The folder to scan. A rule with an empty path is never walked and never matches a file by location. Use an absolute path such as `S:\Downloads`. |
-| **Rename destination** | empty | The base folder for [renames](Renaming-Files.md) of files in this rule. Empty keeps the new name relative to the file's current folder: a plain file name leaves the file where it is. |
-| **Subfolders** | on | On: all depth levels below **Path**. Off: only the files directly in **Path**. Symbolic links are skipped (a linked file is not hashed and a linked folder is not entered). |
-| **Auto hash** | off | A scan hashes files whose path is not in the library yet. |
-| **Rehash changed** | off | A scan hashes a known file again when its modification time differs from the stored one. |
-| **Remove missing** | off | A scan forgets the local record of a file that is affirmatively gone (see [Remove missing and the safety rules](#remove-missing-and-the-safety-rules)). |
+| **Path** and **Browse…** | empty | The folder to scan; type it or pick it with **Browse…**. A rule with an empty path is never walked and never matches a file by location. Use an absolute path such as `S:\Downloads`. |
+| **Include subfolders** | on | On: all depth levels below **Path**. Off: only the files directly in **Path**. Symbolic links are skipped (a linked file is not hashed and a linked folder is not entered). |
+| **Hash new files** | off | A scan hashes files whose path is not in the library yet. |
+| **Rehash changed files** | off | A scan hashes a known file again when its modification time differs from the stored one. |
 | **Skip system files** | on | Skips files and folders that carry the Windows *system* attribute (a skipped folder is not entered). Linux has no such attribute, so there it changes nothing. |
-| **Remove emptied folders** | off | After Animatic renames files, removes the folders they left if they are completely empty (see [Removing folders a rename emptied](#removing-folders-a-rename-emptied)). |
+| **Remove missing files from the library** | off | A scan forgets the local record of a file that is affirmatively gone (see [Remove missing and the safety rules](#remove-missing-and-the-safety-rules)). Shown in red. |
+| **Move renamed files to another folder** / **Destination** | off, empty | The base folder for [renames](Renaming-Files.md) of files in this rule: ticked, a **Destination** field with **Browse…** appears. Off (empty destination) keeps the new name relative to the file's current folder: a plain file name leaves the file where it is. Unticking clears the destination. |
+| **Remove folders a rename leaves empty** | off | After Animatic renames files, removes the folders they left if they are completely empty (see [Removing folders a rename emptied](#removing-folders-a-rename-emptied)). Shown in red. |
 
-A rule is walked by a scan only if its **Path** is a directory that exists *and* **Auto hash** or **Rehash changed** is on. With both off, the rule still supplies its MyList settings and rename destination to files that live below it.
+A rule is walked by a scan only if its **Path** is a directory that exists *and* **Hash new files** or **Rehash changed files** is on. With both off, the rule still supplies its MyList settings and rename destination to files that live below it.
 
-Entries whose name starts with a dot (`.`) are skipped, folders included, for every rule you create in Animatic (the `exclude_hidden` key is on by default; there is no checkbox for it in Options, and the Windows *hidden* attribute is not consulted). A rule that came from an AniDB O'Matic (AOM) settings import keeps AOM's own setting, which is usually **off**, so such a rule also scans dot-files; the built-in `\\` rule has it off too.
+Entries whose name starts with a dot (`.`) are skipped, folders included, for every rule you create in Animatic (the `exclude_hidden` key is on by default; there is no checkbox for it in Options, and the Windows *hidden* attribute is not consulted). A rule that came from an AniDB O'Matic (AOM) settings import keeps AOM's own setting, which is usually **off**, so such a rule also scans dot-files.
 
 ### MyList settings for added files
 
-These fields apply to files that this folder adds to your MyList. They only matter when **Add to MyList** is on.
+These fields, under **MyList**, apply to files that this rule adds to your MyList. They are greyed out while **Add identified files to MyList** is off.
 
 | Field | Default | What it does |
 |---|---|---|
-| **Add to MyList** | off | When a file below this rule is identified, add it to your MyList. Hover text: `Add files identified in this folder to your AniDB MyList`. |
+| **Add identified files to MyList** | off | When a file below this rule is identified, add it to your MyList. Hover text: `Added when the queue runs online, with the values below.` |
 | **Set watched** | off | Tick to set the watched state on added files. A nested **Watched** checkbox appears: ticked marks the entry watched (with the time of the add as view date), unticked marks it unwatched. |
 | **Set state** | on, **On HDD** | Tick to set the MyList state. A list offers `Unknown`, `On HDD`, `On CD/DVD`, `Deleted`, `Remote/Shared`. |
-| **Set storage** | off | Tick to set the **Storage** text (for example `Library disk`). |
-| **Set source** | off | Tick to set the **Source** text. |
-| **Set other** | off | Tick to set the **Other** text. |
+| **Set storage** | off | Tick to set the storage text in the box on the same row (for example `Library disk`). |
+| **Set source** | off | Tick to set the source text in the box on the same row. |
+| **Set other** | off | Tick to set the other text in the box on the same row. |
 
 For each field the checkbox decides whether Animatic sets it. **Unchecked leaves the field unchanged** on AniDB. **Checked with an empty text explicitly clears** the field. The text boxes are grayed out while their checkbox is off.
 
 These settings are applied only to files that are **newly added**. If AniDB reports that a file is already in your MyList, the settings are **not** applied. Adding to MyList happens when you run the command queue (see [Identification](Hashing-and-Identification.md#identification)), never during a scan.
 
-### Add, remove, built-in rules
+### Add and remove rules
 
 - **Add folder rule** appends a rule named `New folder`.
-- **Remove folder rule** deletes the rule from the list. It only exists for rules you added.
-- You can type a **Path** into **Default** to scan it like any other rule; only its removal is blocked.
-- A fresh settings file contains two built-in rules that cannot be removed: **Default** (no path; it catches files no other rule claims and adds them to MyList as On HDD, unwatched) and **\\\\ (Default network path)** (matches any path that starts with `\\` or `//`, adds nothing). Both start with every scan switch off, so out of the box nothing is scanned. Full key list: [Settings reference](Settings-Reference.md#managed-folders-file_managers).
+- **Remove rule…** asks `Remove this folder rule? Files in the folder stay in the library; files no rule covers are only identified.` and deletes the rule after you confirm. Any rule can be removed, including the last one.
+- Rules are optional and all alike. A fresh profile has **no rules**, so nothing is scanned and nothing is added to MyList automatically. With no rules, the page says `No folder rules. Add one to scan a folder, add its files to MyList or move renamed files. Files outside every rule are not added to MyList, and renaming one keeps it in its folder.` Full key list: [Settings reference](Settings-Reference.md#managed-folders-file_managers).
 
 ### Which rule applies to a file
 
-Rules with a non-empty path are candidates. A rule applies if the file is below its folder (any depth when **Subfolders** is on, direct children only otherwise). The **longest matching path wins**. When no rule matches, the rule marked default (else the first) is used. The fallback supplies the MyList settings for identify-after-hash and the rename destination, but it never authorizes removal or automatic rename. This choice is made for every hashed file, whichever route added it.
+Rules with a non-empty path are candidates. A rule applies if the file is below its folder (any depth when **Include subfolders** is on, direct children only otherwise). The **longest matching path wins**. When no rule matches, **no rule applies**: the file is identified as usual (when **Identify files with AniDB after hashing** is on) but **not added to MyList**, it is renamed in its own folder, it is never scanned and **Remove missing files from the library** never removes it. A rule with the path `\\` matches every network path. This choice is made for every hashed file, whichever route added it.
 
 ### Set up a folder: step by step
 
 1. Open **Tools → Options… → Managed folders** and click **Add folder rule**.
-2. Expand the new rule. Type a **Name** (for example `Downloads`) and the **Path** (`S:\Downloads`).
-3. Tick **Subfolders** if the folder has subfolders, and tick **Auto hash**.
-4. Optional: tick **Add to MyList** and choose the MyList settings; type a **Rename destination** if you rename into another folder.
+2. Expand the new rule. Type a **Name** (for example `Downloads`) and the **Path** (`S:\Downloads`), or pick the folder with **Browse…**.
+3. Tick **Include subfolders** if the folder has subfolders, and tick **Hash new files**.
+4. Optional: tick **Add identified files to MyList** and choose the MyList settings; tick **Move renamed files to another folder** and set the **Destination** if you rename into another folder.
 5. Click **Save options**.
 6. Choose **Tools → Scan managed folders**.
 
@@ -79,26 +80,26 @@ What happens next: the Log says `Scanning managed folders` and, if files were fo
 
 A scan plans its work by walking the rules in list order:
 
-- A rule is walked only if its **Path** is an existing directory and **Auto hash** or **Rehash changed** is on.
-- **Subfolders** on = unlimited depth; off = direct children only. Symbolic links are skipped.
+- A rule is walked only if its **Path** is an existing directory and **Hash new files** or **Rehash changed files** is on.
+- **Include subfolders** on = unlimited depth; off = direct children only. Symbolic links are skipped.
 - Entries whose name starts with `.` are skipped; with **Skip system files**, entries with the Windows system attribute are skipped. The attribute is read from the entry itself, never from the target of a link.
 - Only files whose extension is in the **extension list** are considered. This list is always applied during a scan, even when **Restrict file extensions** is unchecked (that checkbox only filters the file picker). An empty list means a scan finds nothing. Matching is case-insensitive. See [Choosing which files are hashed](Hashing-and-Identification.md#choosing-which-files-are-hashed).
-- A file whose path is not in the database is hashed (**Auto hash**). A known path whose modified time differs from the stored one is re-hashed (**Rehash changed**).
-- Discovery is **first rule wins** in the order of the rules list: each discovered path is recorded once, so a file inside two overlapping rules is planned under the earlier one. (Longest-path matching applies only to the post-hash MyList settings, the rename destination, **Remove missing** and automatic rename.) Windows compares paths case-insensitively and with `\` and `/` unified; Linux compares case-sensitively.
+- A file whose path is not in the database is hashed (**Hash new files**). A known path whose modified time differs from the stored one is re-hashed (**Rehash changed files**).
+- Discovery is **first rule wins** in the order of the rules list: each discovered path is recorded once, so a file inside two overlapping rules is planned under the earlier one. (Longest-path matching applies only to the post-hash MyList settings, the rename destination, **Remove missing files from the library** and automatic rename.) Windows compares paths case-insensitively and with `\` and `/` unified; Linux compares case-sensitively.
 
 Then the settle check (below) holds back files that may still be written, the remaining files are queued in the persistent [hash queue](Hashing-and-Identification.md#hash-queue) and hashed, and missing records are forgotten where the rules allow it.
 
 ## Remove missing and the safety rules
 
-**Remove missing** is evaluated independently of walking, and it is the only way a scan removes anything. A stored path is removed from the local inventory only when **all** hold:
+**Remove missing files from the library** is evaluated independently of walking, and it is the only way a scan removes anything. A stored path is removed from the local inventory only when **all** hold:
 
-- the path is under an **explicit rule** that has **Remove missing** on (subfolders count only for rules with **Subfolders**; the unmatched Default rule never authorizes removal);
+- the path is under a rule that has **Remove missing files from the library** on (subfolders count only for rules with **Include subfolders**; a file no rule covers is never removed);
 - the filesystem reports the file **not found**. Any other error, such as an unavailable drive, a network share that does not answer or a permission failure, **keeps** the record;
 - the rule's own folder exists as a directory. If the whole folder or drive is unavailable, nothing is removed.
 
 It then removes only Animatic's local record (and a hash record nothing else uses). Media files and MyList entries are untouched. The Log notes `Removed missing path <path>`. The manual counterpart is **Remove from list…** on **Hashed files**, which asks first and never deletes files (see [Library pages](Library-Pages.md)).
 
-The only automatic removal of a **folder** is [Remove emptied folders](#removing-folders-a-rename-emptied) after Animatic's own rename.
+The only automatic removal of a **folder** is [Remove folders a rename leaves empty](#removing-folders-a-rename-emptied) after Animatic's own rename.
 
 ## Scheduled scans
 
@@ -142,7 +143,7 @@ Hashes found by a scan follow the normal [identification](Hashing-and-Identifica
 
 A scan itself never moves files. A file that a scan hashed and that the library already knows as identified makes the next background step plan its rename when its folder has the mode on or on dry run; so does an AniDB identify reply applied after you run the queue.
 
-**On** renames in the background, the same verified way as a [manual rename](Renaming-Files.md). It skips and logs collisions (`Automatic rename skipped <path>: <reasons>`) and only ever touches files inside a folder rule with a path (never through the built-in Default fallback). A file is considered only once AniDB identified it and its anime and episode records are cached. An automatic pass never runs while Options is open, so half-edited settings never rename anything.
+**On** renames in the background, the same verified way as a [manual rename](Renaming-Files.md). It skips and logs collisions (`Automatic rename skipped <path>: <reasons>`) and only ever touches files inside a folder rule with a path (never a file no rule covers). A file is considered only once AniDB identified it and its anime and episode records are cached. An automatic pass never runs while Options is open, so half-edited settings never rename anything.
 
 A pass looks at **every** identified file in each folder whose mode is **On** or **Dry run**, not only at the file just hashed, so turning **On** can rename files hashed long ago. Each file is reported once per state, at most 20 lines per pass (then `Automatic rename: N more note(s) not shown`). If the naming pattern cannot be used, the Log says `Automatic rename is paused: the renaming pattern cannot be used (…)` and nothing is renamed; a failed pass logs `Automatic rename failed: …`.
 
@@ -164,9 +165,9 @@ More about plans, collisions and what is logged: [Renaming files](Renaming-Files
 
 ## Removing folders a rename emptied
 
-**Remove emptied folders** (`clear_empty_folders`, off by default) is the only place Animatic deletes a folder, and it is not part of a scan. After a [manual rename](Renaming-Files.md) (single, batch or [automatic](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder)) has moved files, each folder a moved file left is removed when **all** hold:
+**Remove folders a rename leaves empty** (`clear_empty_folders`, off by default) is the only place Animatic deletes a folder, and it is not part of a scan. After a [manual rename](Renaming-Files.md) (single, batch or [automatic](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder)) has moved files, each folder a moved file left is removed when **all** hold:
 
-- the old path is under an explicit rule with the option on (the same longest-path matching as **Remove missing**; a rule without **Subfolders** only covers its own folder, which is never removed), and the rule's folder exists as a directory;
+- the old path is under an explicit rule with the option on (the same longest-path matching as **Remove missing files from the library**; a rule without **Include subfolders** only covers its own folder, which is never removed), and the rule's folder exists as a directory;
 - the folder is **strictly below** the rule's folder; the rule's own folder is never removed;
 - the folder is **completely empty**: any file, folder or hidden file keeps it. Nothing is deleted recursively and links are not followed or removed.
 
@@ -178,10 +179,10 @@ Parents are then checked in turn, upward, under the same conditions. Only folder
 |---|---|
 | `Queued N file(s) for hashing` | A scan (or other route) put files into the hash queue; `(M already queued)` counts repeats. |
 | `Scan deferred N file(s) that may still be written, the next scan retries them: …` | The settle check held files back. |
-| `Removed missing path <path>` | **Remove missing** forgot a record. |
+| `Removed missing path <path>` | **Remove missing files from the library** forgot a record. |
 | `Scheduled folder scan started` / `Scheduled folder scan postponed (<reason>); it starts when that is over` | The timer's decisions. |
 | `Automatic rename (dry run): … would be renamed to …`, `Automatic rename skipped …`, `Automatic rename finished: N renamed, M not renamed` | Automatic rename output. |
-| `Removed N empty folders` (singular for one) | **Remove emptied folders** deleted folders. |
+| `Removed N empty folders` (singular for one) | **Remove folders a rename leaves empty** deleted folders. |
 
 ## See also
 

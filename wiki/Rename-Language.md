@@ -20,11 +20,11 @@ Compatibility with the legacy client is the implementation's stated goal, and th
 |---|---|
 | Rename one selected, AniDB-identified hashed file after a preview and explicit confirmation (**Hashed files → Rename…**) | Implemented |
 | Choose a built-in naming convention or write a custom pattern with an in-app reference and a live example, restore the replaced custom text and validate it on the selected file (**Tools → Options… → Renaming**) | Implemented |
-| Per-folder rename destination (`base_path`, shown as **Rename destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
+| Per-folder rename destination (`base_path`, set with **Move renamed files to another folder** → **Destination** in Options) | Implemented, see [Base path](Rename-Targets-and-Apply.md#base-path-and-absolute-or-relative-results) |
 | Rename several files in one action | Implemented: **Rename N selected…** on Hashed files previews every selected file and applies the valid ones with one confirmation, see [Renaming files](Renaming-Files.md#several-files-batch-rename) |
 | Automatic renaming during or after a scan | **Opt-in per managed folder** (**Tools → Options… → Managed folders → Auto rename**: **Off**, **Dry run (log only)**, **On**; **Off** by default). Dry run only logs the plans; **On** renames identified files through the same verified worker job, and choosing **On** first shows a dry-run list to confirm. Collisions and blocked plans are skipped and logged, never overwritten. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). |
 | Renaming files that AniDB has not identified, or whose anime/episode rows are missing | Blocked with a message |
-| Cleaning up folders left empty by a move | Optional, per managed folder (**Remove emptied folders**, `clear_empty_folders`): only completely empty folders below the managed folder, see [Managed folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied) |
+| Cleaning up folders left empty by a move | Optional, per managed folder (**Remove folders a rename leaves empty**, `clear_empty_folders`): only completely empty folders below the managed folder, see [Managed folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied) |
 | Undo, renaming a whole library in one action, numbering after a collision, telling AniDB the new name | Not implemented |
 
 User-interface steps (which page, which button) are in [Renaming files](Renaming-Files.md); the stored field and its neighbors are in the [Settings reference](Settings-Reference.md). These pages cover the language and the rules behind the preview.
@@ -36,7 +36,7 @@ Renaming is deliberately split so that nothing touches the file system until the
 | Stage | What it does | Reads | Writes |
 |---|---|---|---|
 | **1. Evaluate** | Runs the pattern for one file | The pattern text, the file's records in the library (anime, episode, file, group, hash, MyList entry) and the stored titles for `at`, `et`, `atr`, `etr`, `getanime`, `getepisode` | Nothing. Produces a text result, variables and warnings. |
-| **2. Plan** | Checks the pattern and the result and builds the new path | Everything stage 1 reads, the file's current path and its managed folder's **Rename destination**. A batch plan, and automatic rename, also look whether the new path is already taken on disk | Nothing. Produces the result text, a new path (or none), warnings and errors. |
+| **2. Plan** | Checks the pattern and the result and builds the new path | Everything stage 1 reads, the file's current path and its managed folder's rename destination. A batch plan, and automatic rename, also look whether the new path is already taken on disk | Nothing. Produces the result text, a new path (or none), warnings and errors. |
 | **3. Apply** | Moves the file, on the background worker, after **Rename file** or **Rename N files** | The file system (does the destination exist?) | Creates missing parent folders, renames or copies the file, then updates the library path |
 
 - **Evaluate** never changes anything. It only reads the library.
@@ -255,7 +255,7 @@ Predefined variables (all `WStr`):
 | Variable | Value |
 |---|---|
 | `PATH` | The file's current full path as recorded in the library |
-| `BASEPATH` | The matching managed folder's **Rename destination**; empty when none |
+| `BASEPATH` | The matching managed folder's rename destination; empty when none |
 | `ACTIVEPATTERN` | The preprocessed pattern text |
 
 They are ordinary variables and can be overwritten with `set`.
@@ -330,7 +330,7 @@ Limits:
 
 - Batch rename acts on the files you select and automatic rename on the identified files of the folders you switched on; there is no rename of a whole library in one action, and no automatic numbering or other name made up after a collision.
 - No variable list, step trace or debugger in the application. (Developers can read the variables of a run through the code interface; see [For developers](#for-developers).)
-- A target that already exists is refused (the file is skipped), never replaced and never given another name. Folders a rename leaves empty are removed only through the opt-in **Remove emptied folders** setting.
+- A target that already exists is refused (the file is skipped), never replaced and never given another name. Folders a rename leaves empty are removed only through the opt-in **Remove folders a rename leaves empty** setting.
 - Production AniDB behavior and Linux runtime were not exercised while documenting.
 
 ## For developers

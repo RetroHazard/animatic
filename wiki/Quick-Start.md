@@ -138,11 +138,10 @@ add files by hand (step 5), but folders make scanning and renaming much easier.
 
 1. Open **Tools → Options…** and choose **Managed folders**.
 
-   ![Options, Managed folders: the built-in Default rule, two folders you added and the Folder scanning settings](images/options-folders.png)
+   ![Options, Managed folders: the two folders you added, Anime and Downloads, and the Folder scanning settings](images/options-folders.png)
 
-   *The sample library's **Managed folders** page: the built-in **Default** rule followed by the
-   sample's two folders (**Anime** and **Downloads**). A brand-new profile lists **Default** and the
-   built-in `\\ (Default network path)` rule.*
+   *The sample library's **Managed folders** page: two folders, **Anime** and **Downloads**. A
+   brand-new profile lists no rules.*
 
 2. Click **Add folder rule**. A rule named **New folder** appears; click the small triangle left of its
    name to open it.
@@ -151,22 +150,22 @@ add files by hand (step 5), but folders make scanning and renaming much easier.
    | Field | What to enter |
    |---|---|
    | **Name** | A label, for example `Downloads`. |
-   | **Path** | The folder to watch, for example `S:\Downloads` or `/home/you/Downloads`. Type or paste the full path (in Explorer, click the address bar and copy it); there is no **Browse…** button. |
-   | **Rename destination** | Where renamed files go, for example `S:\Anime`. Leave empty to rename inside the file's own folder. With the built-in naming conventions all renamed files go directly into this folder, without a folder per anime. |
-   | **Subfolders** | On (default): look in all folders below. Off: direct children only. |
-   | **Auto hash** | **Tick it.** A scan only hashes new files in a rule with **Auto hash** (or **Rehash changed**) on. Off by default. |
-   | **Add to MyList** | Tick it if identified files from this folder should be added to your AniDB MyList when the queue runs. Leave it off to only identify them. |
+   | **Path** | The folder to watch, for example `S:\Downloads` or `/home/you/Downloads`. Type or paste the full path, or choose the folder with **Browse…**. |
+   | **Move renamed files to another folder** | Tick it to send renamed files elsewhere: a **Destination** field (with **Browse…**) appears, for example `S:\Anime`. Leave it unticked, or the destination empty, to rename inside the file's own folder. With the built-in naming conventions all renamed files go directly into this folder, without a folder per anime. |
+   | **Include subfolders** | On (default): look in all folders below. Off: direct children only. |
+   | **Hash new files** | **Tick it.** A scan only hashes new files in a rule with **Hash new files** (or **Rehash changed files**) on. Off by default. |
+   | **Add identified files to MyList** | Tick it if identified files from this folder should be added to your AniDB MyList when the queue runs. Leave it off to only identify them. |
 
-   Leave **Rehash changed**, **Remove missing**, **Remove emptied folders** and **Auto rename** off for
-   now. **Remove missing** forgets records of files that disappear from disk; **Auto rename** renames
+   Leave **Rehash changed files**, **Remove missing files from the library**, **Remove folders a rename leaves empty** and **Auto rename** off for
+   now. **Remove missing files from the library** forgets records of files that disappear from disk; **Auto rename** renames
    without asking, per folder. Both are covered in [Managed folders and scans](Managed-Folders-and-Scans.md).
 
-   ![The Downloads folder rule expanded, with Auto hash, Add to MyList, state On HDD and storage Library disk](images/options-folder-rule.png)
+   ![The Downloads folder rule expanded, with Hash new files, Add identified files to MyList, state On HDD and storage Library disk](images/options-folder-rule.png)
 
-   *A finished rule: **Auto hash** and **Add to MyList** are on, files are added as **On HDD** with the
+   *A finished rule: **Hash new files** and **Add identified files to MyList** are on, files are added as **On HDD** with the
    storage text `Library disk`, and renamed files go to `S:\Anime`.*
 
-4. If the rule adds to MyList, review **For files this folder adds to MyList**: **Set state** is ticked
+4. If the rule adds to MyList, review the **MyList** group: **Set state** is ticked
    with *On HDD* for a new rule; tick **Set watched** (then **Watched** appears) only if you want files
    added as watched, and leave it off to add them unwatched; **Set storage**, **Set source** and
    **Set other** are optional texts.
@@ -176,12 +175,11 @@ Expected result: the folder's rule is listed under **Managed folders**, and noth
 Folder rules do not scan by themselves. (The **Folder scanning** options at the bottom can scan when
 Animatic starts or on a schedule; they are off by default, and scans never contact AniDB.)
 
-**What about the Default rule?** It applies to every file that is not inside one of your own rules
-(except network paths starting with `\\`, which the built-in network rule covers and which adds nothing
-to MyList), including files you add by hand from outside them. It has **Add to MyList** on, state
-*On HDD* and *Watched* off, so a file added by hand that AniDB identifies is **added to your MyList**
-when the queue runs. Untick **Add to MyList** under **Default** if that is not what you want. The
-Default rule has no folder, so a scan never walks it.
+**What about files outside every rule?** There is no Default rule: a new profile has no rules at all.
+A file that matches no rule (for example one you add by hand from outside your folders) is identified
+as usual when **Identify files with AniDB after hashing** is on, but it is **not added to your MyList**,
+it is renamed in its own folder, and a scan never walks it. To add such files to MyList, create a rule
+whose **Path** covers them and tick **Add identified files to MyList**.
 
 ## 5. Add files and hash them
 
@@ -195,7 +193,7 @@ CRC32, plus MD5 and SHA-1) without changing the file.
 
 **Or by scanning your folder rules:** choose **Tools → Scan managed folders** (also on the Overview).
 A scan hashes every new file whose extension is in the list under **Options → Hashing**, in rules with
-**Auto hash** on. It hashes a file only once the file has been unchanged for 500 ms, so a download
+**Hash new files** on. It hashes a file only once the file has been unchanged for 500 ms, so a download
 in progress is left for the next scan. A scan that finds nothing new finishes without a message; if
 nothing was hashed, check the list in [If something goes wrong](#if-something-goes-wrong).
 
@@ -341,7 +339,7 @@ library, so you can rename while working offline.
    use one of your own identified files).
 2. Click **Rename…**. The **Confirm rename** window shows the **Current path** and the **New path** the
    current naming convention produces. The default convention is `[Group] Title - episode [CRC]`, and
-   the folder is the **Rename destination** of the file's managed folder.
+   the folder is the rename destination of the file's managed folder.
 
    ![The Confirm rename window: current and new path](images/rename-confirm.png)
 
@@ -352,7 +350,7 @@ library, so you can rename while working offline.
    and block **Rename file**. If a file or folder already exists at the new path, the window says
    `A file or folder already exists at the target path`, labels the path `(rename blocked)` and
    disables **Rename file**; rename the other file or choose another
-   **Rename destination**. If the window says the anime title or the episode number "has not been
+   rename destination. If the window says the anime title or the episode number "has not been
    fetched yet" or "is not known yet", open the **Anime** page, click that anime's title and click
    **Refresh from AniDB** in its detail window (for a missing episode number use the **Refresh** button
    of that episode in the episode list), run the queue (step 7) and try again. A freshly identified file
@@ -388,7 +386,7 @@ the file safe; it is as private as the library itself
 | Symptom | What to do |
 |---|---|
 | The library looks empty or settings look reset | You started Animatic with a different database or settings file. See [Which files is Animatic using?](Troubleshooting.md#which-files-is-animatic-using). |
-| A scan hashes nothing | The rule needs **Auto hash** (or **Rehash changed**) on, an existing **Path** and files with an extension from the list under **Options → Hashing**; the Default rule is never scanned. See [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders). |
+| A scan hashes nothing | The rule needs **Hash new files** (or **Rehash changed files**) on, an existing **Path** and files with an extension from the list under **Options → Hashing**; a file that no rule covers is never scanned. See [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders). |
 | **Rename…** reports `The selected file is not identified by AniDB` | Identify the file first (steps 6 and 7). |
 | Commands never leave the queue | **Work offline** is on, a cooldown is active, or the commands are blocked. Look at the right of the status bar, then the Queue page. |
 | `login failed: wrong username or password` | Correct the credentials in **Options → AniDB account**, **Save options**, then **Retry failed**. |

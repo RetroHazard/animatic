@@ -60,7 +60,7 @@ variable). See [Which files is Animatic using?](Troubleshooting.md#which-files-i
 | `covers/` | When an anime detail window downloads a cover | Same folder as the database. One file per cover, see [Cover pictures](#cover-pictures). Not part of library backups. |
 | `tools/ffprobe/` (`ffprobe` or `ffprobe.exe`, `LICENSE-ffmpeg.txt`) | After **Install ffprobe…** in **Options → Players and tools** (Media properties) | Inside the database's folder (`tools` next to `animatic.sqlite3`, so `--database` or `ANIMATIC_DB` moves it too). Only these two files are kept; the download is 161 MB on Windows and 130 MB on Linux, and the kept program is smaller than the archive. Delete the folder to remove the tool; not included in backups or the library file. See [External tools](External-Tools.md#media-properties-ffprobe). |
 | `tools/.ffprobe-install-*/` | Briefly during that install | A private staging folder on the same drive, removed when the install ends; an interrupted one can be left behind and is safe to delete with Animatic closed. |
-| `LICENSE-vVERSION`, `NOTICES-vVERSION`, `.animatic-update.lock` | After an in-app update | Written beside the executable (not in the data folders) by the updater. See [Updating Animatic](Updating-Animatic.md). |
+| `.animatic-update.lock` | After an in-app update | Written beside the executable (not in the data folders) by the updater, which also replaces `LICENSE` and `NOTICES` there. See [Updating Animatic](Updating-Animatic.md). |
 
 ### Credentials and privacy
 

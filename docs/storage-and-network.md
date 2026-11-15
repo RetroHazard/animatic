@@ -965,15 +965,19 @@ it. An install then runs in this order, and stops at the first failure:
    Re-validate the identity under the lock. An unwritable folder is `UpdateError::NotWritable`; there is
    no privilege escalation.
 3. Re-verify the staged files' hashes.
-4. Write `LICENSE-vVERSION` and `NOTICES-vVERSION` beside the executable, additively:
-   never over a different existing file or a symlink; an identical existing file is accepted.
+4. Stage the new `LICENSE` and `NOTICES` as `.animatic-install-*` temporary files beside the
+   executable. A folder or symlink at `LICENSE` or `NOTICES` is `UpdateError::Refused`.
 5. **Windows only:** create a recovery copy of the current executable next to it,
    `.animatic-recovery-RANDOM.exe` (dot-prefixed, created exclusively).
 6. Replace the executable through the maintained [`self-replace`](https://crates.io/crates/self-replace)
    crate (Unix: a single atomic rename; Windows: the old executable is moved aside and removed after
    exit).
 
-On success the recovery copy is removed. If step 6 fails, `UpdateError::Replace` is returned (its
+On success the recovery copy is removed, the staged files are renamed over `LICENSE` and `NOTICES`, and
+regular files named `LICENSE-vVERSION`/`NOTICES-vVERSION` (VERSION a valid CalVer; added by earlier
+updaters) are removed, but only for a file that was replaced (a copy stays while its file could not be).
+A failure in that last part does not fail the install: `Installed::text_files_problem`
+carries it and the app logs it as an error. If step 6 fails, `UpdateError::Replace` is returned (its
 `install_attempted()` is true). `self-replace` is **not transactional** on Windows, so the failure path
 is best effort: if nothing exists at the original path, the previous executable is restored from the
 recovery copy without overwriting anything (a file another writer put there is never overwritten), and
@@ -981,12 +985,12 @@ the recovery copy is **kept** in every failure case; if restoring fails, the err
 copy it back manually. Atomicity against power loss or a crash is not promised, and leftover dot-prefixed
 files (`.animatic-recovery-*`, `.animatic-restore-*`, or `self-replace`'s own temporary files) are
 never deleted automatically. After an `install_attempted()` error the caller must neither retry nor
-restart by itself. Failures in steps 1-4 happen before the executable is touched; the versioned license
-files placed in step 4 may remain after a later failure and are harmless. The staged files live in the
-temporary directory until the `VerifiedUpdate` is dropped.
+restart by itself. Failures in steps 1-4 happen before the executable is touched; the staged files are
+deleted on any failure, so `LICENSE` and `NOTICES` stay old unless the swap succeeded. The staged files
+live in the temporary directory until the `VerifiedUpdate` is dropped.
 
 The desktop About window shows the third-party notices and Animatic's own license from the texts built
-into the executable (`NOTICES` and `LICENSE`); the versioned files beside the executable are only for the user. The updater thread
+into the executable (`NOTICES` and `LICENSE`); the files beside the executable are only for the user. The updater thread
 owns the install, so a quit waits for it (see [Architecture](architecture.md#updater-thread)).
 
 **Tests.** Automated tests use synthetic archives and loopback servers only; they never contact GitHub or
@@ -1113,7 +1117,7 @@ durable contracts.
 | `covers` | `COVERS_DIR`, `IMAGE_SERVER_KEY`, `covers_dir(&Path)`, `cover_path`, `cached_cover`, `store_cover` (atomic), `discard_cover`, `plan_cover(&Db, &Path, &CoverRequest, now) -> Result<CoverPlan>`, `download_cover(&Db, &Path, &mut HttpClient, aid, picname, host, readable) -> Result<Downloaded, CoverError>`, `CoverPlan::{Cached, Download, Skip(CoverSkip)}`; on `Db`: `image_server()`, `remember_image_server(&str)` |
 | `mylist_export` | `ExportLimits`, `read_export(&Path, &ExportLimits, &AtomicBool, sink) -> Result<Totals>`, `AnimeRecord`/`EpisodeRecord`/`FileRecord`, `ImportReport::describe()`; on `Db`: `import_mylist_export(&Path, &ExportLimits, &AtomicBool) -> Result<ImportReport>`, `mylist_export_next_allowed(now) -> Result<Option<i64>>` |
 | `hash` | `hash_file(&Path, Ed2kVariant, Control) -> Result<Hashes>`, `hash_bytes(&[u8], Ed2kVariant) -> Hashes`, `Control { cancel: &AtomicBool, pause: &AtomicBool, progress: &mut dyn FnMut(u64, u64) }`, `Hashes::{ed2k_link, export}`, `Ed2k`, `Ed2kVariant::{Red, Blue}`, `ED2K_CHUNK` |
-| `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>` (skips entries with the Windows system attribute when `exclude_system`; no effect elsewhere), `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path, MoveControl) -> Result<MoveOutcome>` (same-volume rename, or copy → verify against the stored ED2K → swap → record → remove the source when the rename fails with `CrossesDevices`), `move_file_with(.., &dyn Fn(&Path, &Path) -> io::Result<()>)` (injected rename step), `MoveControl { cancel, pause, progress: &mut dyn FnMut(u64, u64) }`, `MoveMethod::{Renamed, Copied}`, `MoveOutcome { method, source_left }`, `clear_emptied_folders(&FileManagerSettings, &Path) -> ClearedFolders { removed, errors }` (`clear_empty_folders`: removes the folders an Animatic move emptied, strictly below the matching manager root, only while completely empty), `remove_missing(&Db, i64)`, `extension_set(&str)`, `manager_for_path`; `Db::local_file_record(i64) -> Result<Option<(String, Hashes)>>` |
+| `file_manager` | `plan_scan(&Db, &FileManagerSettings, &str) -> Result<Vec<ScanAction>>` (skips entries with the Windows system attribute when `exclude_system`; no effect elsewhere), `ScanAction::{Hash, Rehash, RemoveMissing}`, `hash_and_register(&Db, &Path, Ed2kVariant, &AtomicBool, &AtomicBool, &mut dyn FnMut(u64, u64)) -> Result<(i64, Hashes)>`, `move_file(&Db, i64, &Path, &Path, MoveControl) -> Result<MoveOutcome>` (same-volume rename, or copy → verify against the stored ED2K → swap → record → remove the source when the rename fails with `CrossesDevices`), `move_file_with(.., &dyn Fn(&Path, &Path) -> io::Result<()>)` (injected rename step), `MoveControl { cancel, pause, progress: &mut dyn FnMut(u64, u64) }`, `MoveMethod::{Renamed, Copied}`, `MoveOutcome { method, source_left }`, `clear_emptied_folders(&FileManagerSettings, &Path) -> ClearedFolders { removed, errors }` (`clear_empty_folders`: removes the folders an Animatic move emptied, strictly below the matching manager root, only while completely empty), `remove_missing(&Db, i64)`, `extension_set(&str)`; the rule of a path is `FileManagerSettings::manager_for(&Path) -> Option<&FileManager>` (`None` outside every rule); `Db::local_file_record(i64) -> Result<Option<(String, Hashes)>>` |
 | `legacy` | `import::{import_databank(&mut Db, &Path, &Path, Progress) -> Result<ImportReport>, find_databank, is_databank, LEGACY_FILES}`, `crypto::{Decryptor, Codec, decrypt_file}`, `blob::{Record, parse}` |
 | `rename` | `Pattern::compile(&str)`, `evaluate(&Pattern, &Bindings, &dyn DataSource) -> Result<Evaluation, EvalError>`, `target_path(&Path, &str, &str)`, `plan::{plan, plan_local_file(&Db, &str, i64, &Path, &str) -> Plan, plan_batch(&Db, &str, &[Candidate]) -> Vec<BatchRow>, Candidate, BatchRow, classify, check_pattern, Plan, PatternKind}`, `presets::{PRESETS, Preset, preset_for, sample_plan, sample_value}`, `reference::SECTIONS`, `objects::{bindings_for_file(&Db, i64, &str, &str), DbSource, ...}`, `eval::{Evaluator, Object, DataSource}`, `value::Value`, `parser` |
 | `settings` | `Settings::{load_with_recovery(&Path) -> Result<SettingsLoad>, save(&self, &Path), backup_path(&Path), keep_preferences_unknown_to_legacy(&mut self, &Settings)}`, `import_legacy_settings(&Path) -> Result<Settings>`, `AnidbSettings` (no client name or version: those are the constants `animatic_anidb::{UDP_CLIENT, UDP_CLIENT_VERSION, HTTP_CLIENT, HTTP_CLIENT_VERSION}`; old keys in a file are ignored and dropped on save), `FileManager(Settings)`, `HashingSettings`, `Player`, `AvdumpSettings`, `StatWhoreSettings`, `UiSettings`, `ColumnState`, `SortDirection`, `ColorSlot`, `SlotColor`, `UpdateSettings { auto_check }`, `DEFAULT_RENAME_PATTERN` |

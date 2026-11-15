@@ -25,9 +25,10 @@
 //!
 //! # Installation
 //!
-//! [`VerifiedUpdate::install`] first writes the new `LICENSE-v<version>` and
-//! `NOTICES-v<version>` next to the executable (additive, never overwriting a
-//! different file), then replaces the executable with the maintained `self-replace` crate.
+//! [`VerifiedUpdate::install`] stages the new `LICENSE` and `NOTICES` next to the executable,
+//! replaces the executable with the maintained `self-replace` crate, then moves the staged
+//! files over the old `LICENSE` and `NOTICES` (never over a folder or symlink) and removes the
+//! `LICENSE-v<version>`/`NOTICES-v<version>` copies earlier updaters added.
 //! Concurrent installers are serialized with an advisory lock on the reserved, empty
 //! `.animatic-update.lock` file in the installation folder; the file's content is never read
 //! or written and it is harmless to leave behind. The running executable's identity (path and
@@ -1416,9 +1417,15 @@ impl InstallationTarget {
         })
     }
 
-    /// Canonical path of the executable captured at startup (use it to restart or display).
+    /// Canonical path of the executable captured at startup (use it to restart or compare).
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The captured path as users write it: Windows `\\?\C:\…` and `\\?\UNC\server\share\…`
+    /// verbatim prefixes (from canonicalization) become `C:\…` and `\\server\share\…`.
+    pub fn display_path(&self) -> PathBuf {
+        without_verbatim_prefix(&self.path)
     }
 
     /// Revalidates that `current` (the running executable now) and the file on disk still are
@@ -1444,6 +1451,20 @@ impl InstallationTarget {
             ));
         }
         Ok(())
+    }
+}
+
+fn without_verbatim_prefix(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        // Only drive paths: other verbatim forms (`\\?\Volume{…}`) have no plain spelling.
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_path_buf(),
     }
 }
 
@@ -1531,46 +1552,22 @@ impl Drop for InstallLock {
     }
 }
 
-/// Whether the open files `a` and `b` have identical content.
-fn same_content(a: &Path, b: &Path) -> io::Result<bool> {
-    let (mut fa, mut fb) = (File::open(a)?, File::open(b)?);
-    if fa.metadata()?.len() != fb.metadata()?.len() {
-        return Ok(false);
-    }
-    let (mut ba, mut bb) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
-    loop {
-        let n = fa.read(&mut ba)?;
-        if n == 0 {
-            return Ok(true);
+/// The new release's `source` written to a temporary file in `dest`'s folder, ready to be moved
+/// over `dest` once the executable has been replaced. Refuses when `dest` exists and is not a
+/// regular file (a folder or a symlink is never replaced). Staging next to `dest` before the
+/// executable is touched surfaces an unwritable folder while nothing has changed yet.
+fn stage_beside(source: &Path, dest: &Path) -> Result<tempfile::NamedTempFile> {
+    match fs::symlink_metadata(dest) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(UpdateError::Refused(format!(
+                "{} exists and is not a regular file; it is not replaced",
+                dest.display()
+            )));
         }
-        fb.read_exact(&mut bb[..n])?;
-        if ba[..n] != bb[..n] {
-            return Ok(false);
-        }
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(install_io(e)),
     }
-}
-
-fn accept_existing(source: &Path, dest: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(dest).map_err(install_io)?;
-    if !meta.file_type().is_file() {
-        return Err(UpdateError::Refused(format!(
-            "{} exists and is not a regular file",
-            dest.display()
-        )));
-    }
-    if !same_content(source, dest).map_err(install_io)? {
-        return Err(UpdateError::Refused(format!(
-            "{} already exists with different content; it is not overwritten",
-            dest.display()
-        )));
-    }
-    Ok(())
-}
-
-/// Places `source` at `dest` without ever replacing a different existing file: the content is
-/// written to a temporary file next to `dest` and moved into place with a no-clobber persist.
-/// An existing identical regular file is accepted.
-fn install_additive(source: &Path, dest: &Path) -> Result<()> {
     let dir = dest
         .parent()
         .ok_or_else(|| UpdateError::Refused("the installation path has no folder".to_owned()))?;
@@ -1585,11 +1582,50 @@ fn install_additive(source: &Path, dest: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o644)).map_err(install_io)?;
     }
-    match temp.persist_noclobber(dest) {
-        Ok(_) => Ok(()),
-        Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => accept_existing(source, dest),
-        Err(e) => Err(install_io(e.error)),
+    Ok(temp)
+}
+
+/// Whether `name` is a `{base}-vVERSION` copy (base `LICENSE` or `NOTICES`) that earlier
+/// versions of the updater placed beside the executable.
+fn is_versioned_copy(name: &str, base: &str) -> bool {
+    name.strip_prefix(base)
+        .and_then(|rest| rest.strip_prefix("-v"))
+        .is_some_and(|version| parse_calver(version).is_ok())
+}
+
+/// Moves the staged `LICENSE` and `NOTICES` over the old ones and, for each file that was
+/// replaced, removes the versioned copies older updaters left (regular files only); a copy is
+/// kept while its file could not be replaced. Runs after the executable was replaced, so a
+/// failure is returned as text for the caller to report, never as a failed installation.
+fn finish_text_files(dir: &Path, staged: [(tempfile::NamedTempFile, &str); 2]) -> Option<String> {
+    let mut problems = Vec::new();
+    let mut replaced = Vec::new();
+    for (temp, name) in staged {
+        match temp.persist(dir.join(name)) {
+            Ok(_) => replaced.push(name),
+            Err(e) => problems.push(format!("{name} could not be replaced ({})", e.error)),
+        }
     }
+    if !replaced.is_empty()
+        && let Ok(entries) = fs::read_dir(dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+            if is_file
+                && name
+                    .to_str()
+                    .is_some_and(|n| replaced.iter().any(|base| is_versioned_copy(n, base)))
+                && let Err(e) = fs::remove_file(entry.path())
+            {
+                problems.push(format!(
+                    "{} could not be removed ({e})",
+                    name.to_string_lossy()
+                ));
+            }
+        }
+    }
+    (!problems.is_empty()).then(|| problems.join("; "))
 }
 
 fn verify_staged(staged: &Staged) -> Result<()> {
@@ -1707,6 +1743,15 @@ fn replace_with_recovery(
     }
 }
 
+/// A completed installation: the executable at the captured path is the new version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    pub version: String,
+    /// Set when `LICENSE` or `NOTICES` beside the executable could not be replaced, or an old
+    /// `LICENSE-vVERSION`/`NOTICES-vVERSION` copy could not be removed, after the executable was.
+    pub text_files_problem: Option<String>,
+}
+
 /// A downloaded release whose archive checksum was verified and whose executable, license and
 /// notices are staged in a private temporary directory owned by this value.
 #[derive(Debug)]
@@ -1728,10 +1773,10 @@ impl VerifiedUpdate {
         &self.sha256
     }
 
-    /// Installs this update over the executable captured in `target`; returns the installed
-    /// version. Refuses when the identity of the executable changed. A failure of the OS
-    /// replacement is [`UpdateError::Replace`] (`install_attempted() == true`).
-    pub fn install(self, target: &InstallationTarget) -> Result<String> {
+    /// Installs this update over the executable captured in `target`, then replaces `LICENSE`
+    /// and `NOTICES` beside it. Refuses when the identity of the executable changed. A failure
+    /// of the OS replacement is [`UpdateError::Replace`] (`install_attempted() == true`).
+    pub fn install(self, target: &InstallationTarget) -> Result<Installed> {
         if Platform::current() != Some(self.platform) {
             return Err(UpdateError::Refused(
                 "this update was built for a different platform".to_owned(),
@@ -1751,7 +1796,7 @@ impl VerifiedUpdate {
         current: &Path,
         backup: bool,
         replace: impl FnOnce(&Path) -> io::Result<()>,
-    ) -> Result<String> {
+    ) -> Result<Installed> {
         target.revalidate(current)?;
         let exe = target.path().to_path_buf();
         let dir = exe
@@ -1765,16 +1810,16 @@ impl VerifiedUpdate {
         verify_staged(&self.files.license)?;
         verify_staged(&self.files.notices)?;
 
-        install_additive(
-            &self.files.license.path,
-            &dir.join(format!("LICENSE-v{}", self.version)),
-        )?;
-        install_additive(
-            &self.files.notices.path,
-            &dir.join(format!("NOTICES-v{}", self.version)),
-        )?;
+        // Staged beside the old files first; dropped (deleted) if anything below fails.
+        let license = stage_beside(&self.files.license.path, &dir.join("LICENSE"))?;
+        let notices = stage_beside(&self.files.notices.path, &dir.join("NOTICES"))?;
         replace_with_recovery(&exe, &self.files.exe.path, backup, replace)?;
-        Ok(self.version.clone())
+        let text_files_problem =
+            finish_text_files(dir, [(license, "LICENSE"), (notices, "NOTICES")]);
+        Ok(Installed {
+            version: self.version.clone(),
+            text_files_problem,
+        })
     }
 }
 
@@ -1797,6 +1842,29 @@ mod tests {
     const VER: &str = "2099.1.0";
     const CURRENT: &str = "2026.11.0";
     const BOTH: [Platform; 2] = [Platform::Windows, Platform::Linux];
+
+    #[test]
+    fn display_path_drops_verbatim_prefixes_only() {
+        let shown = |p: &str| {
+            without_verbatim_prefix(Path::new(p))
+                .to_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(
+            shown(r"\\?\C:\Test Root\Animatic\animatic.exe"),
+            r"C:\Test Root\Animatic\animatic.exe"
+        );
+        assert_eq!(
+            shown(r"\\?\UNC\server\share\animatic.exe"),
+            r"\\server\share\animatic.exe"
+        );
+        assert_eq!(
+            shown(r"\\?\Volume{0000}\animatic.exe"),
+            r"\\?\Volume{0000}\animatic.exe"
+        );
+        assert_eq!(shown("/opt/test-root/animatic"), "/opt/test-root/animatic");
+    }
 
     // ----- loopback HTTP fixture -----
 
@@ -3552,7 +3620,7 @@ mod tests {
             &mut self,
             backup: bool,
             replace: impl FnOnce(&Path) -> io::Result<()>,
-        ) -> Result<String> {
+        ) -> Result<Installed> {
             let exe = self.exe.clone();
             self.update
                 .take()
@@ -3570,11 +3638,11 @@ mod tests {
         }
 
         fn license(&self) -> PathBuf {
-            self.dir.join(format!("LICENSE-v{VER}"))
+            self.dir.join("LICENSE")
         }
 
         fn notices(&self) -> PathBuf {
-            self.dir.join(format!("NOTICES-v{VER}"))
+            self.dir.join("NOTICES")
         }
     }
 
@@ -3583,12 +3651,23 @@ mod tests {
     }
 
     #[test]
-    fn install_adds_versioned_files_replaces_and_cleans_up() {
+    fn install_replaces_license_files_and_removes_versioned_copies() {
         let mut fx = install_fixture();
+        fs::write(fx.license(), b"old license").unwrap();
+        fs::write(fx.notices(), b"old notices").unwrap();
+        // Copies earlier updaters added; a name that is not a version is not theirs.
+        for name in [
+            "LICENSE-v2026.11.0-rc.1",
+            "NOTICES-v2026.11.0-rc.1",
+            "LICENSE-vnotes",
+        ] {
+            fs::write(fx.dir.join(name), b"old copy").unwrap();
+        }
         let new_exe = fx.staged_exe();
         let exe = fx.exe.clone();
-        let version = fx.install(true, copy_over(&exe)).unwrap();
-        assert_eq!(version, VER);
+        let installed = fx.install(true, copy_over(&exe)).unwrap();
+        assert_eq!(installed.version, VER);
+        assert_eq!(installed.text_files_problem, None);
         assert_eq!(fs::read(&fx.exe).unwrap(), new_exe);
         assert_eq!(fs::read(fx.license()).unwrap(), LICENSE_TEXT);
         assert_eq!(fs::read(fx.notices()).unwrap(), NOTICES_TEXT);
@@ -3598,26 +3677,81 @@ mod tests {
             0,
             "the lock file stays empty"
         );
-        let names = fx.names();
+        let exe_name = exe.file_name().unwrap().to_string_lossy().into_owned();
+        let mut expected = vec![
+            LOCK_NAME.to_owned(),
+            "LICENSE".to_owned(),
+            "LICENSE-vnotes".to_owned(),
+            "NOTICES".to_owned(),
+            exe_name,
+        ];
+        expected.sort();
         assert_eq!(
-            names.len(),
-            4,
-            "no recovery copy or temp files remain: {names:?}"
+            fx.names(),
+            expected,
+            "no copies, recovery or temp files remain"
         );
     }
 
     #[test]
-    fn install_accepts_identical_existing_license_files() {
+    fn failed_replacement_keeps_the_old_license_files() {
         let mut fx = install_fixture();
-        fs::write(fx.license(), LICENSE_TEXT).unwrap();
-        fs::write(fx.notices(), NOTICES_TEXT).unwrap();
-        let exe = fx.exe.clone();
-        fx.install(false, copy_over(&exe)).unwrap();
-        assert_eq!(fs::read(&fx.exe).unwrap(), fake_exe(Platform::Linux));
+        fs::write(fx.license(), b"old license").unwrap();
+        fs::write(fx.dir.join("LICENSE-v2026.11.0-rc.1"), b"old copy").unwrap();
+        let err = fx
+            .install(false, |_| Err(io::Error::other("synthetic failure")))
+            .unwrap_err();
+        assert!(err.install_attempted(), "{err:?}");
+        assert_eq!(fs::read(fx.license()).unwrap(), b"old license");
+        assert!(!fx.notices().exists());
+        assert!(fx.dir.join("LICENSE-v2026.11.0-rc.1").exists());
+        assert!(
+            !fx.names()
+                .iter()
+                .any(|n| n.starts_with(".animatic-install-")),
+            "staged files are removed: {:?}",
+            fx.names()
+        );
     }
 
     #[test]
-    fn install_never_overwrites_different_license_files() {
+    fn a_license_file_not_replaced_after_the_swap_is_reported_and_keeps_its_copies() {
+        let mut fx = install_fixture();
+        for name in ["LICENSE-v2026.11.0-rc.1", "NOTICES-v2026.11.0-rc.1"] {
+            fs::write(fx.dir.join(name), b"old copy").unwrap();
+        }
+        let exe = fx.exe.clone();
+        let license = fx.license();
+        // Something takes the LICENSE name after the pre-swap check: the move over it fails.
+        let installed = fx
+            .install(false, |staged| {
+                fs::create_dir(&license)?;
+                fs::copy(staged, &exe).map(|_| ())
+            })
+            .unwrap();
+        assert_eq!(installed.version, VER);
+        let problem = installed
+            .text_files_problem
+            .expect("the failure is reported");
+        assert!(
+            problem.contains("LICENSE could not be replaced"),
+            "{problem}"
+        );
+        assert!(fx.license().is_dir());
+        assert!(fx.dir.join("LICENSE-v2026.11.0-rc.1").exists());
+        assert_eq!(fs::read(fx.notices()).unwrap(), NOTICES_TEXT);
+        assert!(!fx.dir.join("NOTICES-v2026.11.0-rc.1").exists());
+        assert!(
+            !fx.names()
+                .iter()
+                .any(|n| n.starts_with(".animatic-install-")),
+            "{:?}",
+            fx.names()
+        );
+    }
+
+    #[test]
+    fn install_refuses_a_folder_at_a_license_path() {
         for target in ["license", "notices"] {
             let mut fx = install_fixture();
             let path = if target == "license" {
@@ -3625,7 +3759,7 @@ mod tests {
             } else {
                 fx.notices()
             };
-            fs::write(&path, b"someone else's file").unwrap();
+            fs::create_dir(&path).unwrap();
             let called = AtomicBool::new(false);
             let result = fx.install(false, |_| {
                 called.store(true, Ordering::Relaxed);
@@ -3638,7 +3772,7 @@ mod tests {
                 !called.load(Ordering::Relaxed),
                 "the executable must not be replaced"
             );
-            assert_eq!(fs::read(&path).unwrap(), b"someone else's file");
+            assert!(path.is_dir());
             assert_eq!(fs::read(&fx.exe).unwrap(), OLD_EXE);
         }
     }
@@ -3789,8 +3923,8 @@ mod tests {
             OLD_EXE,
             "an untouched original stays"
         );
-        // Versioned licenses may remain; that is harmless.
-        assert!(fx.license().exists());
+        // License files are only replaced after the executable was.
+        assert!(!fx.license().exists());
     }
 
     #[test]
@@ -3979,7 +4113,8 @@ mod tests {
         let installation = InstallationTarget::capture().unwrap();
         assert_eq!(installation.path(), me);
         let installed = verified.install(&installation).unwrap();
-        assert_eq!(installed, VER);
+        assert_eq!(installed.version, VER);
+        assert_eq!(installed.text_files_problem, None);
     }
 
     fn child_probe() {
@@ -4062,14 +4197,8 @@ mod tests {
             hash_after, new_hash,
             "the executable was replaced by the new binary"
         );
-        assert_eq!(
-            fs::read(install_dir.join(format!("LICENSE-v{VER}"))).unwrap(),
-            LICENSE_TEXT
-        );
-        assert_eq!(
-            fs::read(install_dir.join(format!("NOTICES-v{VER}"))).unwrap(),
-            NOTICES_TEXT
-        );
+        assert_eq!(fs::read(install_dir.join("LICENSE")).unwrap(), LICENSE_TEXT);
+        assert_eq!(fs::read(install_dir.join("NOTICES")).unwrap(), NOTICES_TEXT);
 
         let probe_log = root.path().join("probe.log");
         let launched = run_child(&target, "probe", &probe_log, &envs);

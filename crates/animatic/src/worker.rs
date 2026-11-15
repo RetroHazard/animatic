@@ -22,7 +22,7 @@ use animatic_core::rename::plan::{BatchRow, Candidate, Plan};
 use animatic_core::settings::{AnidbSettings, FileManagerSettings, Settings, StatFormat};
 use animatic_core::sync::{Command, CommandError, MAX_QUEUE_TRIES, QueueScope};
 use animatic_core::update::{
-    InstallationTarget, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
+    InstallationTarget, Installed, Platform, ReleaseInfo, UpdateClient, VerifiedUpdate,
 };
 
 use crate::auto_queue::{self, QueueControl};
@@ -1121,8 +1121,8 @@ pub enum UpdateEvent {
     DownloadFailed(String),
     /// A check or download stopped because the user cancelled it.
     Cancelled,
-    /// The executable was replaced; the value is the installed version.
-    Installed(String),
+    /// The executable was replaced.
+    Installed(Installed),
     /// `attempted`: the replacement of the executable was entered (or the thread panicked
     /// inside it), so the installed files may be in an unknown state. Otherwise nothing was
     /// replaced, though the staged update is gone.
@@ -1314,9 +1314,9 @@ fn run_updates(
                         (*update).install(target)
                     }));
                     match outcome {
-                        Ok(Ok(version)) => {
+                        Ok(Ok(installed)) => {
                             *attempt = InstallAttempt::Succeeded;
-                            UpdateEvent::Installed(version)
+                            UpdateEvent::Installed(installed)
                         }
                         Ok(Err(e)) => {
                             let attempted = e.install_attempted();

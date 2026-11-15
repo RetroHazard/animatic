@@ -29,10 +29,6 @@ names are written as they appear on screen. If a word is missing, search the wik
 - **API key**: an optional key from your AniDB profile. When set in **Options → AniDB account**, it
   turns on encrypted UDP sessions. It is stored in the system keystore when one works. See
   [First launch](First-Launch.md#anidb-client-registration).
-- **Auto hash**, **Rehash changed**, **Remove missing**: three switches of a managed folder. **Auto
-  hash** hashes new files found by a scan, **Rehash changed** hashes known files whose modified time
-  changed, **Remove missing** forgets the records of files that are definitely gone. All are off for a
-  new rule. See [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **Auto rename**: a per-folder mode (**Off**, **Dry run (log only)**, **On**) that renames identified
   files without asking, through the same verified rename as a manual one. Off by default and never
   implicit. See [Renaming files](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder).
@@ -77,9 +73,6 @@ names are written as they appear on screen. If a word is missing, search the wik
   [Rename patterns](Rename-Patterns.md) and [Rename language](Rename-Language.md).
 - **Database**: `animatic.sqlite3`, the file that holds your library, hashes and command queue. See
   [Data locations](Data-Locations.md#where-data-lives).
-- **Default rule**: the built-in managed-folder rule named **Default**. It applies to every file that
-  is not inside one of your own rules. It adds identified files to MyList as On HDD, unwatched, until
-  you change it. See [First launch](First-Launch.md#safe-first-run-settings).
 - **Deferred** (command): a command that could not be saved to the database yet because the database
   was busy. The Overview says `N commands not saved yet; Animatic keeps retrying`. See
   [Network and sync problems](Network-and-Sync-Problems.md#queue-states-blocked-deferred-and-unsaved).
@@ -117,6 +110,8 @@ names are written as they appear on screen. If a word is missing, search the wik
 - **Hash**, **hashing**: reading a file once and computing its ED2K, CRC32, MD5 and SHA-1 fingerprints
   in one pass. Hashing is local; it never contacts AniDB. See
   [Hashing and identification](Hashing-and-Identification.md).
+- **Hash new files**: a managed-folder switch (off for a new rule): a scan hashes the files it finds that
+  are not yet in the library. See [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **Hash queue**: the list of files waiting to be hashed, saved in the library so it survives restarts.
   Failed files stay in it with a reason until you retry or clear them. See
   [Hash queue](Hashing-and-Identification.md#hash-queue).
@@ -127,6 +122,8 @@ names are written as they appear on screen. If a word is missing, search the wik
 - **Identify**, **identified**: asking AniDB which file a hash belongs to. A file AniDB knows becomes
   *identified* (`fid N`); otherwise the **AniDB** column reads `Not identified`. Identification happens
   only when the queue runs. See [Hashing and identification](Hashing-and-Identification.md).
+- **Include subfolders**: a managed-folder switch (on for a new rule): look in all folders below the
+  rule's path; off means direct children only. See [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **Instance lock** (`animatic.sqlite3.instance`): the small file next to the database that lets a
   second launch hand its files to the running window. See
   [One window per database](Running-Animatic.md#one-window-per-database).
@@ -139,12 +136,16 @@ names are written as they appear on screen. If a word is missing, search the wik
 - **Log**: the page that lists this session's activity (hashing, renames, AniDB requests, errors). It
   is kept in memory and not written to disk. See [Library pages](Library-Pages.md#log).
 - **Managed folder**: a folder rule in **Options → Managed folders** that combines a folder, scan
-  behavior, a rename destination and the MyList settings for files found there. See
+  behavior, a rename destination and the MyList settings for files found there. Rules are optional;
+  a file that no rule covers is only identified, not added to MyList. See
   [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **MD5**, **SHA-1**: two more hashes computed in the same pass as the ED2K and CRC32. They are stored
   and available to rename patterns and exports. See [Hashing and identification](Hashing-and-Identification.md).
 - **Media properties**: duration, resolution, codecs and bitrates read from a file by ffprobe after
   hashing. Opt-in and off by default. See [External tools](External-Tools.md#media-properties-ffprobe).
+- **Move renamed files to another folder**: a managed-folder checkbox. Ticked, it shows a **Destination**
+  field (with **Browse…**): the folder the folder rule's renamed files go to. Unticked, or with the
+  field empty, a file is renamed in its current folder. See [Rename targets and apply](Rename-Targets-and-Apply.md).
 - **MyList**: your personal list of files on AniDB. Animatic keeps a local copy, lets you edit it
   offline and sends the edits through the command queue. See [Managing MyList](Managing-MyList.md) and
   [Library pages](Library-Pages.md#mylist).
@@ -172,13 +173,15 @@ names are written as they appear on screen. If a word is missing, search the wik
   `ANIMATIC_DB` and `ANIMATIC_SETTINGS`, so nothing depends on the default folders. See
   [Portable and rehearsal setups](Data-Locations.md#portable-and-rehearsal-setups).
 - **Queue** (page): the page that shows the command queue. See [Library pages](Library-Pages.md#queue).
+- **Rehash changed files**: a managed-folder switch (off for a new rule): a scan hashes known files whose
+  modified time changed. See [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **Release channel**: **Stable** or **Beta** in **Options → Updates**; decides which published
   releases the in-app updater offers. See [Updating Animatic](Updating-Animatic.md).
 - **Remove from list**: **Hashed files → Remove from list…** forgets Animatic's record of selected files
   (path, hash, media properties). It never deletes the media file or touches MyList. See
   [Library pages](Library-Pages.md#hashed-files).
-- **Rename destination**: the folder a managed folder's renamed files go to; empty keeps a file in its
-  current folder. See [Rename targets and apply](Rename-Targets-and-Apply.md).
+- **Remove missing files from the library**: a managed-folder switch (off for a new rule): a scan forgets
+  the records of files that are definitely gone. See [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **Rename pattern**: the text, written in the rename language, that turns a file's AniDB data into its
   new name. See [Rename language](Rename-Language.md).
 - **Retry failed**: the button on the **Queue** page (and the hash queue panel) that unblocks failed
@@ -215,8 +218,6 @@ names are written as they appear on screen. If a word is missing, search the wik
   [Managing MyList](Managing-MyList.md).
 - **Stored-only setting**: a settings key that Animatic keeps (often for AOM compatibility) but that
   changes nothing. See [Settings reference](Settings-Reference.md) and [Feature parity](Feature-Parity.md).
-- **Subfolders**: a managed-folder switch (on for a new rule): look in all folders below the rule's
-  path; off means direct children only. See [Managed folders and scans](Managed-Folders-and-Scans.md).
 - **System tray**: the notification-area icon (Windows) or status-notifier icon (Linux) with **Show
   Animatic**, **Run command queue** and **Quit**. See [System tray](Main-Window.md#system-tray).
 - **UDP API**: AniDB's main interface that Animatic uses to log in, identify files and edit MyList. It

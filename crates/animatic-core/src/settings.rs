@@ -284,9 +284,6 @@ pub struct FileManager {
     pub mylist_storage_check: bool,
     pub mylist_source_check: bool,
     pub mylist_other_check: bool,
-    /// User-added entries can be edited; the built-in "Default" and network entries cannot.
-    pub can_edit_path: bool,
-    pub default: bool,
 }
 
 impl Default for FileManager {
@@ -314,37 +311,6 @@ impl Default for FileManager {
             mylist_storage_check: false,
             mylist_source_check: false,
             mylist_other_check: false,
-            can_edit_path: true,
-            default: false,
-        }
-    }
-}
-
-impl FileManager {
-    pub fn builtin_default() -> FileManager {
-        FileManager {
-            name: "Default".into(),
-            can_edit_path: false,
-            default: true,
-            include_subdirs: false,
-            mylist_auto_add: true,
-            mylist_state_check: true,
-            mylist_watched_check: true,
-            ..FileManager::default()
-        }
-    }
-
-    pub fn network_default() -> FileManager {
-        FileManager {
-            name: "\\\\ (Default network path)".into(),
-            path: "\\\\".into(),
-            can_edit_path: false,
-            include_subdirs: false,
-            exclude_hidden: false,
-            exclude_system: false,
-            mylist_state_check: false,
-            mylist_state: 0,
-            ..FileManager::default()
         }
     }
 }
@@ -382,10 +348,7 @@ impl Default for FileManagerSettings {
             scheduled_scan: false,
             scan_interval_minutes: 60,
             scan_at_start: false,
-            managers: vec![
-                FileManager::builtin_default(),
-                FileManager::network_default(),
-            ],
+            managers: Vec::new(),
         }
     }
 }
@@ -419,23 +382,11 @@ impl FileManagerSettings {
         std::time::Duration::from_secs(u64::from(minutes) * 60)
     }
 
-    pub fn default_manager(&self) -> &FileManager {
-        self.managers
-            .iter()
-            .find(|m| m.default)
-            .or_else(|| self.managers.first())
-            .expect("at least one file manager")
-    }
-
-    /// The manager whose path is the longest prefix of `path`; the default manager otherwise.
-    /// A manager without `include_subdirs` only matches files directly inside its folder.
-    pub fn manager_for(&self, path: &Path) -> &FileManager {
-        self.matching_manager_for(path)
-            .unwrap_or_else(|| self.default_manager())
-    }
-
-    /// Explicit path match, without the fallback used for non-destructive folder policy.
-    pub(crate) fn matching_manager_for(&self, path: &Path) -> Option<&FileManager> {
+    /// The rule of `path`: the matching folder with the longest path. A rule without
+    /// `include_subdirs` only matches files directly inside its folder. `None` when no rule
+    /// matches: such a file is only identified (nothing is added to MyList, a rename keeps it
+    /// in its folder, a scan never touches it).
+    pub fn manager_for(&self, path: &Path) -> Option<&FileManager> {
         self.matching_manager_index(path).map(|i| &self.managers[i])
     }
 
@@ -965,11 +916,61 @@ impl<'de> Deserialize<'de> for RootObject {
 fn parse_settings(bytes: &[u8]) -> std::result::Result<Settings, String> {
     match serde_json::from_slice::<RootObject>(bytes) {
         Ok(RootObject(mut s)) => {
+            drop_unchanged_builtin_rules(&mut s.file_managers.managers, bytes);
             s.fixup();
             Ok(s)
         }
         Err(e) => Err(describe_json_error(&e)),
     }
+}
+
+/// Profiles written before folder rules became optional start with two built-in rules, marked
+/// by `"can_edit_path": false`: "Default" (`"default": true`, the fallback for files outside
+/// every rule) and the `\\` network rule. Each is removed while it still has its original
+/// values; one the user changed stays as an ordinary folder rule. The old keys are not read
+/// otherwise and are not written back, so this runs once per profile.
+fn drop_unchanged_builtin_rules(managers: &mut Vec<FileManager>, bytes: &[u8]) {
+    let Ok(root) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return;
+    };
+    let Some(entries) = root
+        .pointer("/file_managers/managers")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return;
+    };
+    if entries.len() != managers.len() {
+        return;
+    }
+    let fallback = FileManager {
+        name: "Default".into(),
+        include_subdirs: false,
+        mylist_auto_add: true,
+        mylist_watched_check: true,
+        ..FileManager::default()
+    };
+    let network = FileManager {
+        name: "\\\\ (Default network path)".into(),
+        path: "\\\\".into(),
+        include_subdirs: false,
+        exclude_hidden: false,
+        exclude_system: false,
+        mylist_state_check: false,
+        mylist_state: 0,
+        ..FileManager::default()
+    };
+    let flag = |entry: &serde_json::Value, key: &str| entry.get(key).and_then(|v| v.as_bool());
+    let mut entries = entries.iter();
+    managers.retain(|rule| {
+        let entry = entries.next().expect("one entry per rule");
+        let builtin = flag(entry, "can_edit_path") == Some(false);
+        let unchanged = if flag(entry, "default") == Some(true) {
+            *rule == fallback
+        } else {
+            *rule == network
+        };
+        !(builtin && unchanged)
+    });
 }
 
 fn read_slot(path: &Path) -> Slot {
@@ -1149,11 +1150,7 @@ impl Settings {
     }
 
     fn fixup(&mut self) {
-        if !self.file_managers.managers.iter().any(|m| m.default) {
-            self.file_managers
-                .managers
-                .insert(0, FileManager::builtin_default());
-        }
+        // Folder rules are optional: a file outside every rule is only identified.
         self.file_managers.clamp_timing();
         self.anidb.clamp_timing();
         if self.ui.zoom <= 0.3 {
@@ -1427,10 +1424,22 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
         s.file_managers.scan_interval_minutes =
             (v.max(0) / 60_000).min(i64::from(MAX_SCAN_INTERVAL_MINUTES)) as u32;
     }
-    let managers: Vec<FileManager> = x
+    let named: Vec<_> = x
         .managers
         .iter()
         .filter(|m| m.get("name").is_some_and(|n| !n.is_empty()))
+        .collect();
+    let aom_rules = !named.is_empty();
+    if aom_rules {
+        recognized.set(true);
+    }
+    // AOM's fallback rule ("default", no path) applied to files outside every folder; Animatic
+    // has no fallback, so without a path it could never match a file and is not imported.
+    let managers: Vec<FileManager> = named
+        .into_iter()
+        .filter(|m| {
+            !(b(m.get("default"), false) && m.get("path").is_none_or(|p| p.trim().is_empty()))
+        })
         .map(|m| FileManager {
             name: m["name"].clone(),
             path: m.get("path").cloned().unwrap_or_default(),
@@ -1461,12 +1470,9 @@ pub fn import_legacy_settings(path: &Path) -> Result<Settings> {
             mylist_storage_check: b(m.get("myliststoragecheck"), false),
             mylist_source_check: b(m.get("mylistsourcecheck"), false),
             mylist_other_check: b(m.get("mylistothercheck"), false),
-            can_edit_path: b(m.get("caneditpath"), true),
-            default: b(m.get("default"), false),
         })
         .collect();
-    if !managers.is_empty() {
-        recognized.set(true);
+    if aom_rules {
         s.file_managers.managers = managers;
     }
     if !recognized.get() {
@@ -1514,7 +1520,7 @@ x</renamingPattern>
 	<players><player><name>mpv</name><default>true</default><path>Z:\Tools\mpv.exe</path><open>"%L"</open></player></players>
 	<filemanager><sleepTime>450000</sleepTime>
 		<manager><name>Default</name><path></path><autorename>true</autorename><mylistautoadd>true</mylistautoadd><myliststate>1</myliststate><caneditpath>false</caneditpath><default>true</default></manager>
-		<manager><name>Test media</name><path>Z:\AnimaticTestMedia</path><includesubdirs>true</includesubdirs><autohash>true</autohash><default>false</default></manager>
+		<manager><name>Test media</name><path>Z:\AnimaticTestMedia</path><includesubdirs>true</includesubdirs><autohash>true</autohash><autorename>true</autorename><default>false</default></manager>
 	</filemanager>
 </aomsettings>"#;
         let p = utf16_file(xml);
@@ -1542,9 +1548,19 @@ x</renamingPattern>
         );
         assert!(!s.file_managers.scheduled_scan);
         assert_eq!(s.file_managers.sleep_time_ms, 0);
-        assert_eq!(s.file_managers.managers.len(), 2);
+        let names: Vec<&str> = s
+            .file_managers
+            .managers
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
         assert_eq!(
-            s.file_managers.default_manager().auto_rename,
+            names,
+            ["Test media"],
+            "AOM's fallback rule has no path, so nothing could match it"
+        );
+        assert_eq!(
+            s.file_managers.managers[0].auto_rename,
             AutoRename::DryRun,
             "an imported autorename flag only logs planned renames; nothing is renamed until the user chooses On"
         );
@@ -1663,17 +1679,103 @@ x</renamingPattern>
             include_subdirs: false,
             ..FileManager::default()
         });
-        assert_eq!(fm.manager_for(Path::new("/media/anime/x/y.mkv")).name, "a");
+        let name = |p: &str| fm.manager_for(Path::new(p)).map(|m| m.name.as_str());
+        assert_eq!(name("/media/anime/x/y.mkv"), Some("a"));
+        assert_eq!(name("/media/anime/new/y.mkv"), Some("b"));
         assert_eq!(
-            fm.manager_for(Path::new("/media/anime/new/y.mkv")).name,
-            "b"
-        );
-        assert_eq!(
-            fm.manager_for(Path::new("/media/anime/new/sub/y.mkv")).name,
-            "a",
+            name("/media/anime/new/sub/y.mkv"),
+            Some("a"),
             "b excludes subdirectories"
         );
-        assert_eq!(fm.manager_for(Path::new("/other/y.mkv")).name, "Default");
+        assert_eq!(
+            name("/other/y.mkv"),
+            None,
+            "no rule applies outside the folders"
+        );
+    }
+
+    #[test]
+    fn a_fresh_profile_has_no_folder_rules() {
+        assert!(Settings::default().file_managers.managers.is_empty());
+        let empty = parse_settings(br#"{"file_managers":{"managers":[]}}"#).unwrap();
+        assert!(empty.file_managers.managers.is_empty());
+    }
+
+    /// A rule as an older version saved it, with the keys that marked the built-in rules.
+    fn old_rule(rule: &FileManager, can_edit_path: bool, default: bool) -> serde_json::Value {
+        let mut entry = serde_json::to_value(rule).unwrap();
+        entry["can_edit_path"] = can_edit_path.into();
+        entry["default"] = default.into();
+        entry
+    }
+
+    #[test]
+    fn unchanged_builtin_rules_of_an_older_profile_are_dropped_and_changed_ones_kept() {
+        let fallback = FileManager {
+            name: "Default".into(),
+            include_subdirs: false,
+            mylist_auto_add: true,
+            mylist_watched_check: true,
+            ..FileManager::default()
+        };
+        let network = FileManager {
+            name: "\\\\ (Default network path)".into(),
+            path: "\\\\".into(),
+            include_subdirs: false,
+            exclude_hidden: false,
+            exclude_system: false,
+            mylist_state_check: false,
+            mylist_state: 0,
+            ..FileManager::default()
+        };
+        let mine = FileManager {
+            name: "Anime".into(),
+            path: "/animatic-test/anime".into(),
+            ..FileManager::default()
+        };
+        let load = |rules: Vec<serde_json::Value>| {
+            let text = serde_json::json!({ "file_managers": { "managers": rules } });
+            parse_settings(text.to_string().as_bytes())
+                .unwrap()
+                .file_managers
+                .managers
+        };
+
+        let kept = load(vec![
+            old_rule(&fallback, false, true),
+            old_rule(&network, false, false),
+            old_rule(&mine, true, false),
+        ]);
+        assert_eq!(
+            kept,
+            std::slice::from_ref(&mine),
+            "only the user's own rule remains"
+        );
+
+        let scanned_fallback = FileManager {
+            path: "/animatic-test/downloads".into(),
+            ..fallback.clone()
+        };
+        let quiet_network = FileManager {
+            mylist_auto_add: true,
+            ..network.clone()
+        };
+        let kept = load(vec![
+            old_rule(&scanned_fallback, false, true),
+            old_rule(&quiet_network, false, false),
+        ]);
+        assert_eq!(
+            kept,
+            [scanned_fallback, quiet_network],
+            "a built-in rule the user changed becomes an ordinary rule"
+        );
+
+        let lookalike = load(vec![old_rule(&fallback, true, false)]);
+        assert_eq!(
+            lookalike,
+            [fallback],
+            "a user rule that only looks like one stays"
+        );
     }
 
     struct TestDir(std::path::PathBuf);

@@ -167,7 +167,7 @@ recent changes or is inconsistent. Do not copy an open database "blind".
    option, but that is SQLite's own feature and the project has not recorded using it.
 
 Take a backup **before** anything that rewrites a lot of data: importing an AOM databank,
-running a scan with **Remove missing** on a rule, choosing **Clear queue…**, upgrading to a build with schema
+running a scan with **Remove missing files from the library** on a rule, choosing **Clear queue…**, upgrading to a build with schema
 changes (upgrades are applied when the database is opened and no downgrade is provided or
 tested), or editing the settings JSON by hand.
 

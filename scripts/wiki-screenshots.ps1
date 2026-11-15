@@ -466,7 +466,7 @@ function Tour-Library {
   Click (Find 'Customize status colors' -Like)
 
   Click (Find 'Managed folders' 'Button' -Root (Window 'Options')[0])
-  Click (Find 'Downloads' 'Button' -Root (Window 'Options')[0])
+  Click (Find 'Downloads*' 'Button' -Root (Window 'Options')[0] -Like)
   Shot-Of (Window 'Options') 'options-folder-rule'
   Choose (Combo-After 'Auto rename') 'On'
   Start-Sleep -Seconds 2

@@ -133,13 +133,13 @@ been run against a real GitHub release or on Linux by the project.
   checksum format breaks updates for every already-installed copy, so change
   `scripts/release.py` and `animatic-core/src/update.rs` together and keep the previous layout readable
   for as long as older versions are in use.
-- **What gets installed.** Only the executable is swapped, using the maintained `self-replace`
-  crate. The new `LICENSE` and `NOTICES` are written beside it as
-  `LICENSE-vVERSION` and `NOTICES-vVERSION` before the swap and are never
-  overwritten if a different file exists. The old `LICENSE`, `NOTICES`,
-  `README.md`, `CHANGELOG.md` and `docs/` stay as they were until the user replaces them from a new
-  archive by hand (so the bundled guides can lag the executable), and the About window shows the
-  built-in third-party notices and license text (both are built into the
+- **What gets installed.** The executable is swapped using the maintained `self-replace` crate,
+  then the new `LICENSE` and `NOTICES` (staged beside the old ones before the swap) are moved over
+  `LICENSE` and `NOTICES` next to it, and the `LICENSE-vVERSION`/`NOTICES-vVERSION` copies older
+  updaters added are removed. A folder or symlink at either name refuses the install before the
+  swap. The old `README.md`, `CHANGELOG.md` and `docs/` stay as they were until the user replaces
+  them from a new archive by hand (so the bundled guides can lag the executable), and the About
+  window shows the built-in third-party notices and license text (both are built into the
   executable). Profiles, databases, settings and media are never touched.
 - **Limits.** Metadata 1 MiB, `SHA256SUMS` 64 KiB, archive 256 MiB, extracted executable 512 MiB,
   each license file 8 MiB. A release whose archive would exceed them cannot be installed by the

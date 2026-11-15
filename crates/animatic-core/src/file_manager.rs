@@ -14,7 +14,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::db::Db;
 use crate::error::{Error, Result};
 use crate::hash::{self, Control, Ed2kVariant, Hashes};
-use crate::settings::{FileManager, FileManagerSettings};
+use crate::settings::FileManagerSettings;
 
 /// ED2K variant of every hash in the library (the worker hashes with it); the verification of a
 /// cross-volume copy uses the same one so the results are comparable.
@@ -83,7 +83,7 @@ pub struct ClearedFolders {
 /// it only for a file Animatic itself moved away.
 pub fn clear_emptied_folders(settings: &FileManagerSettings, old: &Path) -> ClearedFolders {
     let mut cleared = ClearedFolders::default();
-    let Some(manager) = settings.matching_manager_for(old) else {
+    let Some(manager) = settings.manager_for(old) else {
         return cleared;
     };
     if !manager.clear_empty_folders
@@ -216,7 +216,7 @@ pub fn plan_scan(
     }
     for f in existing {
         let path = Path::new(&f.path);
-        let Some(manager) = settings.matching_manager_for(path) else {
+        let Some(manager) = settings.manager_for(path) else {
             continue;
         };
         if !manager.auto_remove {
@@ -644,14 +644,10 @@ pub(crate) fn normalize(path: &Path) -> String {
     }
 }
 
-/// Manager parameters relevant to a discovered file.
-pub fn manager_for_path<'a>(settings: &'a FileManagerSettings, path: &Path) -> &'a FileManager {
-    settings.manager_for(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::FileManager;
 
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -788,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_default_rule_only_removes_explicitly_matching_paths() {
+    fn scan_only_removes_paths_a_rule_matches() {
         let root = test_root("default-membership");
         let managed = root.join("managed");
         fs::create_dir_all(&managed).unwrap();
@@ -810,7 +806,6 @@ mod tests {
                 path: managed.to_string_lossy().into_owned(),
                 include_subdirs: false,
                 auto_remove: true,
-                default: true,
                 ..Default::default()
             }],
             ..Default::default()
@@ -829,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_preserves_record_for_empty_default_manager_path() {
+    fn scan_preserves_record_for_a_rule_without_a_path() {
         let path = test_root("empty-default").join("missing.mkv");
         let db = Db::memory().unwrap();
         db.add_local_file(&path.to_string_lossy(), &Hashes::default(), 0)
@@ -837,7 +832,6 @@ mod tests {
         let settings = FileManagerSettings {
             managers: vec![FileManager {
                 auto_remove: true,
-                default: true,
                 ..Default::default()
             }],
             ..Default::default()

@@ -44,12 +44,12 @@ button that opens the matching category of the [Options window](Options-Window.m
 | Step | Button | Opens | Shows `✓` when |
 |---|---|---|---|
 | **Enter your AniDB account, or keep working offline for now** | **Open account options** | **Options → AniDB account** | A **Username** is entered (an empty or blank name leaves `○`). Choosing to work offline does *not* tick it. |
-| **Choose the folders Animatic watches and renames into** | **Open folder options** | **Options → Managed folders** | A folder rule that you added has a non-empty **Path**. The built-in **Default** and `\\` network rules do not count. |
+| **Choose the folders Animatic watches and renames into** | **Open folder options** | **Options → Managed folders** | A folder rule that you added has a non-empty **Path**. |
 | **Coming from AniDB O'Matic (AOM)?** | **Browse…** and **Import** (the **AOM folder** field) | Picks the AOM folder or its `kowai` folder and imports the databank | Not a checklist step: see [Migrating from AOM](Migrating-from-AOM.md#migrate-an-aom-databank). |
 
-- The second step shows `○` on a brand-new profile: the built-in **Default** rule and the `\\ (Default network path)`
-  rule are always present and do not count. It turns to `✓` only when you add a folder rule of your own and
-  give it a path ([Quick start, step 4](Quick-Start.md#4-add-your-managed-folders)).
+- The second step shows `○` on a brand-new profile, because there are no folder rules yet. It turns to
+  `✓` only when you add a folder rule and give it a path
+  ([Quick start, step 4](Quick-Start.md#4-add-your-managed-folders)).
 - **Hide** removes the box and sets `first_launch` to false. Hiding writes the settings file
   immediately (a first save), unless the settings were recovered from a backup (then the change
   stays in memory until you save in Options). A normal exit also saves the settings. The box does
@@ -73,12 +73,11 @@ Do these once, before the first run of the command queue.
 3. **Leave the account fields empty until your AniDB account is at hand.** **Username**, **Password**
    and **API key (optional)** are only used when the queue runs. Enter them later, when you are ready
    to go online ([below](#going-online-for-the-first-time)).
-4. **Look at the Default folder rule.** Under **Managed folders**, open **Default**. The built-in
-   rule applies to every file that is not inside one of your own folder rules. It has **Add to MyList**
-   on with **Set state** *On HDD* and **Set watched** with *Watched* off. That means files you add by
-   hand and that AniDB identifies will be **added to your AniDB MyList as On HDD, unwatched** when you
-   later run the queue. Leave it if that is what you want; otherwise untick **Add to MyList** now. See
-   [managed folders](Managed-Folders-and-Scans.md).
+4. **Note that there are no folder rules yet.** Under **Managed folders**, a fresh profile has no
+   rules until you add one, so nothing is **added to your AniDB MyList** automatically: files you add
+   by hand are identified (when **Identify files with AniDB after hashing** is on) but not added to
+   MyList, and renaming one keeps it in its folder. To add files to MyList, create a rule and tick
+   **Add identified files to MyList** in it. See [managed folders](Managed-Folders-and-Scans.md).
 5. **Decide about the update check.** Under **Updates**, **Check for updates at startup** is on by
    default. Untick it if you do not want Animatic to contact GitHub when it starts; **Help → Check
    for updates…** works whenever you ask.
@@ -118,12 +117,12 @@ These are the values a new profile starts with (see the [Settings reference](Set
 | Appearance | Dark theme, **Sakura** color scheme, UI scale 1.0, status colors on (**Soft**), tray icon on and minimize to tray on |
 | AniDB | UDP server `api.anidb.net:9000`, local UDP port 29456, image server `cdn.anidb.net`; **Work offline** off; **Run the command queue automatically** off (idle logout 10 min when on); **Update known file information** off; **Download anime covers when a detail window opens** on |
 | Hashing | **Start hashing automatically** on; **Identify files with AniDB after hashing** on; **Restrict file extensions** off; hash export template `%fulled2k%` |
-| Managed folders | Two built-in rules, **Default** and `\\ (Default network path)`; scan at start off; scheduled scan off (60 minutes when on); **Hash a file once it is unchanged for** 500 ms; **Pause between hashed files** 0 ms. A rule you add has **Subfolders** on, **Skip system files** on, and **Auto hash**, **Rehash changed**, **Remove missing**, **Remove emptied folders**, **Add to MyList** and **Auto rename** (Off) all off. |
+| Managed folders | No folder rules; scan at start off; scheduled scan off (60 minutes when on); **Hash a file once it is unchanged for** 500 ms; **Pause between hashed files** 0 ms. A rule you add has **Include subfolders** on, **Skip system files** on, and **Hash new files**, **Rehash changed files**, **Remove missing files from the library**, **Remove folders a rename leaves empty**, **Add identified files to MyList** and **Auto rename** (Off) all off. |
 | Updates | **Check for updates at startup** on; channel **Stable** |
 | Other | Statistics export off; media properties (ffprobe) off; the file-menu entry off |
 
-The built-in `\\ (Default network path)` rule covers network paths that start with `\\` (Windows) and
-adds nothing to MyList.
+A rule with the path `\\` covers every network path (one that starts with `\\` on Windows); you can
+create one yourself, but none exists by default.
 
 ### If the first start fails
 

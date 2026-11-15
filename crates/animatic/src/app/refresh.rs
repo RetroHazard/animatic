@@ -76,8 +76,13 @@ pub(super) fn after_hash(
 impl AnimaticApp {
     /// Queue what the settings ask for after `path` was hashed.
     pub(super) fn queue_after_hash(&mut self, path: &Path, size: u64, ed2k: String) {
-        let manager = self.settings.file_managers.manager_for(path);
-        let auto_add = manager.mylist_auto_add;
+        // Only a folder rule adds a file to MyList; outside every rule it is only identified.
+        let adding = self
+            .settings
+            .file_managers
+            .manager_for(path)
+            .filter(|m| m.mylist_auto_add);
+        let auto_add = adding.is_some();
         let decision = after_hash(
             &self.db,
             self.settings.hashing.identify_after_hashing,
@@ -98,7 +103,7 @@ impl AnimaticApp {
         match decision {
             AfterHash::Nothing => {}
             AfterHash::Identify => {
-                let add = auto_add.then(|| animatic_core::sync::manager_mylist_edit(manager));
+                let add = adding.map(animatic_core::sync::manager_mylist_edit);
                 self.queue_command(animatic_core::sync::Command::Identify { size, ed2k, add });
             }
             AfterHash::Refresh(fid) => {

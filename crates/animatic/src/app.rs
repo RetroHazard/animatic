@@ -32,6 +32,7 @@ mod anidb_markup;
 mod auto_rename;
 mod covers;
 mod dialog;
+mod folder_options;
 mod hash_queue_panel;
 mod media_options;
 mod mylist_editor;
@@ -600,6 +601,8 @@ pub struct AnimaticApp {
     settings_open: bool,
     /// The text of the file extensions box in Options while it is being edited.
     extensions_edit: Option<String>,
+    /// Per-rule state of Options → Managed folders while it is open.
+    folder_options: folder_options::FolderOptionsState,
     about_open: bool,
     /// The license text window opened from About.
     license_open: bool,
@@ -753,6 +756,7 @@ impl AnimaticApp {
             selected_player: None,
             settings_open: false,
             extensions_edit: None,
+            folder_options: folder_options::FolderOptionsState::default(),
             about_open: false,
             license_open: false,
             notices_open: false,
@@ -1095,11 +1099,18 @@ impl AnimaticApp {
                     self.update.stage.cancelled();
                     self.note("Update check or download cancelled");
                 }
-                UpdateEvent::Installed(version) => {
+                UpdateEvent::Installed(installed) => {
                     if self.update.stage.installed() {
+                        let version = installed.version;
                         self.log(format!(
                             "Animatic {version} installed; restart to start using it"
                         ));
+                        if let Some(problem) = installed.text_files_problem {
+                            self.error(format!(
+                                "Animatic {version} is installed, but the license files beside \
+                                 it were not all updated: {problem}"
+                            ));
+                        }
                         self.update.installed_version = Some(version);
                     }
                 }
@@ -1675,8 +1686,12 @@ impl AnimaticApp {
             .fid
             .ok_or("The selected file is not identified by AniDB")?;
         let old = PathBuf::from(&local.path);
-        let manager = self.settings.file_managers.manager_for(&old);
-        let plan = plan::plan_local_file(&self.db, pattern, fid, &old, &manager.base_path);
+        let base_path = self
+            .settings
+            .file_managers
+            .manager_for(&old)
+            .map_or("", |m| m.base_path.as_str());
+        let plan = plan::plan_local_file(&self.db, pattern, fid, &old, base_path);
         Ok(RenamePreview { id, old, plan })
     }
 
@@ -1796,8 +1811,8 @@ impl AnimaticApp {
                     .settings
                     .file_managers
                     .manager_for(&path)
-                    .base_path
-                    .clone();
+                    .map(|m| m.base_path.clone())
+                    .unwrap_or_default();
                 Candidate {
                     local_id: f.id,
                     path,
@@ -4731,6 +4746,7 @@ impl AnimaticApp {
         self.settings_open = false;
         self.shell.options_closed();
         self.extensions_edit = None;
+        self.folder_options = folder_options::FolderOptionsState::default();
     }
 
     fn options_account(&mut self, ui: &mut egui::Ui) {
@@ -4954,103 +4970,8 @@ impl AnimaticApp {
         }
     }
 
-    fn options_folders(&mut self, ui: &mut egui::Ui) {
-        let mut remove_manager = None;
-        let mut enable_auto_rename = None;
-        for (index, manager) in self.settings.file_managers.managers.iter_mut().enumerate() {
-            let label = if manager.name.is_empty() {
-                "Unnamed folder".to_string()
-            } else {
-                manager.name.clone()
-            };
-            // Keyed by position, not by the name: typing in Name must not close the section.
-            egui::CollapsingHeader::new(label)
-                .id_salt(("options-managed-folder", index))
-                .show(ui, |ui| {
-                            field(ui, "Name", &mut manager.name);
-                            field(ui, "Path", &mut manager.path);
-                            field(ui, "Rename destination", &mut manager.base_path);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.checkbox(&mut manager.include_subdirs, "Subfolders");
-                                ui.checkbox(&mut manager.auto_hash, "Auto hash");
-                                ui.checkbox(&mut manager.auto_rehash, "Rehash changed");
-                                ui.checkbox(&mut manager.auto_remove, "Remove missing");
-                                if auto_rename::mode_control(ui, index, manager) {
-                                    enable_auto_rename = Some(index);
-                                }
-                                ui.checkbox(&mut manager.exclude_system, "Skip system files")
-                                    .on_hover_text(
-                                        "Scans skip files and folders with the Windows system attribute. \
-                                         Linux has no such attribute, so this has no effect there.",
-                                    );
-                                ui.checkbox(&mut manager.clear_empty_folders, "Remove emptied folders")
-                                    .on_hover_text(
-                                        "After Animatic renames or moves a file out of a subfolder, remove \
-                                         the folder (and emptied parents) if nothing at all is left in it. \
-                                         The managed folder itself is never removed.",
-                                    );
-                                ui.checkbox(&mut manager.mylist_auto_add, "Add to MyList")
-                                    .on_hover_text(
-                                        "Add files identified in this folder to your AniDB MyList",
-                                    );
-                            });
-                            ui.label(
-                                RichText::new("For files this folder adds to MyList")
-                                    .small()
-                                    .weak(),
-                            );
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut manager.mylist_watched_check, "Set watched");
-                                if manager.mylist_watched_check {
-                                    ui.checkbox(&mut manager.mylist_watched, "Watched");
-                                }
-                                ui.checkbox(&mut manager.mylist_state_check, "Set state");
-                                if manager.mylist_state_check {
-                                    egui::ComboBox::from_id_salt(("manager-state", index))
-                                        .selected_text(mylist_state_name(manager.mylist_state))
-                                        .show_ui(ui, |ui| {
-                                            for (id, name) in MYLIST_STATES.iter().enumerate() {
-                                                ui.selectable_value(
-                                                    &mut manager.mylist_state,
-                                                    id as i64,
-                                                    *name,
-                                                );
-                                            }
-                                        });
-                                }
-                            });
-                            ui.checkbox(&mut manager.mylist_storage_check, "Set storage");
-                            ui.add_enabled_ui(manager.mylist_storage_check, |ui| {
-                                field(ui, "Storage", &mut manager.mylist_storage);
-                            });
-                            ui.checkbox(&mut manager.mylist_source_check, "Set source");
-                            ui.add_enabled_ui(manager.mylist_source_check, |ui| {
-                                field(ui, "Source", &mut manager.mylist_source);
-                            });
-                            ui.checkbox(&mut manager.mylist_other_check, "Set other");
-                            ui.add_enabled_ui(manager.mylist_other_check, |ui| {
-                                field(ui, "Other", &mut manager.mylist_other);
-                            });
-                            if manager.can_edit_path && ui.button("Remove folder rule").clicked() {
-                                remove_manager = Some(index);
-                            }
-                        });
-        }
-        if let Some(index) = remove_manager {
-            self.settings.file_managers.managers.remove(index);
-        }
-        if let Some(index) = enable_auto_rename {
-            self.begin_auto_rename_enable(index);
-        }
-        if ui.button("Add folder rule").clicked() {
-            self.settings
-                .file_managers
-                .managers
-                .push(animatic_core::settings::FileManager {
-                    name: "New folder".into(),
-                    ..Default::default()
-                });
-        }
+    /// The scan settings shared by every rule, under the rules of **Managed folders**.
+    fn options_folder_scanning(&mut self, ui: &mut egui::Ui) {
         style::section(ui, "Folder scanning");
         ui.label(
             RichText::new(
@@ -5262,9 +5183,6 @@ impl AnimaticApp {
             );
             ui.hyperlink_to("Releases", &releases);
         });
-        style::section(ui, "MyList states");
-        ui.label(RichText::new("The states a MyList entry can have on AniDB:").weak());
-        ui.label(MYLIST_STATES.join(" · "));
     }
 
     fn update_window(&mut self, ctx: &egui::Context) {
@@ -5393,9 +5311,10 @@ impl AnimaticApp {
                     }
                     UpdateStage::Ready { confirming } => {
                         if let Some(update) = &self.update.ready {
-                            ui.label(
+                            ui.colored_label(
+                                style::ok(ui.visuals()),
                                 RichText::new(format!(
-                                    "Version {} downloaded. Checksum matches.",
+                                    "✓ Version {} downloaded. Checksum matches.",
                                     update.version()
                                 ))
                                 .strong(),
@@ -5414,17 +5333,17 @@ impl AnimaticApp {
                             .on_hover_text(UNSIGNED_DETAIL);
                         ui.add_space(4.0);
                         if confirming {
-                            ui.label(match self.executable_path() {
-                                Some(path) => {
-                                    format!("Replace {} with the new version?", path.display())
-                                }
+                            ui.label(match self.installation.as_deref() {
+                                Some(target) => format!(
+                                    "Replace {} with the new version?",
+                                    target.display_path().display()
+                                ),
                                 None => "Animatic cannot tell where it is installed.".into(),
                             })
                             .on_hover_text(
-                                "Only the program is replaced. Your database, settings, \
-                                 profiles and media are not touched. New license files are \
-                                 added next to the program; the bundled docs stay at the old \
-                                 version.",
+                                "The program, LICENSE and NOTICES are replaced. Your database, \
+                                 settings, profiles and media are not touched; README, \
+                                 CHANGELOG and docs stay at the old version.",
                             );
                             ui.label(
                                 RichText::new(
@@ -5475,11 +5394,11 @@ impl AnimaticApp {
                             "The program files may be in an unknown state, so Animatic will \
                              not update or restart itself in this session.",
                         );
-                        ui.label(match self.executable_path() {
-                            Some(path) => format!(
+                        ui.label(match self.installation.as_deref() {
+                            Some(target) => format!(
                                 "Check that {} still starts. If it does not, download the \
                                  release from GitHub and replace the program files manually.",
-                                path.display()
+                                target.display_path().display()
                             ),
                             None => "Download the release from GitHub and replace the program \
                                      files manually."
@@ -6418,12 +6337,9 @@ mod shortcuts {
     ];
 }
 
-/// Whether the user has added a folder rule with a path. The built-in rules (the default rule
-/// and the `\\` network rule) are always present and do not count as a choice.
+/// Whether a folder rule with a path exists.
 fn has_user_folder(managers: &[animatic_core::settings::FileManager]) -> bool {
-    managers
-        .iter()
-        .any(|m| m.can_edit_path && !m.default && !m.path.trim().is_empty())
+    managers.iter().any(|m| !m.path.trim().is_empty())
 }
 
 /// `Shortcut: Ctrl+,` for a hover text.
@@ -6757,10 +6673,7 @@ mod tests {
     fn only_a_folder_the_user_added_completes_the_folder_step() {
         use animatic_core::settings::{FileManager, FileManagerSettings};
         let mut managers = FileManagerSettings::default().managers;
-        assert!(
-            !has_user_folder(&managers),
-            "a fresh profile has only the built-in rules"
-        );
+        assert!(!has_user_folder(&managers), "a fresh profile has no rules");
         managers.push(FileManager {
             path: "  ".into(),
             ..FileManager::default()

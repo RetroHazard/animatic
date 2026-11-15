@@ -11,6 +11,35 @@ the generated line for that pull request's squash commit.
 
 ## Unreleased
 
+### Fixed
+
+- The **Software updates** window shows the program's location as `C:\…` instead of the Windows
+  internal form `\\?\C:\…` when asking to confirm an installation and after a failed one. (#25)
+
+### Changed
+
+- Options → Updates no longer lists the MyList states. They are fixed by AniDB, cannot be
+  changed there, and every MyList state picker already offers them. (#25)
+- After a download, the **Software updates** window marks `Checksum matches.` with a green ✓.
+  The code-signing warning below it is unchanged. (#25)
+- An in-app update now replaces `LICENSE` and `NOTICES` beside the program instead of adding
+  `LICENSE-vVERSION` and `NOTICES-vVERSION` copies, and removes the copies earlier updates left,
+  so the folder keeps one of each, matching the installed version. (#25)
+- Options → Managed folders is regrouped per rule into **Folder**, **When a scan finds files**,
+  **Renaming** and **MyList**, with clearer labels. A folder rule's header shows its path. **Path**
+  and the rename destination get a **Browse…** folder picker. The destination is shown only after
+  ticking **Move renamed files to another folder** (unticking clears it). The MyList values are greyed
+  out until **Add identified files to MyList** is on, and the two options that remove things are
+  shown in red. (#25)
+- **Folder rules are now optional, and there is no Default rule.** A new profile starts with no
+  rules, and every rule is an ordinary folder rule you can edit or remove. A file outside every rule
+  is identified as before but **no longer added to MyList automatically**, and renaming it keeps it
+  in its folder. On upgrade, the built-in **Default** and `\\ (Default network path)` rules are
+  removed if you never changed them; one you changed (for example by giving Default a path) stays
+  as an ordinary rule. To keep adding files from a folder to MyList, add a rule for that folder
+  with **Add identified files to MyList**. An AOM settings import no longer brings in AOM's
+  default rule, which had no folder. (#25)
+
 ## 2026.11.0-rc.2 - 2026-11-14
 
 ### Fixed

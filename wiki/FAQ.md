@@ -25,9 +25,9 @@ explicit:
   verifies the copy against the stored hash and only then removes the original. There is no undo.
   See [Renaming files](Renaming-Files.md#what-applying-does).
 - Empty folders that your own rename emptied inside a managed folder are removed only when that
-  folder's **Remove emptied folders** is on (off by default).
+  folder's **Remove folders a rename leaves empty** is on (off by default).
 
-**Remove from list…** and a scan with **Remove missing** drop only Animatic's *records* of files, never
+**Remove from list…** and a scan with **Remove missing files from the library** drop only Animatic's *records* of files, never
 the files. See [Remove from list](File-and-Import-Problems.md#remove-from-list).
 
 ### Where are my settings and my library stored?
@@ -148,16 +148,23 @@ settings file); otherwise click **Resume hashing**. See
 
 ### Why did a scan hash nothing?
 
-Usually no managed folder rule has **Auto hash**, the extension list does not include the file
+Usually no managed folder rule has **Hash new files**, the extension list does not include the file
 type, or the file was still being written. The checklist is in
 [Scans and managed folders](File-and-Import-Problems.md#scans-and-managed-folders).
 
 ### Records disappeared after a scan. What happened?
 
-A rule with **Remove missing** removed the records of files it found missing under a folder that
+A rule with **Remove missing files from the library** removed the records of files it found missing under a folder that
 exists. A folder that exists but is empty because its drive is not mounted looks like missing
 files. Restore a backup or remount and rescan. See
 [Offline drives and automatic removal](File-and-Import-Problems.md#offline-drives-and-automatic-removal).
+
+### Why was a file not added to my MyList?
+
+A fresh profile has no folder rules, and only a rule with **Add identified files to MyList** on adds the
+files it covers. A file that no rule covers is identified (when **Identify files with AniDB after
+hashing** is on) but not added to MyList, and it is renamed in its own folder. See
+[Which rule applies to a file](Managed-Folders-and-Scans.md#which-rule-applies-to-a-file).
 
 ### Can I undo a rename?
 
@@ -175,7 +182,7 @@ exist yet. The message in the rename window says which. See
 
 ### Can I keep my library on a network drive or a cloud-synced folder?
 
-Media files on a network share work (hashing is slower), but turn **Remove missing** off for
+Media files on a network share work (hashing is slower), but turn **Remove missing files from the library** off for
 removable or network folders. Do not put the **database** on a network share or in a
 cloud-synchronized folder: SQLite's write-ahead log needs a local filesystem. See
 [Cloud sync, roaming profiles and network drives](Backups-and-Recovery.md#cloud-sync-roaming-profiles-and-network-drives).
@@ -206,7 +213,7 @@ and [One window per database](Running-Animatic.md#one-window-per-database).
 5. Enter your AniDB account again: credentials live in the operating-system keystore and do not
    travel with the library or the settings file.
 6. Check the folder paths. Library records store full file paths, so if your media is under
-   different paths on the new computer, scan the new folders with **Auto hash** and clear the
+   different paths on the new computer, scan the new folders with **Hash new files** and clear the
    stale records with **Remove from list…** (see [Remove from list](File-and-Import-Problems.md#remove-from-list)).
 
 ### Can I run two libraries on one computer?

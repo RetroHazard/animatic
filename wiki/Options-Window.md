@@ -163,55 +163,65 @@ Appearance picture (at the top of this category) the tray icon is turned off, wh
 
 ## Managed folders
 
-![The Managed folders category: the built-in Default and network rules, then the sample's Anime and Downloads rules, all collapsed, with the Folder scanning section below](images/options-folders.png)
+![The Managed folders category: the sample profile's Anime and Downloads rules, both collapsed, with the Folder scanning section below](images/options-folders.png)
 
-*The sample profile: the two built-in rules (**Default** and `\\ (Default network path)`) followed by the user's **Anime** and **Downloads** rules.*
+*The sample profile: two folder rules, **Anime** and **Downloads**.*
 
 A managed folder is a folder rule: where your files live, what happens when a scan finds a file there,
 what is sent to MyList for them, and where renamed files go. The page lists one collapsible section per
-rule, headed by its **Name** (or `Unnamed folder` while the name is empty), then **Add folder rule**,
-then **Folder scanning**. See [Managed folders and scans](Managed-Folders-and-Scans.md) for the full
-picture of how rules are chosen and scans run.
+rule, then **Add folder rule**, then **Folder scanning**. A rule's header shows its **Name** and
+**Path** (`Downloads — S:\Downloads`; just the name while the path is empty, `Unnamed folder` while the
+name is empty). See
+[Managed folders and scans](Managed-Folders-and-Scans.md) for the full picture of how rules are chosen
+and scans run.
 
-A fresh settings file holds two built-in rules: **Default** (applies to files no other rule claims; adds
-identified files to MyList as state On HDD and not watched) and `\\ (Default network path)`. They
-cannot be removed. The sample profile in the pictures adds two rules of its own, **Anime** and
-**Downloads**.
+Rules are optional and all alike. A fresh profile has **no rules**, and nothing is created
+automatically. With none, the page says `No folder rules. Add one to scan a folder, add its files to
+MyList or move renamed files. Files outside every rule are not added to MyList, and renaming one keeps
+it in its folder.` A file that no rule covers is identified as usual (when **Identify files with
+AniDB after hashing** is on), not added to MyList, renamed in its own folder (an empty rename
+destination), never scanned and never removed by **Remove missing files from the library**.
 
-![The Downloads rule expanded, showing every field and checkbox of a folder rule](images/options-folder-rule.png)
+**Remove rule…** works on any rule, including the last one, and asks for confirmation first. A rule
+with the path `\\` matches every network path (`\\server\share\…`); you can create one yourself. The
+sample profile in the pictures has two rules, **Anime** and **Downloads**.
+
+![The Downloads rule expanded, with its Folder, scan, Renaming and MyList groups](images/options-folder-rule.png)
 
 ### Fields of a folder rule
+
+The controls are grouped under **Folder**, **When a scan finds files**, **Renaming** and **MyList**.
 
 | Control | What it does | Default for a new rule | Key (in `file_managers.managers[]`) |
 |---|---|---|---|
 | **Name** | The label of the rule in this list and in the automatic rename confirmation. | `New folder` | `name` |
-| **Path** | The folder the rule applies to, typed as text (there is no folder picker). An empty path never matches and is skipped by scans. | empty | `path` |
-| **Rename destination** | The folder renamed files are moved into (`BASEPATH` in rename patterns). Empty keeps the file's current folder. | empty | `base_path` |
-| **Subfolders** | Include folders below **Path**: scan all levels, and match files in them. Off: direct children only. | on | `include_subdirs` |
-| **Auto hash** | A scan hashes files it finds that are not in the library yet. | off | `auto_hash` |
-| **Rehash changed** | A scan hashes known files again when their modification time changed. | off | `auto_rehash` |
-| **Remove missing** | A scan removes the library record of a file that is positively gone, but only while the folder itself is reachable. Never deletes media files. | off | `auto_remove` |
-| **Auto rename** (drop-down) | **Off**, **Dry run (log only)** or **On**. Choosing **On** first shows a dry-run list of what would be renamed now and needs **Turn on automatic rename**; **Cancel** (or `Esc`) leaves the mode unchanged. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). | Off | `auto_rename` |
+| **Path** and **Browse…** | The folder the rule applies to: type it, or choose it with **Browse…** (the picker opens in the current folder when it exists). An empty path never matches and is skipped by scans. | empty | `path` |
+| **Include subfolders** | Include folders below **Path**: scan all levels, and match files in them. Off: direct children only. | on | `include_subdirs` |
+| **Hash new files** | A scan hashes files it finds that are not in the library yet. | off | `auto_hash` |
+| **Rehash changed files** | A scan hashes known files again when their modification time changed. | off | `auto_rehash` |
 | **Skip system files** | Scans skip files and folders with the Windows system attribute. No effect on Linux, which has no such attribute. | on | `exclude_system` |
-| **Remove emptied folders** | After Animatic renames or moves a file out of a subfolder, remove the folder (and emptied parents) if nothing at all is left. The rule's own folder is never removed. See [Removing folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). | off | `clear_empty_folders` |
-| **Add to MyList** | Files identified in this folder are added to your AniDB MyList when the queue runs online, with the values below. | off | `mylist_auto_add` |
-| **Remove folder rule** | Deletes the rule. Not shown for the two built-in rules. | n/a | n/a |
+| **Remove missing files from the library** (red) | A scan removes the library record of a file that is positively gone, but only while the folder itself is reachable. Never deletes media files. | off | `auto_remove` |
+| **Move renamed files to another folder** | Off: files are renamed where they are. Ticked, a **Destination** field with **Browse…** appears: renamed files are moved under it (`BASEPATH` in rename patterns). Unticking clears the destination. | off | `base_path` (empty = off) |
+| **Auto rename** (drop-down) | **Off**, **Dry run (log only)** or **On**. Choosing **On** first shows a dry-run list of what would be renamed now and needs **Turn on automatic rename**; **Cancel** (or `Esc`) leaves the mode unchanged. See [Automatic rename](Renaming-Files.md#automatic-rename-opt-in-per-managed-folder). | Off | `auto_rename` |
+| **Remove folders a rename leaves empty** (red) | After Animatic renames or moves a file out of a subfolder, remove the folder (and emptied parents) if nothing at all is left. The rule's own folder is never removed. See [Removing folders](Managed-Folders-and-Scans.md#removing-folders-a-rename-emptied). | off | `clear_empty_folders` |
+| **Remove rule…** | Asks `Remove this folder rule? Files in the folder stay in the library; files no rule covers are only identified.`, then deletes the rule. Works on any rule, including the last one. | n/a | n/a |
 
 Scans skip files and folders whose name starts with a dot while the rule's `exclude_hidden` key is
-`true` (the default for new rules; the built-in network rule has it off). Options has no control for
-it; edit `settings.json`.
+`true` (the default for new rules). Options has no control for it; edit `settings.json`.
 
 ### MyList values of a rule
 
-Under the caption "For files this folder adds to MyList":
+Under **MyList**, **Add identified files to MyList** (`mylist_auto_add`) decides whether files the
+rule covers are added to your AniDB MyList when the queue runs online. The values below it are greyed
+out while it is off:
 
 | Control | What it does | Default | Key |
 |---|---|---|---|
 | **Set watched** / **Watched** | **Set watched** decides whether the watched flag is sent at all. Ticked, a **Watched** checkbox appears; ticked, files are added as watched with the current time. | both off | `mylist_watched_check`, `mylist_watched` |
-| **Set state** / state drop-down | **Set state** decides whether a state is sent. Ticked, a drop-down offers **Unknown**, **On HDD**, **On CD/DVD**, **Deleted** and **Remote/Shared**. | on, **On HDD** | `mylist_state_check`, `mylist_state` |
-| **Set storage** / **Storage** | A free-text storage label (for example `Library disk`). The text box is grayed out until the check is ticked. | off, empty | `mylist_storage_check`, `mylist_storage` |
-| **Set source** / **Source** | Free-text source. | off, empty | `mylist_source_check`, `mylist_source` |
-| **Set other** / **Other** | Free-text note. | off, empty | `mylist_other_check`, `mylist_other` |
+| **Set state** / state drop-down | **Set state** decides whether a state is sent; the drop-down (**Unknown**, **On HDD**, **On CD/DVD**, **Deleted**, **Remote/Shared**) is greyed out until it is ticked. | on, **On HDD** | `mylist_state_check`, `mylist_state` |
+| **Set storage** and its text box | A free-text storage label (for example `Library disk`), on one row with its checkbox; the box is greyed out until the check is ticked. | off, empty | `mylist_storage_check`, `mylist_storage` |
+| **Set source** and its text box | Free-text source. | off, empty | `mylist_source_check`, `mylist_source` |
+| **Set other** and its text box | Free-text note. | off, empty | `mylist_other_check`, `mylist_other` |
 
 All the per-folder keys are in [Per-folder keys](Settings-Reference.md#per-folder-keys).
 
@@ -345,7 +355,7 @@ contain your AniDB user name (not the password); treat them as personal data. Mo
 
 ## Updates
 
-![The Updates category with Stable selected and the MyList states list](images/options-updates.png)
+![The Updates category with Stable selected](images/options-updates.png)
 
 *The sample profile has the startup check off, because the sample never contacts GitHub; the default is on.*
 
@@ -354,7 +364,6 @@ contain your AniDB user name (not the password); treat them as personal data. Mo
 | **Check for updates at startup** | One background check for a newer release at startup, skipped while **Work offline** is on or after a settings recovery. It never downloads or installs. **Help → Check for updates…** always works. | on | `auto_check` |
 | **Release channel**: **Stable** / **Beta** | **Stable** offers published stable releases only. **Beta** also offers betas (version numbers ending in `-rc.1`, `-rc.2` …), which may have bugs. Switching back to Stable never installs an older version. A one-line caption under the buttons says which is chosen. The buttons are disabled with an explanation while a check or download runs, or after an update was installed until you restart. | Stable | `channel` |
 | Privacy line and **Releases** link | `Checks GitHub only, anonymously. Nothing installs without asking.` The link opens the project's releases page in your browser. | n/a | n/a |
-| **MyList states** | Read-only list of the states a MyList entry can have on AniDB: Unknown · On HDD · On CD/DVD · Deleted · Remote/Shared. | n/a | n/a |
 
 See [Updating Animatic](Updating-Animatic.md).
 
@@ -406,7 +415,7 @@ the whole file when it quits:
 
 - `anidb.udp_server`, `anidb.local_port` and `anidb.image_server` (AniDB connection details);
 - `ui.window`, `ui.maximized` and `ui.columns` (kept by using the window and its tables);
-- per-folder `exclude_hidden` and the built-in rules' `can_edit_path` and `default`;
+- per-folder `exclude_hidden`;
 - the row-color slots no table uses, and keys kept only for AOM compatibility.
 
 The [Settings reference](Settings-Reference.md) lists every key with its status. How the file is read,

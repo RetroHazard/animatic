@@ -174,10 +174,11 @@ What happens next, per file (the log lines in backticks):
 | AniDB does not know the file | `file unknown to AniDB`; nothing is added and the command leaves the queue |
 | AniDB has no such file id | `AniDB has no file N` |
 
-You can also let a folder add files for you: in **Options → Managed folders**, tick **Add to
-MyList** on a folder rule and set the values it should use (state, watched, storage, source, other).
-Those files are queued as `Identify file … + add to mylist` once they are hashed, provided
-**Identify files with AniDB after hashing** (**Options → Hashing**) is on. See
+You can also let a folder add files for you: in **Options → Managed folders**, tick **Add identified
+files to MyList** on a folder rule and set the values it should use (state, watched, storage, source,
+other). Those files are queued as `Identify file … + add to mylist` once they are hashed, provided
+**Identify files with AniDB after hashing** (**Options → Hashing**) is on. A file that no rule covers
+is identified but not added. See
 [Managed folders and scans](Managed-Folders-and-Scans.md).
 
 ## Remove entries from your MyList
